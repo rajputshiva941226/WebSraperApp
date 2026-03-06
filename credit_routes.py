@@ -84,9 +84,18 @@ def check_download_cost(job_id):
             if hist_job.get('id') == job_id:
                 job = hist_job
                 break
+
+    if not job:
+        from models import Job
+        db_job = Job.query.get(job_id)
+        if db_job:
+            job = db_job.to_dict()
     
     if not job:
         return jsonify({'error': 'Job not found'}), 404
+
+    if user.user_type != 'admin' and job.get('user_id') != user.id:
+        return jsonify({'error': 'Access denied'}), 403
     
     # Calculate cost
     record_count = job.get('unique_emails', 0)
@@ -123,9 +132,18 @@ def execute_download_with_credits(job_id):
             if hist_job.get('id') == job_id:
                 job = hist_job
                 break
+
+    if not job:
+        from models import Job
+        db_job = Job.query.get(job_id)
+        if db_job:
+            job = db_job.to_dict()
     
     if not job:
         return jsonify({'error': 'Job not found'}), 404
+
+    if user.user_type != 'admin' and job.get('user_id') != user.id:
+        return jsonify({'error': 'Access denied'}), 403
     
     if job.get('status') not in ['completed', 'failed']:
         return jsonify({'error': 'Job not completed yet'}), 400

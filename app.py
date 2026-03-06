@@ -830,6 +830,12 @@ def download_results(job_id):
     import pandas as pd
     from flask import request
     
+    if 'user_id' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
+
+    current_user_id = session.get('user_id')
+    is_admin = session.get('user_type') == 'admin'
+
     # Get format from query parameter (default to csv)
     format_type = request.args.get('format', 'csv').lower()
     
@@ -853,6 +859,9 @@ def download_results(job_id):
     
     if not job:
         return jsonify({'error': 'Job not found'}), 404
+
+    if not is_admin and job.get('user_id') != current_user_id:
+        return jsonify({'error': 'Access denied'}), 403
     
     # Allow download for completed jobs OR failed jobs with partial results
     if job.get('status') not in ['completed', 'failed']:
@@ -954,21 +963,37 @@ def download_bulk_results():
     """Download all completed job results as a zip file"""
     import zipfile
     import io
+
+    if 'user_id' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
+
+    current_user_id = session.get('user_id')
+    is_admin = session.get('user_type') == 'admin'
     
     # Get all completed jobs from active jobs and history
     completed_jobs = []
     
     # Check active jobs
     for job in active_jobs.values():
-        if job['status'] == 'completed' and job.get('output_file'):
+        if job['status'] == 'completed' and job.get('output_file') and (is_admin or job.get('user_id') == current_user_id):
             completed_jobs.append(job)
     
     # Check history
     for job in job_history:
-        if job['status'] == 'completed' and job.get('output_file'):
+        if job['status'] == 'completed' and job.get('output_file') and (is_admin or job.get('user_id') == current_user_id):
             # Avoid duplicates
             if not any(j['id'] == job['id'] for j in completed_jobs):
                 completed_jobs.append(job)
+
+    try:
+        db_completed_query = Job.query.filter_by(status='completed') if is_admin else Job.query.filter_by(status='completed', user_id=current_user_id)
+        db_completed_jobs = db_completed_query.order_by(Job.created_at.desc()).limit(500).all()
+        for db_job in db_completed_jobs:
+            job = db_job.to_dict()
+            if not any(j['id'] == job['id'] for j in completed_jobs):
+                completed_jobs.append(job)
+    except Exception as e:
+        print(f"[DB] Error fetching completed jobs for bulk download: {e}")
     
     if not completed_jobs:
         return jsonify({'error': 'No completed jobs found'}), 404
