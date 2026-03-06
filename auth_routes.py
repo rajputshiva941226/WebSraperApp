@@ -43,8 +43,14 @@ def login():
     if not user.is_active:
         return render_template('login.html', error='Account is disabled. Contact administrator.')
     
-    # Verify license for single-license users
-    if user.license_type == 'single':
+    # Admin users always get multi-license; fix any stale single lock
+    if user.user_type == 'admin' and (user.license_type != 'multi' or user.machine_id):
+        user.license_type = 'multi'
+        user.machine_id = None
+        db.session.commit()
+
+    # Verify license for single-license non-admin users only
+    if user.license_type == 'single' and user.user_type != 'admin':
         current_machine = get_machine_id()
         
         if user.machine_id and user.machine_id != current_machine:

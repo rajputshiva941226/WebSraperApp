@@ -401,6 +401,8 @@ def create_admin_user(username, email, password):
         username=username,
         email=email,
         user_type='admin',
+        license_type='multi',
+        machine_id=None,
         credits=999999,  # Admin gets unlimited credits
         is_active=True,
         is_verified=True
