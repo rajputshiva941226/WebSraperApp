@@ -74,29 +74,15 @@ def check_download_cost(job_id):
     user = get_current_user()
     file_format = request.args.get('format', 'csv')
     
-    # Import from app.py context
-    from app import active_jobs, job_history
-    
-    # Find job
-    job = active_jobs.get(job_id)
-    if not job:
-        for hist_job in job_history:
-            if hist_job.get('id') == job_id:
-                job = hist_job
-                break
-
-    if not job:
-        from models import Job
-        db_job = Job.query.get(job_id)
-        if db_job:
-            job = db_job.to_dict()
-    
-    if not job:
+    from models import Job
+    db_job = Job.query.get(job_id)
+    if not db_job:
         return jsonify({'error': 'Job not found'}), 404
+    job = db_job.to_dict()
 
     if user.user_type != 'admin' and job.get('user_id') != user.id:
         return jsonify({'error': 'Access denied'}), 403
-    
+
     # Calculate cost
     record_count = job.get('unique_emails', 0)
     credits_required = calculate_download_credits(record_count, file_format)
@@ -122,25 +108,12 @@ def execute_download_with_credits(job_id):
     data = request.json
     file_format = data.get('format', 'csv')
     
-    # Import from app.py context
-    from app import active_jobs, job_history, count_results_detailed
-    
-    # Find job
-    job = active_jobs.get(job_id)
-    if not job:
-        for hist_job in job_history:
-            if hist_job.get('id') == job_id:
-                job = hist_job
-                break
-
-    if not job:
-        from models import Job
-        db_job = Job.query.get(job_id)
-        if db_job:
-            job = db_job.to_dict()
-    
-    if not job:
+    from models import Job
+    from app import count_results_detailed
+    db_job = Job.query.get(job_id)
+    if not db_job:
         return jsonify({'error': 'Job not found'}), 404
+    job = db_job.to_dict()
 
     if user.user_type != 'admin' and job.get('user_id') != user.id:
         return jsonify({'error': 'Access denied'}), 403

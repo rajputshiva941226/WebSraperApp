@@ -1,0 +1,42 @@
+[Unit]
+Description=Journal Scraper Celery Worker
+After=network.target postgresql.service redis.service
+Wants=postgresql.service redis.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/journal-scraper
+
+# ---- Environment ----
+Environment=SECRET_KEY=CHANGE_THIS_TO_A_LONG_RANDOM_SECRET
+Environment=DATABASE_URL=postgresql://scraper_user:YOUR_PASSWORD@localhost/journal_scraper
+Environment=REDIS_URL=redis://localhost:6379/0
+Environment=UPLOAD_FOLDER=/var/www/journal-scraper/results
+Environment=DATA_FOLDER=/var/www/journal-scraper/data
+
+# ---- Process ----
+# --concurrency=2 means 2 parallel scraper jobs max (each runs Chrome)
+# Increase if the EC2 instance has enough RAM (each Chrome ~300MB)
+ExecStart=/var/www/journal-scraper/venv/bin/celery \
+    -A celery_worker \
+    worker \
+    --loglevel=info \
+    --concurrency=2 \
+    --logfile=/var/log/journal-scraper/celery.log \
+    --pidfile=/tmp/celery-journal-scraper.pid
+
+ExecReload=/bin/kill -s HUP $MAINPID
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=journal-scraper-celery
+
+# ---- Security ----
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

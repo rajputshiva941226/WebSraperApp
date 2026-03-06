@@ -22,17 +22,41 @@ from master_db_routes import master_db_bp
 from admin_routes import admin_bp
 from flask_login import LoginManager
 
+# Celery integration — used when REDIS_URL is set, else falls back to threads
+_USE_CELERY = bool(os.environ.get('REDIS_URL'))
+if _USE_CELERY:
+    try:
+        from celery_worker import run_scraper_task as _celery_run_scraper
+        print("[Celery] Redis found — jobs will run via Celery workers")
+    except ImportError:
+        _USE_CELERY = False
+        print("[Celery] celery_worker import failed — falling back to threads")
+
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'change-this-in-production'
-app.config['UPLOAD_FOLDER'] = 'results'
-app.config['DATA_FOLDER'] = 'data'
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'change-this-in-production')
+app.config['UPLOAD_FOLDER'] = os.environ.get('UPLOAD_FOLDER', 'results')
+app.config['DATA_FOLDER'] = os.environ.get('DATA_FOLDER', 'data')
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
 
-# Database configuration
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///journal_scraper.db'
+# Database configuration — reads DATABASE_URL env var.
+# On EC2 set: export DATABASE_URL=postgresql://user:pass@localhost/journal_scraper
+# Falls back to SQLite for local dev.
+_db_url = os.environ.get('DATABASE_URL', 'sqlite:///journal_scraper.db')
+# Heroku/render compat: fix legacy postgres:// scheme
+if _db_url.startswith('postgres://'):
+    _db_url = _db_url.replace('postgres://', 'postgresql://', 1)
+app.config['SQLALCHEMY_DATABASE_URI'] = _db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)
+# PostgreSQL connection pool settings (ignored by SQLite)
+if 'postgresql' in _db_url:
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+        'pool_size': 10,
+        'max_overflow': 20,
+        'pool_pre_ping': True,
+        'pool_recycle': 300,
+    }
 
 # Initialize database
 init_db(app)
@@ -726,21 +750,35 @@ def start_scraping():
                     delay = random.uniform(3, 5)
                 selenium_count += 1
             
-            # Start scraping in background thread with delay
-            thread = threading.Thread(
-                target=run_scraper_task,
-                args=(job_id, user_id, journal, data['keyword'], data['start_date'], data['end_date'],
-                      conference_name, mesh_type, delay)
-            )
-            thread.daemon = True
-            thread.start()
-            
-            # Store thread reference for control
-            job_threads[job_id] = thread
-            
-            # Apply delay here in the main thread to stagger starts
-            if delay > 0:
-                time.sleep(delay)
+            # Dispatch job — use Celery if Redis is configured, else thread
+            if _USE_CELERY:
+                task = _celery_run_scraper.apply_async(
+                    args=(job_id, user_id, journal, data['keyword'],
+                          data['start_date'], data['end_date'],
+                          conference_name, mesh_type),
+                    countdown=delay  # Celery handles stagger delay natively
+                )
+                # Store Celery task id in DB for tracking
+                try:
+                    db_j = Job.query.get(job_id)
+                    if db_j:
+                        db_j.worker_task_id = task.id
+                        db.session.commit()
+                except Exception:
+                    pass
+            else:
+                thread = threading.Thread(
+                    target=run_scraper_task,
+                    args=(job_id, user_id, journal, data['keyword'],
+                          data['start_date'], data['end_date'],
+                          conference_name, mesh_type, delay)
+                )
+                thread.daemon = True
+                thread.start()
+                job_threads[job_id] = thread
+                # Apply delay in main thread to stagger selenium starts
+                if delay > 0:
+                    time.sleep(delay)
         
         return jsonify({
             'success': True,
@@ -874,24 +912,13 @@ def download_results(job_id):
     # Get format from query parameter (default to csv)
     format_type = request.args.get('format', 'csv').lower()
     
-    job = active_jobs.get(job_id)
-    
-    # If not in active jobs, check history
-    if not job:
-        for hist_job in job_history:
-            if hist_job.get('id') == job_id:
-                job = hist_job
-                break
-    
-    # If still not found, check database
-    if not job:
-        try:
-            db_job = Job.query.get(job_id)
-            if db_job:
-                job = db_job.to_dict()
-        except Exception:
-            pass
-    
+    # DB is sole source of truth
+    try:
+        db_job = Job.query.get(job_id)
+        job = db_job.to_dict() if db_job else None
+    except Exception:
+        job = None
+
     if not job:
         return jsonify({'error': 'Job not found'}), 404
 
@@ -907,91 +934,68 @@ def download_results(job_id):
         return jsonify({'error': 'Job failed without producing results'}), 400
     
     output_file = job.get('output_file')
-    
-    # Try to find the file in multiple locations
+    results_dir = app.config.get('UPLOAD_FOLDER', 'results')
+    job_user_id = job.get('user_id') or 'unknown'
+
+    # Try to locate the file — check DB path first, then per-job dir, then flat results dir
     if not output_file or not os.path.exists(output_file):
-        # Try to find in results directory
-        results_dir = app.config.get('UPLOAD_FOLDER', 'results')
-        possible_files = [
-            output_file,
-            os.path.join(results_dir, os.path.basename(output_file)) if output_file else None,
-            os.path.join(results_dir, f"{job_id}_{job['journal_name']}_results.csv"),
-        ]
-        
-        # Also check keyword-based directories
-        keyword_dir = job.get('keyword', '').replace(' ', '-')
-        if keyword_dir:
-            possible_files.append(os.path.join(keyword_dir, f"{job['journal_name']}_{keyword_dir}*.csv"))
-        
-        output_file = None
-        for pf in possible_files:
-            if pf and os.path.exists(pf):
-                output_file = pf
-                break
-            # Try glob pattern
-            if pf and '*' in pf:
-                import glob
-                matches = glob.glob(pf)
-                if matches:
-                    output_file = matches[0]
-                    break
-        
+        import glob as _glob
+        candidates = []
+        if output_file:
+            candidates.append(output_file)
+            candidates.append(os.path.join(results_dir, os.path.basename(output_file)))
+        # Phase-1 per-job dir
+        candidates += _glob.glob(os.path.join(results_dir, job_user_id, job_id, '*.csv'))
+        # Legacy flat dir
+        journal_slug = (job.get('journal') or '').replace(' ', '_')
+        candidates.append(os.path.join(results_dir, f"{job_id}_{journal_slug}_results.csv"))
+
+        output_file = next((p for p in candidates if p and os.path.exists(p)), None)
+
         if not output_file:
-            return jsonify({'error': f'Output file not found. Searched locations: {[p for p in possible_files if p]}'}), 404
-    
+            return jsonify({'error': 'Output file not found on server'}), 404
+
+    # Safe name components (guard against None)
+    journal_name_safe = (job.get('journal_name') or job.get('journal') or 'results').replace(' ', '_')
+    keyword_safe = (job.get('keyword') or 'unknown').replace(' ', '_')
+
     # If XLSX requested, generate it on-the-fly
     if format_type == 'xlsx':
         try:
-            # Read CSV
             df = pd.read_csv(output_file)
-            
-            # Create XLSX with stats sheet
             xlsx_path = output_file.replace('.csv', '.xlsx')
-            
+
+            # Detect actual column names dynamically
+            email_col = next((c for c in df.columns if c.lower() in ('email', 'emails', 'email_address')), None)
+            author_col = next((c for c in df.columns if c.lower() in ('author_name', 'name', 'author', 'names')), None)
+            url_col = next((c for c in df.columns if c.lower() in ('article_url', 'url', 'article url', 'link')), None)
+
             with pd.ExcelWriter(xlsx_path, engine='openpyxl') as writer:
-                # Write main results
                 df.to_excel(writer, sheet_name='Results', index=False)
-                
-                # Create stats sheet
-                stats_data = {
-                    'Metric': [
-                        'Total Records',
-                        'Unique Emails',
-                        'Unique Authors',
-                        'Unique URLs',
-                        'Scraper',
-                        'Keyword',
-                        'Date Range',
-                        'Completed At'
-                    ],
+                stats_df = pd.DataFrame({
+                    'Metric': ['Total Records', 'Unique Emails', 'Unique Authors',
+                               'Unique URLs', 'Scraper', 'Keyword', 'Date Range', 'Completed At'],
                     'Value': [
                         len(df),
-                        df['emails'].nunique() if 'emails' in df.columns else 'N/A',
-                        df['Names'].nunique() if 'Names' in df.columns else df['Author'].nunique() if 'Author' in df.columns else 'N/A',
-                        df['URL'].nunique() if 'URL' in df.columns else 'N/A',
+                        df[email_col].nunique() if email_col else job.get('unique_emails', 'N/A'),
+                        df[author_col].nunique() if author_col else job.get('unique_authors', 'N/A'),
+                        df[url_col].nunique() if url_col else job.get('unique_links', 'N/A'),
                         job.get('journal_name', 'Unknown'),
                         job.get('keyword', 'Unknown'),
                         f"{job.get('start_date', 'N/A')} to {job.get('end_date', 'N/A')}",
-                        job.get('end_time', 'N/A')
+                        job.get('end_time', 'N/A'),
                     ]
-                }
-                stats_df = pd.DataFrame(stats_data)
+                })
                 stats_df.to_excel(writer, sheet_name='Statistics', index=False)
-            
-            return send_file(
-                xlsx_path,
-                as_attachment=True,
-                download_name=f"{job['journal_name']}_{job['keyword'].replace(' ', '_')}_results.xlsx"
-            )
+
+            return send_file(xlsx_path, as_attachment=True,
+                             download_name=f"{journal_name_safe}_{keyword_safe}_results.xlsx")
         except Exception as e:
             return jsonify({'error': f'Failed to generate XLSX: {str(e)}'}), 500
-    
+
     # Return CSV
-    return send_file(
-        output_file,
-        as_attachment=True,
-        download_name=f"{job['journal_name']}_{job['keyword'].replace(' ', '_')}_results.csv"
-    )
+    return send_file(output_file, as_attachment=True,
+                     download_name=f"{journal_name_safe}_{keyword_safe}_results.csv")
 
 @app.route('/api/download-bulk')
 def download_bulk_results():
@@ -1005,30 +1009,14 @@ def download_bulk_results():
     current_user_id = session.get('user_id')
     is_admin = session.get('user_type') == 'admin'
     
-    # Get all completed jobs from active jobs and history
-    completed_jobs = []
-    
-    # Check active jobs
-    for job in active_jobs.values():
-        if job['status'] == 'completed' and job.get('output_file') and (is_admin or job.get('user_id') == current_user_id):
-            completed_jobs.append(job)
-    
-    # Check history
-    for job in job_history:
-        if job['status'] == 'completed' and job.get('output_file') and (is_admin or job.get('user_id') == current_user_id):
-            # Avoid duplicates
-            if not any(j['id'] == job['id'] for j in completed_jobs):
-                completed_jobs.append(job)
-
+    # DB is sole source of truth — no in-memory fallback needed
     try:
-        db_completed_query = Job.query.filter_by(status='completed') if is_admin else Job.query.filter_by(status='completed', user_id=current_user_id)
-        db_completed_jobs = db_completed_query.order_by(Job.created_at.desc()).limit(500).all()
-        for db_job in db_completed_jobs:
-            job = db_job.to_dict()
-            if not any(j['id'] == job['id'] for j in completed_jobs):
-                completed_jobs.append(job)
+        q = Job.query.filter_by(status='completed') if is_admin \
+            else Job.query.filter_by(status='completed', user_id=current_user_id)
+        completed_jobs = [j.to_dict() for j in q.order_by(Job.created_at.desc()).limit(500).all()]
     except Exception as e:
         print(f"[DB] Error fetching completed jobs for bulk download: {e}")
+        completed_jobs = []
     
     if not completed_jobs:
         return jsonify({'error': 'No completed jobs found'}), 404
@@ -1084,9 +1072,15 @@ def clear_history():
 @app.route('/health')
 def health():
     """Health check endpoint"""
-    active_count = len([j for j in active_jobs.values() if j['status'] in ['pending', 'running']])
+    try:
+        active_count = Job.query.filter(Job.status.in_(['pending', 'running'])).count()
+        db_ok = True
+    except Exception:
+        active_count = 0
+        db_ok = False
     return jsonify({
-        'status': 'healthy',
+        'status': 'healthy' if db_ok else 'degraded',
+        'db': 'ok' if db_ok else 'error',
         'timestamp': datetime.now().isoformat(),
         'active_jobs': active_count,
         'total_journals': len(JOURNALS),

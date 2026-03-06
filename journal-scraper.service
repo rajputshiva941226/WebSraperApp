@@ -1,0 +1,45 @@
+[Unit]
+Description=Journal Scraper Web Application
+After=network.target postgresql.service redis.service
+Wants=postgresql.service redis.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/journal-scraper
+
+# ---- Environment ----
+Environment=FLASK_ENV=production
+Environment=FLASK_DEBUG=0
+Environment=SECRET_KEY=CHANGE_THIS_TO_A_LONG_RANDOM_SECRET
+Environment=DATABASE_URL=postgresql://scraper_user:YOUR_PASSWORD@localhost/journal_scraper
+Environment=REDIS_URL=redis://localhost:6379/0
+Environment=UPLOAD_FOLDER=/var/www/journal-scraper/results
+Environment=DATA_FOLDER=/var/www/journal-scraper/data
+
+# ---- Process ----
+ExecStart=/var/www/journal-scraper/venv/bin/gunicorn \
+    --workers 2 \
+    --threads 4 \
+    --worker-class gthread \
+    --timeout 120 \
+    --bind 0.0.0.0:5000 \
+    --access-logfile /var/log/journal-scraper/access.log \
+    --error-logfile /var/log/journal-scraper/error.log \
+    --capture-output \
+    app:app
+
+ExecReload=/bin/kill -s HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=journal-scraper
+
+# ---- Security ----
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

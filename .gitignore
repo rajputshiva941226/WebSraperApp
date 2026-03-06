@@ -130,3 +130,15 @@ package-lock.json
 
 # Migration backups
 migrate_backup/
+
+# Environment secrets — never commit
+.env
+
+# Celery / Redis
+celerybeat-schedule
+celerybeat.pid
+*.pid
+
+# PostgreSQL dumps
+*.dump
+*.sql.gz

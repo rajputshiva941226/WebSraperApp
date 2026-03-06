@@ -141,20 +141,12 @@ def append_scraped_results():
     if not job_id:
         return jsonify({'error': 'Job ID is required'}), 400
     
-    # Import from app.py context
-    from app import active_jobs, job_history
-    
-    # Find job
-    job = active_jobs.get(job_id)
-    if not job:
-        for hist_job in job_history:
-            if hist_job.get('id') == job_id:
-                job = hist_job
-                break
-    
-    if not job:
+    from models import Job as JobModel
+    db_job = JobModel.query.get(job_id)
+    if not db_job:
         return jsonify({'error': 'Job not found'}), 404
-    
+    job = db_job.to_dict()
+
     output_file = job.get('output_file')
     if not output_file or not os.path.exists(output_file):
         return jsonify({'error': 'Output file not found'}), 404

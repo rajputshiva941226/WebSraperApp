@@ -54,7 +54,7 @@ class User(db.Model):
     
     # License information
     license_type = db.Column(db.String(50), default='single')  # 'single', 'multi'
-    machine_id = db.Column(db.String(200), unique=True, nullable=True)  # For single-machine licenses
+    machine_id = db.Column(db.String(200), nullable=True, index=True)  # For single-machine licenses (not unique — PostgreSQL NULLs are distinct but causes ORM headaches)
     is_active = db.Column(db.Boolean, default=True)
     is_verified = db.Column(db.Boolean, default=False)
     allowed_scrapers = db.Column(db.Text, default='all')  # JSON list of allowed scrapers or 'all'
@@ -211,7 +211,7 @@ class MasterDatabase(db.Model):
     
     # Timestamps
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=lambda: datetime.utcnow())
     
     def to_dict(self):
         return {
@@ -399,8 +399,11 @@ def init_db(app):
     """Initialize database with app"""
     db.init_app(app)
     with app.app_context():
-        db.create_all()
-        print("Database tables created successfully")
+        try:
+            db.create_all()
+            print("Database tables created/verified successfully")
+        except Exception as e:
+            print(f"[DB] Warning during create_all: {e}")
 
 
 def create_admin_user(username, email, password):
