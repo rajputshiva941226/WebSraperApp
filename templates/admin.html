@@ -394,7 +394,7 @@
 
     <!-- Create User Modal -->
     <div id="createUserModal" class="modal">
-        <div class="modal-content">
+        <div class="modal-content" style="max-width:600px; max-height:90vh; overflow-y:auto;">
             <h3>Create New User</h3>
             <form method="POST" action="/admin/create-user">
                 <div class="form-group">
@@ -420,6 +420,26 @@
                 <div class="form-group">
                     <label>Initial Credits</label>
                     <input type="number" name="credits" value="100" min="0">
+                </div>
+                <div class="form-group">
+                    <label style="margin-bottom:10px; display:block;">Allowed Scrapers</label>
+                    <label style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+                        <input type="checkbox" name="all_scrapers" id="create_all_scrapers" checked onchange="toggleCreateAllScrapers()">
+                        <strong>Allow All Scrapers</strong>
+                    </label>
+                    <div id="create_scraper_checkboxes" style="display:none; border:1px solid #e2e8f0; border-radius:8px; padding:12px; display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+                        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="scrapers" value="bmj"> BMJ Journals</label>
+                        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="scrapers" value="cambridge"> Cambridge</label>
+                        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="scrapers" value="europepmc"> Europe PMC</label>
+                        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="scrapers" value="nature"> Nature</label>
+                        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="scrapers" value="springer"> Springer</label>
+                        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="scrapers" value="oxford"> Oxford Academic</label>
+                        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="scrapers" value="lippincott"> Lippincott</label>
+                        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="scrapers" value="sage"> SAGE Journals</label>
+                        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="scrapers" value="emerald"> Emerald</label>
+                        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="scrapers" value="mdpi"> MDPI</label>
+                        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="scrapers" value="pubmed"> PubMed</label>
+                    </div>
                 </div>
                 <div class="modal-actions">
                     <button type="button" class="btn" onclick="closeCreateUserModal()">Cancel</button>
@@ -509,6 +529,13 @@
 
         function closeCreateUserModal() {
             document.getElementById('createUserModal').classList.remove('active');
+        }
+
+        function toggleCreateAllScrapers() {
+            const allChecked = document.getElementById('create_all_scrapers').checked;
+            const box = document.getElementById('create_scraper_checkboxes');
+            box.style.display = allChecked ? 'none' : 'grid';
+            box.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = !allChecked);
         }
 
         function addCredits(userId, username) {

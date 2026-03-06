@@ -52,6 +52,15 @@ def create_user():
         return render_template('admin.html', users=users, 
             message='Username or email already exists', message_type='error')
     
+    # Get allowed scrapers
+    import json
+    scrapers = request.form.getlist('scrapers')
+    all_scrapers = request.form.get('all_scrapers') == 'on'
+    if all_scrapers or not scrapers:
+        allowed_scrapers = 'all'
+    else:
+        allowed_scrapers = json.dumps(scrapers)
+
     # Create user
     new_user = User(
         username=username,
@@ -61,7 +70,8 @@ def create_user():
         credits=credits,
         license_type='multi',  # Default to multi for admin-created users
         is_active=True,
-        is_verified=True
+        is_verified=True,
+        allowed_scrapers=allowed_scrapers
     )
     
     db.session.add(new_user)
@@ -76,7 +86,7 @@ def create_user():
 @admin_required
 def add_credits():
     """Add or deduct credits from a user with transaction logging"""
-    user_id = request.form.get('user_id', type=int)
+    user_id = request.form.get('user_id')
     amount = request.form.get('amount', type=int)
     reason = request.form.get('reason', 'Admin adjustment')
     
@@ -90,8 +100,7 @@ def add_credits():
         user_id=user.id,
         amount=amount,
         transaction_type='admin_adjustment',
-        description=f'{reason} (by admin: {session.get("username")})',
-        balance_after=user.credits + amount
+        description=f'{reason} (by admin: {session.get("username")})'
     )
     
     user.credits += amount
@@ -108,7 +117,7 @@ def add_credits():
         message=f'{action} {abs(amount)} credits for {user.username}', message_type='success')
 
 
-@admin_bp.route('/toggle-user/<int:user_id>')
+@admin_bp.route('/toggle-user/<user_id>')
 @admin_required
 def toggle_user(user_id):
     """Enable or disable a user"""
@@ -143,7 +152,7 @@ def toggle_user(user_id):
 def manage_scrapers():
     """Update user's allowed scrapers"""
     import json
-    user_id = request.form.get('user_id', type=int)
+    user_id = request.form.get('user_id')
     scrapers = request.form.getlist('scrapers')
     all_scrapers = request.form.get('all_scrapers') == 'on'
     
@@ -163,7 +172,7 @@ def manage_scrapers():
         message=f'Updated scraper permissions for {user.username}', message_type='success')
 
 
-@admin_bp.route('/delete-user/<int:user_id>')
+@admin_bp.route('/delete-user/<user_id>')
 @admin_required
 def delete_user(user_id):
     """Delete a user (soft delete or hard delete)"""

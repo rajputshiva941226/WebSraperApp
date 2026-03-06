@@ -172,8 +172,12 @@ class ScraperAdapter:
             elif scraper_type == 'pubmed':
                 # PubMed scraper has a run() method that returns results list
                 results = scraper.run()
-                # Save results to CSV
-                output_file = scraper.save_to_csv()
+                # Save results to CSV in the results directory
+                pubmed_output = os.path.join(
+                    self.output_dir,
+                    f"{self.job_id}_pubmed_results.csv"
+                )
+                output_file = scraper.save_to_csv(filename=pubmed_output)
                 if not output_file or not os.path.exists(output_file):
                     # Fallback: save using our own method
                     output_file = self._save_api_results(results, scraper_type)
@@ -208,7 +212,10 @@ class ScraperAdapter:
             self._report_progress(90, "Saving results...")
             
             # Handle output file paths for different scraper types
-            if scraper_type == 'europepmc':
+            if scraper_type == 'pubmed':
+                # Already saved to correct path in results dir
+                final_output = output_file or ""
+            elif scraper_type == 'europepmc':
                 # EuropePMC saves to current directory, move to results folder
                 if output_file and os.path.exists(output_file):
                     final_output = os.path.join(
@@ -231,7 +238,8 @@ class ScraperAdapter:
                 )
                 
                 if output_file and os.path.exists(output_file):
-                    os.rename(output_file, final_output)
+                    if os.path.abspath(output_file) != os.path.abspath(final_output):
+                        os.rename(output_file, final_output)
             
             self._report_progress(100, "Scraping completed")
             

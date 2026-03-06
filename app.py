@@ -15,7 +15,7 @@ from flask import Flask, render_template, request, jsonify, send_file, redirect,
 from werkzeug.utils import secure_filename
 import uuid
 from collections import defaultdict
-from models import db, init_db
+from models import db, init_db, Job
 from auth_routes import auth_bp
 from credit_routes import credit_bp
 from master_db_routes import master_db_bp
@@ -205,6 +205,30 @@ def update_journal_metrics(journal, job_data):
     metrics['last_run'] = datetime.now().isoformat()
     save_metrics()
 
+def _update_job_in_db(job_id, updates):
+    """Helper to persist job updates to database"""
+    try:
+        with app.app_context():
+            db_job = Job.query.get(job_id)
+            if db_job:
+                for key, val in updates.items():
+                    if hasattr(db_job, key):
+                        if key in ('start_time', 'end_time') and isinstance(val, str):
+                            try:
+                                setattr(db_job, key, datetime.fromisoformat(val))
+                            except Exception:
+                                pass
+                        else:
+                            setattr(db_job, key, val)
+                db.session.commit()
+    except Exception as e:
+        print(f"[DB] Failed to update job {job_id}: {e}")
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+
+
 def run_scraper_task(job_id, journal, keyword, start_date, end_date, conference_name='default', mesh_type='all', delay=0):
     """Background task to run the scraper with progress tracking"""
     
@@ -232,6 +256,7 @@ def run_scraper_task(job_id, journal, keyword, start_date, end_date, conference_
         active_jobs[job_id]['status'] = 'running'
         active_jobs[job_id]['start_time'] = datetime.now().isoformat()
         active_jobs[job_id]['progress'] = 0
+        _update_job_in_db(job_id, {'status': 'running', 'start_time': datetime.now().isoformat(), 'progress': 0})
         
         # Use the unified scraper adapter
         from scraper_adapter import ScraperAdapter
@@ -271,6 +296,14 @@ def run_scraper_task(job_id, journal, keyword, start_date, end_date, conference_
         active_jobs[job_id]['unique_links'] = unique_links
         active_jobs[job_id]['progress'] = 100
         active_jobs[job_id]['message'] = f'✓ Completed! Found {unique_authors} unique authors, {unique_emails} unique emails'
+        _update_job_in_db(job_id, {
+            'status': 'completed', 'end_time': datetime.now().isoformat(),
+            'duration': duration, 'output_file': output_file,
+            'authors_count': authors_count, 'emails_count': emails_count,
+            'unique_authors': unique_authors, 'unique_emails': unique_emails,
+            'unique_links': unique_links, 'progress': 100,
+            'message': f'✓ Completed! Found {unique_authors} unique authors, {unique_emails} unique emails'
+        })
         
         # Update metrics
         update_journal_metrics(journal, active_jobs[job_id])
@@ -342,6 +375,19 @@ def run_scraper_task(job_id, journal, keyword, start_date, end_date, conference_
         else:
             active_jobs[job_id]['message'] = f'✗ Failed: {str(e)}'
             active_jobs[job_id]['has_partial_results'] = False
+        _update_job_in_db(job_id, {
+            'status': active_jobs[job_id]['status'],
+            'end_time': active_jobs[job_id]['end_time'],
+            'duration': duration, 'error': str(e), 'progress': 0,
+            'output_file': active_jobs[job_id].get('output_file'),
+            'authors_count': active_jobs[job_id].get('authors_count', 0),
+            'emails_count': active_jobs[job_id].get('emails_count', 0),
+            'unique_authors': active_jobs[job_id].get('unique_authors', 0),
+            'unique_emails': active_jobs[job_id].get('unique_emails', 0),
+            'unique_links': active_jobs[job_id].get('unique_links', 0),
+            'has_partial_results': active_jobs[job_id].get('has_partial_results', False),
+            'message': active_jobs[job_id]['message']
+        })
         
         # Update metrics
         update_journal_metrics(journal, active_jobs[job_id])
@@ -431,8 +477,22 @@ def scraper_page():
         return render_template('login.html', 
             error='Please login to access the scraper. Contact admin@email.com to create an account.')
     
-    enabled_journals = {k: v for k, v in JOURNALS.items() if v['enabled']}
-    return render_template('scraper.html', journals=enabled_journals)
+    import json
+    allowed_scrapers = session.get('allowed_scrapers', 'all')
+    enabled_journals = {}
+    for k, v in JOURNALS.items():
+        if not v['enabled']:
+            continue
+        if allowed_scrapers == 'all':
+            enabled_journals[k] = v
+        else:
+            try:
+                allowed_list = json.loads(allowed_scrapers)
+                if k in allowed_list:
+                    enabled_journals[k] = v
+            except Exception:
+                enabled_journals[k] = v
+    return render_template('scraper.html', journals=enabled_journals, allowed_scrapers=allowed_scrapers)
 
 @app.route('/dashboard')
 def dashboard():
@@ -450,9 +510,40 @@ def dashboard():
     
     success_rate = (total_successful / total_jobs * 100) if total_jobs > 0 else 0
     
-    # Get recent jobs
-    recent_jobs = sorted(job_history[-10:], key=lambda x: x.get('created_at', ''), reverse=True)
-    
+    # Get recent jobs from DB (persistent) + in-memory active jobs
+    try:
+        db_recent = Job.query.order_by(Job.created_at.desc()).limit(10).all()
+        db_recent_dicts = [j.to_dict() for j in db_recent]
+    except Exception:
+        db_recent_dicts = []
+    # Merge with in-memory for live progress
+    seen = set()
+    recent_jobs = []
+    for job in list(active_jobs.values()) + db_recent_dicts:
+        jid = job.get('id')
+        if jid and jid not in seen:
+            recent_jobs.append(job)
+            seen.add(jid)
+    recent_jobs = sorted(recent_jobs, key=lambda x: x.get('created_at', ''), reverse=True)[:10]
+
+    # Also pull stats from DB for accuracy
+    try:
+        from sqlalchemy import func
+        db_total = Job.query.count()
+        db_completed = Job.query.filter_by(status='completed').count()
+        db_failed = Job.query.filter_by(status='failed').count()
+        db_authors = db.session.query(func.sum(Job.unique_authors)).scalar() or 0
+        db_emails = db.session.query(func.sum(Job.unique_emails)).scalar() or 0
+        if db_total > total_jobs:
+            total_jobs = db_total
+            total_successful = db_completed
+            total_failed = db_failed
+            success_rate = (db_completed / db_total * 100) if db_total > 0 else 0
+            total_authors = db_authors
+            total_emails = db_emails
+    except Exception:
+        pass
+
     stats = {
         'total_jobs': total_jobs,
         'successful_jobs': total_successful,
@@ -506,18 +597,20 @@ def start_scraping():
         # Create job entries for each journal
         job_ids = []
         selenium_count = 0  # Track selenium scrapers for delay
+        user_id = session.get('user_id')
         
         for idx, journal in enumerate(journals):
             # Generate unique job ID
             job_id = str(uuid.uuid4())
             job_ids.append(job_id)
             
-            # Create job entry
+            # Create job entry in memory
             active_jobs[job_id] = {
                 'id': job_id,
                 'journal': journal,
                 'journal_name': JOURNALS[journal]['name'],
                 'keyword': data['keyword'],
+                'conference': conference_name,
                 'conference_name': conference_name,
                 'mesh_type': mesh_type if journal == 'pubmed' else None,
                 'start_date': data['start_date'],
@@ -535,6 +628,29 @@ def start_scraping():
                 'message': 'Job queued',
                 'paused': False
             }
+            
+            # Persist job to database
+            try:
+                db_job = Job(
+                    id=job_id,
+                    user_id=user_id,
+                    journal=journal,
+                    journal_name=JOURNALS[journal]['name'],
+                    keyword=data['keyword'],
+                    conference=conference_name,
+                    start_date=data['start_date'],
+                    end_date=data['end_date'],
+                    mesh_type=mesh_type if journal == 'pubmed' else None,
+                    status='pending',
+                    progress=0,
+                    message='Job queued',
+                    created_at=datetime.utcnow()
+                )
+                db.session.add(db_job)
+                db.session.commit()
+            except Exception as db_err:
+                print(f"[DB] Failed to save job to DB: {db_err}")
+                db.session.rollback()
             
             # Initialize stop flag
             job_stop_flags[job_id] = False
@@ -592,31 +708,54 @@ def job_progress(job_id):
 @app.route('/api/job-status/<job_id>')
 def job_status(job_id):
     """Get the status of a scraping job"""
-    if job_id not in active_jobs:
-        # Check history
-        for job in job_history:
-            if job.get('id') == job_id:
-                return jsonify(job)
-        return jsonify({'error': 'Job not found'}), 404
-    
-    return jsonify(active_jobs[job_id])
+    if job_id in active_jobs:
+        return jsonify(active_jobs[job_id])
+    # Check history
+    for job in job_history:
+        if job.get('id') == job_id:
+            return jsonify(job)
+    # Check database
+    try:
+        db_job = Job.query.get(job_id)
+        if db_job:
+            return jsonify(db_job.to_dict())
+    except Exception:
+        pass
+    return jsonify({'error': 'Job not found'}), 404
 
 @app.route('/api/jobs')
 def list_jobs():
-    """List all jobs"""
-    # Combine active and recent history - include more history for completed/stopped jobs
-    all_jobs = list(active_jobs.values()) + job_history[-200:]  # Increased from 50 to 200
-    # Sort by created_at descending
-    all_jobs.sort(key=lambda x: x.get('created_at', ''), reverse=True)
-    # Deduplicate (active jobs take precedence)
-    seen_ids = set()
-    unique_jobs = []
-    for job in all_jobs:
-        if job['id'] not in seen_ids:
-            unique_jobs.append(job)
-            seen_ids.add(job['id'])
-    
-    return jsonify(unique_jobs[:200])  # Return last 200 jobs
+    """List all jobs - reads from DB for persistence, merges with in-memory for live progress"""
+    user_id = session.get('user_id')
+    user_type = session.get('user_type', 'external')
+
+    # Fetch from DB
+    try:
+        if user_type == 'admin':
+            db_jobs = Job.query.order_by(Job.created_at.desc()).limit(200).all()
+        else:
+            db_jobs = Job.query.filter_by(user_id=user_id).order_by(Job.created_at.desc()).limit(200).all()
+        db_job_dicts = {j.id: j.to_dict() for j in db_jobs}
+    except Exception as e:
+        print(f"[DB] Error fetching jobs: {e}")
+        db_job_dicts = {}
+
+    # Merge: in-memory (live progress) takes precedence over DB
+    merged = {}
+    for job_id, job in db_job_dicts.items():
+        merged[job_id] = job
+    for job_id, job in active_jobs.items():
+        if user_type == 'admin' or job.get('user_id') == user_id or job_id in db_job_dicts:
+            merged[job_id] = job
+
+    # Also include in-memory jobs not yet saved (edge case)
+    for job_id, job in active_jobs.items():
+        if job_id not in merged:
+            if user_type == 'admin' or job.get('conference') == session.get('username'):
+                merged[job_id] = job
+
+    result = sorted(merged.values(), key=lambda x: x.get('created_at', ''), reverse=True)
+    return jsonify(result[:200])
 
 @app.route('/api/stop-job/<job_id>', methods=['POST'])
 def stop_job(job_id):
@@ -659,6 +798,15 @@ def download_results(job_id):
             if hist_job.get('id') == job_id:
                 job = hist_job
                 break
+    
+    # If still not found, check database
+    if not job:
+        try:
+            db_job = Job.query.get(job_id)
+            if db_job:
+                job = db_job.to_dict()
+        except Exception:
+            pass
     
     if not job:
         return jsonify({'error': 'Job not found'}), 404

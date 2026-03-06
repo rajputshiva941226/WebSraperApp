@@ -63,6 +63,7 @@ def login():
     session['user_type'] = user.user_type
     session['credits'] = user.credits
     session['email'] = user.email
+    session['allowed_scrapers'] = user.allowed_scrapers or 'all'
     session.permanent = bool(remember)
     
     # Update last login
