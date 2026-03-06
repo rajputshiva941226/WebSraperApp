@@ -205,15 +205,15 @@ def update_journal_metrics(journal, job_data):
     metrics['last_run'] = datetime.now().isoformat()
     save_metrics()
 
-def _update_job_in_db(job_id, updates):
-    """Helper to persist job updates to database"""
+def _db_update(job_id, updates):
+    """Update a job row in DB from a background thread safely."""
     try:
         with app.app_context():
             db_job = Job.query.get(job_id)
             if db_job:
                 for key, val in updates.items():
                     if hasattr(db_job, key):
-                        if key in ('start_time', 'end_time') and isinstance(val, str):
+                        if key in ('start_time', 'end_time', 'last_heartbeat_at') and isinstance(val, str):
                             try:
                                 setattr(db_job, key, datetime.fromisoformat(val))
                             except Exception:
@@ -229,47 +229,103 @@ def _update_job_in_db(job_id, updates):
             pass
 
 
-def run_scraper_task(job_id, journal, keyword, start_date, end_date, conference_name='default', mesh_type='all', delay=0):
-    """Background task to run the scraper with progress tracking"""
-    
-    # Apply delay if specified (for staggered selenium scraper starts)
-    if delay > 0:
-        active_jobs[job_id]['message'] = f'Waiting {delay:.1f}s before starting...'
-        time.sleep(delay)
-    
-    start_time = time.time()
-    
-    def progress_callback(progress, status, current_url='', links_count=0, authors_count=0, emails_count=0):
-        """Callback to update job progress with stats"""
-        if job_stop_flags.get(job_id, False):
-            raise KeyboardInterrupt("Job stopped by user")
-        
-        active_jobs[job_id]['progress'] = progress
-        active_jobs[job_id]['message'] = status
-        active_jobs[job_id]['current_url'] = current_url
-        active_jobs[job_id]['links_count'] = links_count
-        active_jobs[job_id]['authors_count'] = authors_count
-        active_jobs[job_id]['emails_count'] = emails_count
-        print(f"[{job_id}] {progress}% - {status} (URL: {current_url}, Links: {links_count}, Authors: {authors_count}, Emails: {emails_count})")
-    
+def _is_stop_requested(job_id):
+    """Check DB for stop_requested flag (DB is source of truth)."""
+    # Also honour in-memory flag (set immediately by stop endpoint)
+    if job_stop_flags.get(job_id, False):
+        return True
     try:
-        active_jobs[job_id]['status'] = 'running'
-        active_jobs[job_id]['start_time'] = datetime.now().isoformat()
-        active_jobs[job_id]['progress'] = 0
-        _update_job_in_db(job_id, {'status': 'running', 'start_time': datetime.now().isoformat(), 'progress': 0})
-        
-        # Use the unified scraper adapter
+        with app.app_context():
+            db_job = Job.query.get(job_id)
+            if db_job and db_job.stop_requested:
+                job_stop_flags[job_id] = True
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def run_scraper_task(job_id, user_id, journal, keyword, start_date, end_date,
+                    conference_name='default', mesh_type='all', delay=0):
+    """Background task: fully DB-backed, survives logout/relogin."""
+
+    # Per-job isolated output directory
+    job_output_dir = os.path.join(app.config['UPLOAD_FOLDER'], user_id, job_id)
+    os.makedirs(job_output_dir, exist_ok=True)
+
+    # Apply stagger delay
+    if delay > 0:
+        _db_update(job_id, {'message': f'Waiting {delay:.1f}s before starting...'})
+        time.sleep(delay)
+
+    start_time = time.time()
+
+    # ------------------------------------------------------------------
+    # Heartbeat: update DB every 15 s so stuck-job detection works
+    # ------------------------------------------------------------------
+    _heartbeat_stop = threading.Event()
+
+    def _heartbeat_loop():
+        while not _heartbeat_stop.is_set():
+            _db_update(job_id, {'last_heartbeat_at': datetime.utcnow().isoformat()})
+            _heartbeat_stop.wait(15)
+
+    heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
+    heartbeat_thread.start()
+
+    # ------------------------------------------------------------------
+    # Progress callback — writes to both cache and DB
+    # ------------------------------------------------------------------
+    def progress_callback(progress, status, current_url='', links_count=0,
+                          authors_count=0, emails_count=0):
+        if _is_stop_requested(job_id):
+            raise KeyboardInterrupt('Job stopped by user')
+
+        # Keep live cache for smooth UI polling
+        if job_id in active_jobs:
+            active_jobs[job_id].update({
+                'progress': progress,
+                'message': status,
+                'current_url': current_url,
+                'links_count': links_count,
+                'authors_count': authors_count,
+                'emails_count': emails_count,
+            })
+
+        # Persist to DB every ~5 progress points to avoid thrashing
+        if progress % 5 == 0 or progress == 100:
+            _db_update(job_id, {
+                'progress': progress,
+                'message': status,
+                'current_url': current_url,
+                'links_count': links_count,
+                'authors_count': authors_count,
+                'emails_count': emails_count,
+                'last_heartbeat_at': datetime.utcnow().isoformat(),
+            })
+
+        print(f"[{job_id}] {progress}% - {status}")
+
+    # ------------------------------------------------------------------
+    # Main scraper execution
+    # ------------------------------------------------------------------
+    try:
+        _db_update(job_id, {
+            'status': 'running',
+            'start_time': datetime.utcnow().isoformat(),
+            'progress': 0,
+            'worker_task_id': str(threading.current_thread().ident),
+        })
+        if job_id in active_jobs:
+            active_jobs[job_id].update({'status': 'running', 'progress': 0})
+
         from scraper_adapter import ScraperAdapter
         from webdriver_manager.chrome import ChromeDriverManager
-        
-        # Get driver path
+
         driver_path = ChromeDriverManager().install()
-        
-        # Initialize adapter with progress callback
-        adapter = ScraperAdapter(job_id=job_id, output_dir=app.config['UPLOAD_FOLDER'])
+        adapter = ScraperAdapter(job_id=job_id, output_dir=job_output_dir)
         adapter.set_progress_callback(progress_callback)
-        
-        # Run the scraper with conference name and mesh type
+
         output_file, summary = adapter.run_scraper(
             scraper_type=journal,
             keyword=keyword,
@@ -279,122 +335,93 @@ def run_scraper_task(job_id, journal, keyword, start_date, end_date, conference_
             conference_name=conference_name,
             mesh_type=mesh_type
         )
-        
-        # Count results with unique counts
-        authors_count, emails_count, unique_authors, unique_emails, unique_links = count_results_detailed(output_file)
-        
+
+        authors_count, emails_count, unique_authors, unique_emails, unique_links = \
+            count_results_detailed(output_file)
         duration = time.time() - start_time
-        
-        active_jobs[job_id]['status'] = 'completed'
-        active_jobs[job_id]['end_time'] = datetime.now().isoformat()
-        active_jobs[job_id]['duration'] = duration
-        active_jobs[job_id]['output_file'] = output_file
-        active_jobs[job_id]['authors_count'] = authors_count
-        active_jobs[job_id]['emails_count'] = emails_count
-        active_jobs[job_id]['unique_authors'] = unique_authors
-        active_jobs[job_id]['unique_emails'] = unique_emails
-        active_jobs[job_id]['unique_links'] = unique_links
-        active_jobs[job_id]['progress'] = 100
-        active_jobs[job_id]['message'] = f'✓ Completed! Found {unique_authors} unique authors, {unique_emails} unique emails'
-        _update_job_in_db(job_id, {
-            'status': 'completed', 'end_time': datetime.now().isoformat(),
-            'duration': duration, 'output_file': output_file,
-            'authors_count': authors_count, 'emails_count': emails_count,
-            'unique_authors': unique_authors, 'unique_emails': unique_emails,
-            'unique_links': unique_links, 'progress': 100,
-            'message': f'✓ Completed! Found {unique_authors} unique authors, {unique_emails} unique emails'
+        msg = f'\u2713 Completed! Found {unique_authors} unique authors, {unique_emails} unique emails'
+
+        _db_update(job_id, {
+            'status': 'completed',
+            'end_time': datetime.utcnow().isoformat(),
+            'duration': duration,
+            'output_file': output_file,
+            'authors_count': authors_count,
+            'emails_count': emails_count,
+            'unique_authors': unique_authors,
+            'unique_emails': unique_emails,
+            'unique_links': unique_links,
+            'progress': 100,
+            'message': msg,
         })
-        
-        # Update metrics
-        update_journal_metrics(journal, active_jobs[job_id])
-        
-        # Add to history
-        job_history.append(dict(active_jobs[job_id]))
-        save_metrics()
-        
+
+        if job_id in active_jobs:
+            active_jobs[job_id].update({
+                'status': 'completed', 'progress': 100, 'message': msg,
+                'output_file': output_file,
+                'unique_authors': unique_authors, 'unique_emails': unique_emails,
+            })
+
+    except KeyboardInterrupt:
+        # Cooperative stop
+        duration = time.time() - start_time
+        _db_update(job_id, {
+            'status': 'stopped',
+            'end_time': datetime.utcnow().isoformat(),
+            'duration': duration,
+            'message': 'Job stopped by user',
+            'progress': 0,
+        })
+        if job_id in active_jobs:
+            active_jobs[job_id].update({'status': 'stopped', 'message': 'Job stopped by user'})
+
     except Exception as e:
         duration = time.time() - start_time
-        
-        # Check for partial results even on failure
+
+        # Look for partial results in the per-job output dir
         partial_output_file = None
-        partial_stats = {'authors': 0, 'emails': 0, 'unique_authors': 0, 'unique_emails': 0, 'unique_links': 0}
-        
-        # Try to find any CSV files that may have been created
         try:
-            # Check in results directory
-            results_dir = app.config['UPLOAD_FOLDER']
-            possible_files = [
-                os.path.join(results_dir, f"{job_id}_{journal}_results.csv"),
-                os.path.join(results_dir, f"{job_id}_{JOURNALS[journal]['name'].replace(' ', '_')}_results.csv")
-            ]
-            
-            # Also check keyword-based directories that scrapers might create
-            keyword_dir = keyword.replace(' ', '-')
-            if os.path.exists(keyword_dir):
-                import glob
-                keyword_files = glob.glob(os.path.join(keyword_dir, f"*{journal}*.csv"))
-                possible_files.extend(keyword_files)
-            
-            # Find the first existing file
-            for pf in possible_files:
-                if pf and os.path.exists(pf):
-                    partial_output_file = pf
-                    break
-            
-            # If we found a partial file, calculate stats
-            if partial_output_file:
-                authors_count, emails_count, unique_authors, unique_emails, unique_links = count_results_detailed(partial_output_file)
-                partial_stats = {
-                    'authors': authors_count,
-                    'emails': emails_count,
-                    'unique_authors': unique_authors,
-                    'unique_emails': unique_emails,
-                    'unique_links': unique_links
-                }
-                print(f"[{job_id}] Found partial results: {unique_authors} authors, {unique_emails} emails, {unique_links} links")
-        except Exception as partial_error:
-            print(f"[{job_id}] Error checking for partial results: {partial_error}")
-        
-        # Update job status with error and partial results
-        active_jobs[job_id]['status'] = 'failed'
-        active_jobs[job_id]['end_time'] = datetime.now().isoformat()
-        active_jobs[job_id]['duration'] = duration
-        active_jobs[job_id]['error'] = str(e)
-        active_jobs[job_id]['progress'] = 0
-        
-        # If we have partial results, include them
-        if partial_output_file and partial_stats['unique_emails'] > 0:
-            active_jobs[job_id]['output_file'] = partial_output_file
-            active_jobs[job_id]['authors_count'] = partial_stats['authors']
-            active_jobs[job_id]['emails_count'] = partial_stats['emails']
-            active_jobs[job_id]['unique_authors'] = partial_stats['unique_authors']
-            active_jobs[job_id]['unique_emails'] = partial_stats['unique_emails']
-            active_jobs[job_id]['unique_links'] = partial_stats['unique_links']
-            active_jobs[job_id]['has_partial_results'] = True
-            active_jobs[job_id]['message'] = f'⚠️ Failed with partial results: {str(e)[:100]}... | Found {partial_stats["unique_emails"]} emails, {partial_stats["unique_authors"]} authors'
+            import glob
+            csv_files = glob.glob(os.path.join(job_output_dir, '*.csv'))
+            if csv_files:
+                partial_output_file = csv_files[0]
+        except Exception:
+            pass
+
+        if partial_output_file:
+            pa, pe, pua, pue, pul = count_results_detailed(partial_output_file)
+            has_partial = pue > 0
+            msg = (f'\u26a0\ufe0f Failed with partial results: {str(e)[:100]}... '
+                   f'| Found {pue} emails, {pua} authors') if has_partial else f'\u2717 Failed: {str(e)}'
+            _db_update(job_id, {
+                'status': 'failed', 'end_time': datetime.utcnow().isoformat(),
+                'duration': duration, 'error': str(e), 'progress': 0,
+                'output_file': partial_output_file if has_partial else None,
+                'authors_count': pa, 'emails_count': pe,
+                'unique_authors': pua, 'unique_emails': pue, 'unique_links': pul,
+                'has_partial_results': has_partial, 'message': msg,
+            })
         else:
-            active_jobs[job_id]['message'] = f'✗ Failed: {str(e)}'
-            active_jobs[job_id]['has_partial_results'] = False
-        _update_job_in_db(job_id, {
-            'status': active_jobs[job_id]['status'],
-            'end_time': active_jobs[job_id]['end_time'],
-            'duration': duration, 'error': str(e), 'progress': 0,
-            'output_file': active_jobs[job_id].get('output_file'),
-            'authors_count': active_jobs[job_id].get('authors_count', 0),
-            'emails_count': active_jobs[job_id].get('emails_count', 0),
-            'unique_authors': active_jobs[job_id].get('unique_authors', 0),
-            'unique_emails': active_jobs[job_id].get('unique_emails', 0),
-            'unique_links': active_jobs[job_id].get('unique_links', 0),
-            'has_partial_results': active_jobs[job_id].get('has_partial_results', False),
-            'message': active_jobs[job_id]['message']
-        })
-        
-        # Update metrics
-        update_journal_metrics(journal, active_jobs[job_id])
-        
-        # Add to history
-        job_history.append(dict(active_jobs[job_id]))
-        save_metrics()
+            msg = f'\u2717 Failed: {str(e)}'
+            _db_update(job_id, {
+                'status': 'failed', 'end_time': datetime.utcnow().isoformat(),
+                'duration': duration, 'error': str(e), 'progress': 0,
+                'has_partial_results': False, 'message': msg,
+            })
+
+        if job_id in active_jobs:
+            active_jobs[job_id].update({'status': 'failed', 'message': msg})
+
+    finally:
+        _heartbeat_stop.set()
+        # Clean up in-memory cache entry after a short delay (keep for UI polling)
+        def _cleanup():
+            time.sleep(30)
+            active_jobs.pop(job_id, None)
+            job_stop_flags.pop(job_id, None)
+            job_threads.pop(job_id, None)
+        threading.Thread(target=_cleanup, daemon=True).start()
+
 
 def count_results(filepath):
     """Count authors and emails in the result file"""
@@ -702,7 +729,7 @@ def start_scraping():
             # Start scraping in background thread with delay
             thread = threading.Thread(
                 target=run_scraper_task,
-                args=(job_id, journal, data['keyword'], data['start_date'], data['end_date'], 
+                args=(job_id, user_id, journal, data['keyword'], data['start_date'], data['end_date'],
                       conference_name, mesh_type, delay)
             )
             thread.daemon = True
@@ -726,65 +753,71 @@ def start_scraping():
 
 @app.route('/api/jobs')
 def list_jobs():
-    """List jobs - admins see all, regular users see only their own"""
+    """List jobs - DB only, admins see all, regular users see only their own"""
     if 'user_id' not in session:
         return jsonify({'error': 'Not authenticated'}), 401
 
     user_id = session.get('user_id')
-    user_type = session.get('user_type', 'external')
-    is_admin = (user_type == 'admin')
+    is_admin = (session.get('user_type', 'external') == 'admin')
 
-    # Fetch from DB (filtered)
     try:
-        if is_admin:
-            db_jobs = Job.query.order_by(Job.created_at.desc()).limit(200).all()
-        else:
-            db_jobs = Job.query.filter_by(user_id=user_id).order_by(Job.created_at.desc()).limit(200).all()
-        db_job_dicts = {j.id: j.to_dict() for j in db_jobs}
+        q = Job.query if is_admin else Job.query.filter_by(user_id=user_id)
+        db_jobs = q.order_by(Job.created_at.desc()).limit(200).all()
+        result = [j.to_dict() for j in db_jobs]
     except Exception as e:
         print(f"[DB] Error fetching jobs: {e}")
-        db_job_dicts = {}
+        result = []
 
-    # Merge with in-memory for live progress, respecting user filter
-    merged = dict(db_job_dicts)
-    for job_id_key, job in active_jobs.items():
-        if is_admin or job.get('user_id') == user_id:
-            merged[job_id_key] = job
+    # Overlay live-cache fields (progress, message, current_url) for running jobs
+    live_map = {jid: j for jid, j in active_jobs.items()
+                if is_admin or j.get('user_id') == user_id}
+    for item in result:
+        if item['id'] in live_map:
+            live = live_map[item['id']]
+            item['progress'] = live.get('progress', item.get('progress', 0))
+            item['message'] = live.get('message', item.get('message', ''))
+            item['current_url'] = live.get('current_url', item.get('current_url', ''))
+            item['authors_count'] = live.get('authors_count', item.get('authors_count', 0))
+            item['emails_count'] = live.get('emails_count', item.get('emails_count', 0))
+            item['links_count'] = live.get('links_count', item.get('links_count', 0))
 
-    result = sorted(merged.values(), key=lambda x: x.get('created_at', ''), reverse=True)
-    return jsonify(result[:200])
+    return jsonify(result)
 
 
 @app.route('/api/job-progress/<job_id>')
 def job_progress(job_id):
-    """Get progress of a running job"""
-    if job_id not in active_jobs:
-        return jsonify({'error': 'Job not found'}), 404
-    
-    job = active_jobs[job_id]
-    return jsonify({
-        'id': job_id,
-        'status': job.get('status'),
-        'progress': job.get('progress', 0),
-        'message': job.get('message', ''),
-        'authors_count': job.get('authors_count', 0),
-        'emails_count': job.get('emails_count', 0)
-    })
+    """Get progress of a running job - DB + live cache overlay"""
+    try:
+        db_job = Job.query.get(job_id)
+        if not db_job:
+            return jsonify({'error': 'Job not found'}), 404
+        data = db_job.to_dict()
+        # Overlay live cache for smoother progress updates
+        if job_id in active_jobs:
+            live = active_jobs[job_id]
+            data['progress'] = live.get('progress', data.get('progress', 0))
+            data['message'] = live.get('message', data.get('message', ''))
+            data['current_url'] = live.get('current_url', data.get('current_url', ''))
+            data['authors_count'] = live.get('authors_count', data.get('authors_count', 0))
+            data['emails_count'] = live.get('emails_count', data.get('emails_count', 0))
+            data['links_count'] = live.get('links_count', data.get('links_count', 0))
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/job-status/<job_id>')
 def job_status(job_id):
-    """Get the status of a scraping job"""
-    if job_id in active_jobs:
-        return jsonify(active_jobs[job_id])
-    # Check history
-    for job in job_history:
-        if job.get('id') == job_id:
-            return jsonify(job)
-    # Check database
+    """Get the status of a scraping job - DB primary source"""
     try:
         db_job = Job.query.get(job_id)
         if db_job:
-            return jsonify(db_job.to_dict())
+            data = db_job.to_dict()
+            if job_id in active_jobs:
+                live = active_jobs[job_id]
+                data['progress'] = live.get('progress', data.get('progress', 0))
+                data['message'] = live.get('message', data.get('message', ''))
+                data['current_url'] = live.get('current_url', '')
+            return jsonify(data)
     except Exception:
         pass
     return jsonify({'error': 'Job not found'}), 404
@@ -792,37 +825,39 @@ def job_status(job_id):
 
 @app.route('/api/stop-job/<job_id>', methods=['POST'])
 def stop_job(job_id):
-    """Stop a running job"""
-    # Check active_jobs first
-    if job_id in active_jobs:
-        job = active_jobs[job_id]
-        if job['status'] not in ['running', 'pending']:
-            return jsonify({'error': 'Can only stop running or pending jobs'}), 400
-        job_stop_flags[job_id] = True
-        job['status'] = 'stopped'
-        job['end_time'] = datetime.now().isoformat()
-        job['message'] = 'Job stopped by user'
-        job_history.append(dict(active_jobs[job_id]))
-        save_metrics()
-        _update_job_in_db(job_id, {'status': 'stopped', 'end_time': datetime.now().isoformat(), 'message': 'Job stopped by user'})
-        return jsonify({'success': True, 'message': f'Job {job_id} stopped successfully'})
+    """Stop a running job - sets stop_requested flag in DB (cooperative stop)"""
+    if 'user_id' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
 
-    # Not in memory - check DB
+    current_user_id = session.get('user_id')
+    is_admin = session.get('user_type') == 'admin'
+
     try:
         db_job = Job.query.get(job_id)
-        if db_job:
-            if db_job.status not in ['running', 'pending']:
-                return jsonify({'error': f'Job already {db_job.status}'}), 400
-            db_job.status = 'stopped'
-            db_job.end_time = datetime.utcnow()
-            db_job.message = 'Job stopped by user'
-            db.session.commit()
-            job_stop_flags[job_id] = True
-            return jsonify({'success': True, 'message': f'Job {job_id} stopped successfully'})
+        if not db_job:
+            return jsonify({'error': 'Job not found'}), 404
+
+        if not is_admin and db_job.user_id != current_user_id:
+            return jsonify({'error': 'Access denied'}), 403
+
+        if db_job.status not in ['running', 'pending']:
+            return jsonify({'error': f'Job already {db_job.status}'}), 400
+
+        # Set DB flag - worker checks this cooperatively
+        db_job.stop_requested = True
+        db_job.message = 'Stop requested...'
+        db.session.commit()
+
+        # Also set in-memory flag for immediate effect on current thread
+        job_stop_flags[job_id] = True
+        if job_id in active_jobs:
+            active_jobs[job_id]['message'] = 'Stop requested...'
+
+        return jsonify({'success': True, 'message': f'Stop requested for job {job_id}'})
     except Exception as e:
         print(f"[DB] Error stopping job: {e}")
-
-    return jsonify({'error': 'Job not found'}), 404
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/download/<job_id>')
 def download_results(job_id):
@@ -1127,6 +1162,41 @@ else:
 
 # Initialize on startup
 load_metrics()
+
+
+def recover_stuck_jobs():
+    """
+    On startup: mark any jobs that were 'running'/'pending' when the server
+    last crashed/restarted as 'interrupted'.  Workers for those jobs are gone,
+    so leaving them as 'running' would confuse the UI forever.
+    Also pre-populate job_stop_flags so the in-memory cooperative-stop check
+    picks up any stop_requested=True rows that were set before restart.
+    """
+    try:
+        with app.app_context():
+            stuck = Job.query.filter(Job.status.in_(['running', 'pending'])).all()
+            for job in stuck:
+                # If last heartbeat is older than 2 minutes (or never set), worker is gone
+                stale = True
+                if job.last_heartbeat_at:
+                    age = (datetime.utcnow() - job.last_heartbeat_at).total_seconds()
+                    stale = age > 120
+                if stale:
+                    job.status = 'failed'
+                    job.message = 'Interrupted: server restarted while job was running'
+                    job.error = 'Worker process lost on server restart'
+                    print(f"[Recovery] Marked stuck job {job.id[:8]}... ({job.journal}) as failed")
+            # Pre-load any pending stop flags
+            stop_jobs = Job.query.filter_by(stop_requested=True).all()
+            for job in stop_jobs:
+                job_stop_flags[job.id] = True
+            db.session.commit()
+            print(f"[Recovery] Checked {len(stuck)} stuck jobs, loaded {len(stop_jobs)} stop flags")
+    except Exception as e:
+        print(f"[Recovery] Error during startup recovery: {e}")
+
+
+recover_stuck_jobs()
 
 if __name__ == '__main__':
     print("=" * 80)

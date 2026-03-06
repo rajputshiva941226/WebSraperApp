@@ -316,6 +316,11 @@ class Job(db.Model):
     
     # Flags
     has_partial_results = db.Column(db.Boolean, default=False)
+    stop_requested = db.Column(db.Boolean, default=False)
+
+    # Worker tracking
+    worker_task_id = db.Column(db.String(36))
+    last_heartbeat_at = db.Column(db.DateTime)
     
     def to_dict(self):
         return {
@@ -344,7 +349,10 @@ class Job(db.Model):
             'start_time': self.start_time.isoformat() if self.start_time else None,
             'end_time': self.end_time.isoformat() if self.end_time else None,
             'duration': self.duration,
-            'has_partial_results': self.has_partial_results
+            'has_partial_results': self.has_partial_results,
+            'stop_requested': self.stop_requested,
+            'worker_task_id': self.worker_task_id,
+            'last_heartbeat_at': self.last_heartbeat_at.isoformat() if self.last_heartbeat_at else None
         }
 
 
