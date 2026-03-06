@@ -558,10 +558,40 @@ def dashboard():
         'active_jobs': active_count
     }
 
+    # Build per-user journal metrics from DB (not global in-memory which is shared across all users)
+    try:
+        from sqlalchemy import func as _func
+        user_journal_metrics = {}
+        for j_key in JOURNALS:
+            jq = Job.query.filter_by(journal=j_key) if is_admin else Job.query.filter_by(journal=j_key, user_id=user_id)
+            j_total = jq.count()
+            j_success = jq.filter_by(status='completed').count()
+            j_failed = jq.filter_by(status='failed').count() if is_admin else Job.query.filter_by(journal=j_key, user_id=user_id, status='failed').count()
+            j_authors = (db.session.query(_func.sum(Job.unique_authors)).filter(Job.journal == j_key) if is_admin
+                         else db.session.query(_func.sum(Job.unique_authors)).filter(Job.journal == j_key, Job.user_id == user_id)).scalar() or 0
+            j_emails = (db.session.query(_func.sum(Job.unique_emails)).filter(Job.journal == j_key) if is_admin
+                        else db.session.query(_func.sum(Job.unique_emails)).filter(Job.journal == j_key, Job.user_id == user_id)).scalar() or 0
+            j_avg_time_q = (db.session.query(_func.avg(Job.duration)).filter(Job.journal == j_key, Job.status == 'completed') if is_admin
+                            else db.session.query(_func.avg(Job.duration)).filter(Job.journal == j_key, Job.user_id == user_id, Job.status == 'completed'))
+            j_avg_time = j_avg_time_q.scalar() or 0
+            last_job = (Job.query.filter_by(journal=j_key) if is_admin else Job.query.filter_by(journal=j_key, user_id=user_id)
+                        ).order_by(Job.created_at.desc()).first()
+            user_journal_metrics[j_key] = {
+                'total_jobs': j_total,
+                'successful_jobs': j_success,
+                'failed_jobs': j_failed,
+                'total_authors_extracted': j_authors,
+                'total_emails_extracted': j_emails,
+                'avg_processing_time': round(j_avg_time / 60, 2) if j_avg_time else 0,
+                'last_run': last_job.created_at.isoformat() if last_job and last_job.created_at else None
+            }
+    except Exception:
+        user_journal_metrics = dict(journal_metrics)
+
     return render_template(
         'dashboard.html',
         journals=JOURNALS,
-        journal_metrics=dict(journal_metrics),
+        journal_metrics=user_journal_metrics,
         stats=stats,
         recent_jobs=recent_jobs
     )
@@ -611,6 +641,7 @@ def start_scraping():
             # Create job entry in memory
             active_jobs[job_id] = {
                 'id': job_id,
+                'user_id': user_id,
                 'journal': journal,
                 'journal_name': JOURNALS[journal]['name'],
                 'keyword': data['keyword'],
