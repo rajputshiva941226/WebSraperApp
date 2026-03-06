@@ -271,8 +271,10 @@ def _is_stop_requested(job_id):
 
 def run_scraper_task(job_id, user_id, journal, keyword, start_date, end_date,
                     conference_name='default', mesh_type='all', delay=0):
-    """Background task: fully DB-backed, survives logout/relogin."""
-
+    """
+    Background task for thread-based execution (fallback when Celery is not available).
+    When Celery is enabled, this is NOT used — celery_worker.run_scraper_task is used instead.
+    """
     # Per-job isolated output directory
     job_output_dir = os.path.join(app.config['UPLOAD_FOLDER'], user_id, job_id)
     os.makedirs(job_output_dir, exist_ok=True)
@@ -344,9 +346,16 @@ def run_scraper_task(job_id, user_id, journal, keyword, start_date, end_date,
             active_jobs[job_id].update({'status': 'running', 'progress': 0})
 
         from scraper_adapter import ScraperAdapter
-        from webdriver_manager.chrome import ChromeDriverManager
+        
+        # Only install ChromeDriver for Selenium-based scrapers
+        # API scrapers (europepmc, pubmed) don't need Chrome
+        api_scrapers = {'europepmc', 'pubmed'}
+        driver_path = None
+        
+        if journal not in api_scrapers:
+            from webdriver_manager.chrome import ChromeDriverManager
+            driver_path = ChromeDriverManager().install()
 
-        driver_path = ChromeDriverManager().install()
         adapter = ScraperAdapter(job_id=job_id, output_dir=job_output_dir)
         adapter.set_progress_callback(progress_callback)
 
