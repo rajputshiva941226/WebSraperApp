@@ -97,17 +97,34 @@ def count_results_detailed(filepath):
             unique_emails = set()
             unique_links = set()
             total_rows = 0
+            
             for row in reader:
                 total_rows += 1
-                author = row.get('Author_Name') or row.get('Name') or row.get('author_name') or ''
-                if author and author.strip() and author.strip() != 'N/A':
+                
+                # Try multiple column name variations for author
+                author = (row.get('Author_Name') or row.get('author_name') or 
+                         row.get('full_name') or row.get('Name') or 
+                         row.get('name') or row.get('first_name') or '')
+                if author and author.strip() and author.strip().lower() != 'n/a':
                     unique_authors.add(author.strip().lower())
-                email = row.get('Email') or row.get('email') or ''
-                if email and '@' in email and email.strip() != 'N/A':
+                
+                # Try multiple column name variations for email
+                email = (row.get('Email') or row.get('email') or 
+                        row.get('Email_Address') or row.get('email_address') or '')
+                if email and '@' in email and email.strip().lower() != 'n/a':
                     unique_emails.add(email.strip().lower())
-                link = row.get('Article_URL') or row.get('URL') or row.get('Article URL') or ''
-                if link and link.strip() and link.strip() != 'N/A':
+                
+                # Try multiple column name variations for URL/link
+                # Check: Article_URL, URL, Article URL, pub_url, link, article_url, doi
+                link = (row.get('Article_URL') or row.get('article_url') or 
+                       row.get('URL') or row.get('url') or 
+                       row.get('Article URL') or row.get('article url') or
+                       row.get('pub_url') or row.get('pub_URL') or
+                       row.get('link') or row.get('Link') or
+                       row.get('doi') or row.get('DOI') or '')
+                if link and link.strip() and link.strip().lower() != 'n/a':
                     unique_links.add(link.strip())
+        
         return total_rows, len(unique_emails), len(unique_authors), len(unique_emails), len(unique_links)
     except Exception as e:
         print(f"[CeleryWorker] Error counting results: {e}")
