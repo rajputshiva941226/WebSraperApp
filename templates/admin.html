@@ -279,6 +279,38 @@
             margin-top: 20px;
         }
 
+        .scraper-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 12px;
+            margin-top: 8px;
+        }
+
+        .scraper-grid label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 400;
+            cursor: pointer;
+            padding: 4px 6px;
+            border-radius: 4px;
+        }
+
+        .scraper-grid label:hover {
+            background: #f7fafc;
+        }
+
+        .scraper-grid input[type='checkbox'] {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+            border: 2px solid #e2e8f0;
+            flex-shrink: 0;
+        }
+
         .alert {
             padding: 15px;
             border-radius: 8px;
@@ -427,18 +459,18 @@
                         <input type="checkbox" name="all_scrapers" id="create_all_scrapers" checked onchange="toggleCreateAllScrapers()">
                         <strong>Allow All Scrapers</strong>
                     </label>
-                    <div id="create_scraper_checkboxes" style="display:none; border:1px solid #e2e8f0; border-radius:8px; padding:12px; grid-template-columns:1fr 1fr; gap:6px;">
-                        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="scrapers" value="bmj"> BMJ Journals</label>
-                        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="scrapers" value="cambridge"> Cambridge</label>
-                        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="scrapers" value="europepmc"> Europe PMC</label>
-                        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="scrapers" value="nature"> Nature</label>
-                        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="scrapers" value="springer"> Springer</label>
-                        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="scrapers" value="oxford"> Oxford Academic</label>
-                        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="scrapers" value="lippincott"> Lippincott</label>
-                        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="scrapers" value="sage"> SAGE Journals</label>
-                        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="scrapers" value="emerald"> Emerald</label>
-                        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="scrapers" value="mdpi"> MDPI</label>
-                        <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="scrapers" value="pubmed"> PubMed</label>
+                    <div id="create_scraper_checkboxes" class="scraper-grid" style="display:none;">
+                        <label><input type="checkbox" name="scrapers" value="bmj"> BMJ Journals</label>
+                        <label><input type="checkbox" name="scrapers" value="cambridge"> Cambridge</label>
+                        <label><input type="checkbox" name="scrapers" value="europepmc"> Europe PMC</label>
+                        <label><input type="checkbox" name="scrapers" value="nature"> Nature</label>
+                        <label><input type="checkbox" name="scrapers" value="springer"> Springer</label>
+                        <label><input type="checkbox" name="scrapers" value="oxford"> Oxford Academic</label>
+                        <label><input type="checkbox" name="scrapers" value="lippincott"> Lippincott</label>
+                        <label><input type="checkbox" name="scrapers" value="sage"> SAGE Journals</label>
+                        <label><input type="checkbox" name="scrapers" value="emerald"> Emerald</label>
+                        <label><input type="checkbox" name="scrapers" value="mdpi"> MDPI</label>
+                        <label><input type="checkbox" name="scrapers" value="pubmed"> PubMed</label>
                     </div>
                 </div>
                 <div class="modal-actions">
@@ -474,45 +506,29 @@
 
     <!-- Manage Scrapers Modal -->
     <div id="manageScrapersModal" class="modal">
-        <div class="modal-content">
+        <div class="modal-content" style="max-width:560px;">
             <h3>Manage Scrapers</h3>
             <form method="POST" action="/admin/manage-scrapers">
                 <input type="hidden" name="user_id" id="scrapers_user_id">
-                <p>Managing scrapers for: <strong id="scrapers_username"></strong></p>
-                <div class="form-group">
-                    <label>
+                <p style="margin-bottom:14px;">Managing scrapers for: <strong id="scrapers_username"></strong></p>
+                <div class="form-group" style="margin-bottom:10px;">
+                    <label style="display:flex;align-items:center;gap:8px;">
                         <input type="checkbox" id="all_scrapers" onchange="toggleAllScrapers()">
                         <strong>Allow All Scrapers</strong>
                     </label>
                 </div>
-                <div id="scraper_checkboxes">
-                    <div class="form-group">
-                        <label><input type="checkbox" name="scrapers" value="bmj"> BMJ Journals</label>
-                    </div>
-                    <div class="form-group">
-                        <label><input type="checkbox" name="scrapers" value="cambridge"> Cambridge University Press</label>
-                    </div>
-                    <div class="form-group">
-                        <label><input type="checkbox" name="scrapers" value="europepmc"> Europe PMC</label>
-                    </div>
-                    <div class="form-group">
-                        <label><input type="checkbox" name="scrapers" value="nature"> Nature</label>
-                    </div>
-                    <div class="form-group">
-                        <label><input type="checkbox" name="scrapers" value="springer"> Springer</label>
-                    </div>
-                    <div class="form-group">
-                        <label><input type="checkbox" name="scrapers" value="wiley"> Wiley</label>
-                    </div>
-                    <div class="form-group">
-                        <label><input type="checkbox" name="scrapers" value="emerald"> Emerald</label>
-                    </div>
-                    <div class="form-group">
-                        <label><input type="checkbox" name="scrapers" value="sage"> SAGE Journals</label>
-                    </div>
-                    <div class="form-group">
-                        <label><input type="checkbox" name="scrapers" value="pubmed"> PubMed</label>
-                    </div>
+                <div id="scraper_checkboxes" class="scraper-grid">
+                    <label><input type="checkbox" name="scrapers" value="bmj"> BMJ Journals</label>
+                    <label><input type="checkbox" name="scrapers" value="cambridge"> Cambridge</label>
+                    <label><input type="checkbox" name="scrapers" value="europepmc"> Europe PMC</label>
+                    <label><input type="checkbox" name="scrapers" value="nature"> Nature</label>
+                    <label><input type="checkbox" name="scrapers" value="springer"> Springer</label>
+                    <label><input type="checkbox" name="scrapers" value="oxford"> Oxford Academic</label>
+                    <label><input type="checkbox" name="scrapers" value="lippincott"> Lippincott</label>
+                    <label><input type="checkbox" name="scrapers" value="sage"> SAGE Journals</label>
+                    <label><input type="checkbox" name="scrapers" value="emerald"> Emerald</label>
+                    <label><input type="checkbox" name="scrapers" value="mdpi"> MDPI</label>
+                    <label><input type="checkbox" name="scrapers" value="pubmed"> PubMed</label>
                 </div>
                 <div class="modal-actions">
                     <button type="button" class="btn" onclick="closeManageScrapersModal()">Cancel</button>

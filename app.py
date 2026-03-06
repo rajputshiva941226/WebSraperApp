@@ -760,26 +760,36 @@ def list_jobs():
 @app.route('/api/stop-job/<job_id>', methods=['POST'])
 def stop_job(job_id):
     """Stop a running job"""
-    if job_id not in active_jobs:
-        return jsonify({'error': 'Job not found'}), 404
-    
-    job = active_jobs[job_id]
-    if job['status'] not in ['running', 'pending']:
-        return jsonify({'error': 'Can only stop running or pending jobs'}), 400
-    
-    job_stop_flags[job_id] = True
-    job['status'] = 'stopped'
-    job['end_time'] = datetime.now().isoformat()
-    job['message'] = 'Job stopped by user'
-    
-    # Add to history
-    job_history.append(dict(active_jobs[job_id]))
-    save_metrics()
-    
-    return jsonify({
-        'success': True,
-        'message': f'Job {job_id} stopped successfully'
-    })
+    # Check active_jobs first
+    if job_id in active_jobs:
+        job = active_jobs[job_id]
+        if job['status'] not in ['running', 'pending']:
+            return jsonify({'error': 'Can only stop running or pending jobs'}), 400
+        job_stop_flags[job_id] = True
+        job['status'] = 'stopped'
+        job['end_time'] = datetime.now().isoformat()
+        job['message'] = 'Job stopped by user'
+        job_history.append(dict(active_jobs[job_id]))
+        save_metrics()
+        _update_job_in_db(job_id, {'status': 'stopped', 'end_time': datetime.now().isoformat(), 'message': 'Job stopped by user'})
+        return jsonify({'success': True, 'message': f'Job {job_id} stopped successfully'})
+
+    # Not in memory - check DB
+    try:
+        db_job = Job.query.get(job_id)
+        if db_job:
+            if db_job.status not in ['running', 'pending']:
+                return jsonify({'error': f'Job already {db_job.status}'}), 400
+            db_job.status = 'stopped'
+            db_job.end_time = datetime.utcnow()
+            db_job.message = 'Job stopped by user'
+            db.session.commit()
+            job_stop_flags[job_id] = True
+            return jsonify({'success': True, 'message': f'Job {job_id} stopped successfully'})
+    except Exception as e:
+        print(f"[DB] Error stopping job: {e}")
+
+    return jsonify({'error': 'Job not found'}), 404
 
 @app.route('/api/download/<job_id>')
 def download_results(job_id):
