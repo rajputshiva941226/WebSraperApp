@@ -20,8 +20,74 @@ import sys
 import logging
 import importlib
 import inspect
+import shutil
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
+
+
+def _get_chrome_binary_path():
+    """
+    Find the Chrome/Chromium binary path on the current system.
+    Returns path string or None if not found.
+    """
+    candidates = [
+        # Linux (EC2 Ubuntu)
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+        '/usr/bin/chromium-browser',
+        '/usr/bin/chromium',
+        '/snap/bin/chromium',
+        # macOS
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        # Windows
+        r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+        r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    # Try shutil.which
+    for name in ('google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium'):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def _get_chromedriver_path():
+    """
+    Find chromedriver binary. Tries system path first, then webdriver_manager.
+    Returns path string.
+    """
+    # Check system path first (faster, no network needed)
+    system_driver = shutil.which('chromedriver')
+    if system_driver:
+        return system_driver
+    # Fall back to webdriver_manager
+    try:
+        from webdriver_manager.chrome import ChromeDriverManager
+        return ChromeDriverManager().install()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"ChromeDriverManager failed: {e}")
+        return None
+
+
+def _patch_uc_options(options):
+    """
+    Inject headless and server-safe arguments into undetected_chromedriver options.
+    """
+    args_to_add = [
+        '--headless=new',
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--window-size=1920,1080',
+    ]
+    existing = getattr(options, 'arguments', [])
+    for arg in args_to_add:
+        if arg not in existing:
+            options.add_argument(arg)
+    return options
 
 
 class ScraperAdapter:
@@ -119,7 +185,37 @@ class ScraperAdapter:
             
             # Initialize scraper with appropriate parameters
             self._report_progress(30, "Initializing scraper...")
-            
+
+            # Resolve Chrome binary and driver path for Selenium scrapers
+            chrome_binary = _get_chrome_binary_path()
+            if driver_path is None:
+                driver_path = _get_chromedriver_path()
+            self.logger.info(f"Chrome binary: {chrome_binary}, Driver: {driver_path}")
+
+            # Patch uc options on selenium-based scrapers via module-level monkey-patch
+            registry_type = self.SCRAPER_REGISTRY.get(scraper_type, {}).get('type', '')
+            if registry_type == 'selenium' and scraper_type != 'nature':
+                try:
+                    import undetected_chromedriver as _uc
+                    _orig_uc_init = _uc.Chrome.__init__
+
+                    def _patched_uc_init(self_uc, *a, **kw):
+                        # Inject options patches
+                        opts = kw.get('options') or (a[0] if a else None)
+                        if opts is not None:
+                            _patch_uc_options(opts)
+                        if chrome_binary and 'browser_executable_path' not in kw:
+                            kw['browser_executable_path'] = chrome_binary
+                        if driver_path and 'driver_executable_path' not in kw:
+                            kw['driver_executable_path'] = driver_path
+                        elif 'driver_executable_path' in kw and kw['driver_executable_path'] is None:
+                            kw['driver_executable_path'] = driver_path
+                        return _orig_uc_init(self_uc, *a, **kw)
+
+                    _uc.Chrome.__init__ = _patched_uc_init
+                except Exception as _patch_err:
+                    self.logger.warning(f"Could not patch uc.Chrome: {_patch_err}")
+
             # Different scrapers have different initialization signatures
             if scraper_type == 'pubmed':
                 # PubMed uses query, search_field, and date range in YYYY/MM/DD format

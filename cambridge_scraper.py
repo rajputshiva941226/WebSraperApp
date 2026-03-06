@@ -751,9 +751,8 @@ class CambridgeScraper:
         """Scrape article and write author data immediately to CSV."""
         self.logger.info(f"Cambridge ==> Scraping article: {article_url}")
         self.driver.get(article_url)
-        
+
         try:
-            # Wait for page content to load
             WebDriverWait(self.driver, 10).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, "dt.title, div.row.author"))
             )
@@ -762,59 +761,47 @@ class CambridgeScraper:
             return
 
         try:
-            # Locate and click the "Show author details" button
+            # Click "Show author details" if present
             try:
                 show_author_details_link = WebDriverWait(self.driver, 5).until(
                     EC.element_to_be_clickable((By.XPATH, "//a[@aria-controls='authors-details']"))
                 )
-                # Scroll to element and click
                 self.driver.execute_script("arguments[0].scrollIntoView(true);", show_author_details_link)
-                WebDriverWait(self.driver, 2).until(
-                    EC.visibility_of(show_author_details_link)
-                )
+                WebDriverWait(self.driver, 2).until(EC.visibility_of(show_author_details_link))
                 show_author_details_link.click()
                 self.logger.info("Cambridge ==> Clicked 'Show author details' link.")
-                
-                # Wait for author details to expand
                 WebDriverWait(self.driver, 5).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, "div#authors-details"))
                 )
             except Exception:
-                self.logger.warning("Cambridge ==> Show author details link not found. Attempting alternative scraping methods.")
+                self.logger.warning("Cambridge ==> Show author details link not found.")
 
             # Extract authors
             author_elements = self.driver.find_elements(By.CSS_SELECTOR, "dt.title")
-            author_names = [element.text.strip() for element in author_elements if element.text.strip()]
-            author_names = [name for name in author_names if name not in ["*", "Type", "Information", "Copyright"]]
+            author_names = [el.text.strip() for el in author_elements if el.text.strip()]
+            author_names = [n for n in author_names if n not in ["*", "Type", "Information", "Copyright"]]
+            starred_authors = [n for n in author_names if n.endswith("*")]
+            non_starred_authors = [n for n in author_names if not n.endswith("*")]
 
-            # Separate authors ending with "*"
-            starred_authors = [name for name in author_names if name.endswith("*")]
-            non_starred_authors = [name for name in author_names if not name.endswith("*")]
-
-            # Extract emails from `div.corresp`
-            email_container = self.driver.find_elements(By.CSS_SELECTOR, "div.corresp")
+            # Extract emails from div.corresp
             emails_from_corresp = []
-            if email_container:
-                for container in email_container:
-                    email_text = container.text.strip()
-                    emails_found = re.findall(r'[\w\.-]+@[\w\.-]+', email_text)
-                    emails_from_corresp.extend(emails_found)
+            for container in self.driver.find_elements(By.CSS_SELECTOR, "div.corresp"):
+                emails_from_corresp.extend(re.findall(r'[\w\.-]+@[\w\.-]+', container.text.strip()))
             emails_from_corresp = list(set(emails_from_corresp))
 
-            # Match and write starred authors immediately
+            # Match starred authors to corresp emails
             for author_name in starred_authors:
                 best_email = None
                 best_match_score = 0
                 if emails_from_corresp:
                     best_match = process.extractOne(author_name.strip("*"), emails_from_corresp, scorer=fuzz.token_sort_ratio)
                     if best_match:
-                        best_email, best_match_score = best_match
+                        best_email, best_match_score = best_match[0], best_match[1]
                 if best_email:
-                    # Write immediately to CSV
                     self.write_to_csv(directory, filename, [article_url, author_name.strip("*"), best_email, best_match_score])
                     self.logger.info(f"Cambridge ==> Written: {author_name.strip('*')} - {best_email}")
 
-            # Fallback method for non-starred authors
+            # Fallback for non-starred authors
             try:
                 email_spans = self.driver.find_elements(By.CSS_SELECTOR, "span[data-v-2edb8da6] > span[data-v-2edb8da6]")
                 fallback_emails = []
@@ -822,25 +809,23 @@ class CambridgeScraper:
                     span_text = span.text.strip()
                     if "e-mail:" in span_text.lower() or "e-mails:" in span_text.lower():
                         email_part = span_text.split(":")[1]
-                        emails = [email.strip(")") for email in email_part.split(",")]
-                        fallback_emails.extend(emails)
+                        fallback_emails.extend([e.strip(")") for e in email_part.split(",")])
                 fallback_emails = list(set(fallback_emails))
 
                 for author_name in non_starred_authors:
                     best_email = None
                     best_match_score = 0
                     if fallback_emails:
-                        emails_for_matching = {email.split("@")[0]: email for email in fallback_emails}
+                        emails_for_matching = {e.split("@")[0]: e for e in fallback_emails}
                         best_match = process.extractOne(author_name, emails_for_matching.keys(), scorer=fuzz.token_sort_ratio)
                         if best_match:
-                            best_email_local_part, best_match_score = best_match
+                            best_email_local_part, best_match_score = best_match[0], best_match[1]
                             best_email = emails_for_matching[best_email_local_part]
                     if best_email:
-                        # Write immediately to CSV
                         self.write_to_csv(directory, filename, [article_url, author_name.strip("*"), best_email, best_match_score])
                         self.logger.info(f"Cambridge ==> Written: {author_name.strip('*')} - {best_email}")
             except Exception as e:
-                self.logger.warning(f"Cambridge ==> No emails found in fallback method for {article_url}: {e}")
+                self.logger.warning(f"Cambridge ==> Fallback email method failed for {article_url}: {e}")
 
         except Exception as e:
             self.logger.error(f"Cambridge ==> Error processing article {article_url}: {e}")

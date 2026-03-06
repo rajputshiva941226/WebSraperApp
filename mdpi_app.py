@@ -249,12 +249,12 @@ class MdpiScrape(uc.Chrome):
         
         data_dir = keyword.replace(' ','_')
         
-        if not os.path.exists(os.getcwd()+'\\' +data_dir):
-             
-            os.mkdir(data_dir)
+        if not os.path.exists(os.path.join(os.getcwd(), data_dir)):
+            os.makedirs(data_dir, exist_ok=True)
+        
         chrome_options = uc.ChromeOptions()
         prefs = {
-            "download.default_directory": os.getcwd()+'\\' +data_dir,
+            "download.default_directory": os.path.join(os.getcwd(), data_dir),
             "download.prompt_for_download": False,
             "download.directory_upgrade": True,
             "safebrowsing.enabled": False,
@@ -276,8 +276,8 @@ class MdpiScrape(uc.Chrome):
         chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--disable-dev-shm-usage")
         
-        # Run in headless mode for background operation (optional - comment out if you want to see the browser)
-        # chrome_options.add_argument("--headless=new")
+        # Run in headless mode for server environments
+        chrome_options.add_argument("--headless=new")
         
         script_dir = os.path.dirname(os.path.abspath(__file__))
         print(f"Current Working Dir: {script_dir}")
@@ -295,7 +295,7 @@ class MdpiScrape(uc.Chrome):
             # Fallback: create fresh ChromeOptions to avoid reuse error
             fallback_options = uc.ChromeOptions()
             fallback_prefs = {
-                "download.default_directory": os.getcwd()+'\\' +data_dir,
+                "download.default_directory": os.path.join(os.getcwd(), data_dir),
                 "download.prompt_for_download": False,
                 "download.directory_upgrade": True,
                 "safebrowsing.enabled": False,
@@ -347,7 +347,7 @@ class MdpiScrape(uc.Chrome):
                     return false;
                 }
             """)
-            
+
             if accept_clicked:
                 print("Cookie consent accepted via JavaScript")
                 time.sleep(3)
@@ -520,22 +520,29 @@ if __name__ == '__main__':
     print("Processing downloaded files...")
     print("="*50 + "\n")
     
-    files_in_cwd = os.listdir(os.getcwd() + '\\' + keyword_input.replace(' ','_'))
-    txt_files = [keyword_input.replace(' ','_') + '\\' + file for file in files_in_cwd if '.txt' in file]
-    print('Found text files:')
-    print(txt_files)
+    data_dir = keyword_input.replace(' ', '_')
+    data_dir_path = os.path.join(os.getcwd(), data_dir)
+    files_in_cwd = os.listdir(data_dir_path)
+    txt_files = [os.path.join(data_dir_path, f) for f in files_in_cwd if f.endswith('.txt')]
     
-    input_files = keyword_input.replace(" ","_") + "\\" + '*.txt'
-    out_file = keyword_input.replace(" ","_") + "\\" + keyword_input.replace(" ","_") + "_results.txt"
+    if not txt_files:
+        print("No text files found to process")
+        exit()
     
-    copy_process = subprocess.Popen(['powershell', 'Get-Content', input_files, '| Set-Content', out_file], shell=True)
-    result = copy_process.communicate()[0]
-    print(result)
+    out_file = os.path.join(data_dir_path, data_dir + "_results.txt")
     
-    # Read and process the combined file
+    # Combine all text files using Python (cross-platform)
+    with open(out_file, 'w', encoding='utf-8') as outf:
+        for txt_file in txt_files:
+            try:
+                with open(txt_file, 'r', encoding='utf-8', errors='replace') as inf:
+                    outf.write(inf.read())
+            except Exception:
+                pass
+            
+    # Process the combined file
     df = pd.read_csv(out_file, sep='\t', skip_blank_lines=True, skipinitialspace=True)
     df.rename(columns={'AUTHOR':'names', 'EMAIL ':'emails'}, inplace=True)
-    print(f"\nTotal records: {len(df)}")
     
     df2 = df[['names', 'emails']].copy(deep=True)
     del df
@@ -624,22 +631,24 @@ class MdpiScraperAdapter:
             
             # Process downloaded files
             data_dir = self.keyword.replace(' ', '_')
-            files_in_cwd = os.listdir(os.getcwd() + '\\' + data_dir)
-            txt_files = [data_dir + '\\' + file for file in files_in_cwd if '.txt' in file]
+            data_dir_path = os.path.join(os.getcwd(), data_dir)
+            files_in_cwd = os.listdir(data_dir_path)
+            txt_files = [os.path.join(data_dir_path, f) for f in files_in_cwd if f.endswith('.txt')]
             
             if not txt_files:
                 print("No text files found to process")
                 return None
             
-            input_files = data_dir + "\\" + '*.txt'
-            out_file = data_dir + "\\" + data_dir + "_results.txt"
+            out_file = os.path.join(data_dir_path, data_dir + "_results.txt")
             
-            # Combine all text files
-            copy_process = subprocess.Popen(
-                ['powershell', 'Get-Content', input_files, '| Set-Content', out_file], 
-                shell=True
-            )
-            copy_process.communicate()
+            # Combine all text files using Python (cross-platform)
+            with open(out_file, 'w', encoding='utf-8') as outf:
+                for txt_file in txt_files:
+                    try:
+                        with open(txt_file, 'r', encoding='utf-8', errors='replace') as inf:
+                            outf.write(inf.read())
+                    except Exception:
+                        pass
             
             # Process the combined file
             df = pd.read_csv(out_file, sep='\t', skip_blank_lines=True, skipinitialspace=True)
