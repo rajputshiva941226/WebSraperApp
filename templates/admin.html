@@ -377,10 +377,10 @@
                         </td>
                         <td>{{ user.created_at.strftime('%Y-%m-%d') if user.created_at else 'N/A' }}</td>
                         <td>
-                            <button class="btn btn-success btn-small" onclick="addCredits({{ user.id }}, '{{ user.username }}')">💳 Credits</button>
-                            <button class="btn btn-primary btn-small" onclick="manageScrapers({{ user.id }}, '{{ user.username }}', '{{ user.allowed_scrapers }}')">🔧 Scrapers</button>
+                            <button class="btn btn-success btn-small" onclick="addCredits({{ user.id|tojson }}, {{ user.username|tojson }})">💳 Credits</button>
+                            <button class="btn btn-primary btn-small" onclick="manageScrapers({{ user.id|tojson }}, {{ user.username|tojson }}, {{ (user.allowed_scrapers or 'all')|tojson }})">🔧 Scrapers</button>
                             {% if not user.user_type == 'admin' or users|selectattr('user_type', 'equalto', 'admin')|list|length > 1 %}
-                            <button class="btn btn-danger btn-small" onclick="toggleUser({{ user.id }}, '{{ user.username }}', {{ user.is_active|lower }})">
+                            <button class="btn btn-danger btn-small" onclick="toggleUser({{ user.id|tojson }}, {{ user.username|tojson }}, {{ user.is_active|lower }})">
                                 {{ '🚫 Disable' if user.is_active else '✅ Enable' }}
                             </button>
                             {% endif %}
@@ -427,7 +427,7 @@
                         <input type="checkbox" name="all_scrapers" id="create_all_scrapers" checked onchange="toggleCreateAllScrapers()">
                         <strong>Allow All Scrapers</strong>
                     </label>
-                    <div id="create_scraper_checkboxes" style="display:none; border:1px solid #e2e8f0; border-radius:8px; padding:12px; display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+                    <div id="create_scraper_checkboxes" style="display:none; border:1px solid #e2e8f0; border-radius:8px; padding:12px; grid-template-columns:1fr 1fr; gap:6px;">
                         <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="scrapers" value="bmj"> BMJ Journals</label>
                         <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="scrapers" value="cambridge"> Cambridge</label>
                         <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="scrapers" value="europepmc"> Europe PMC</label>
@@ -534,7 +534,11 @@
         function toggleCreateAllScrapers() {
             const allChecked = document.getElementById('create_all_scrapers').checked;
             const box = document.getElementById('create_scraper_checkboxes');
-            box.style.display = allChecked ? 'none' : 'grid';
+            if (allChecked) {
+                box.style.display = 'none';
+            } else {
+                box.style.display = 'grid';
+            }
             box.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = !allChecked);
         }
 
