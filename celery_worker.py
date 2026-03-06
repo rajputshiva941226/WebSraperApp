@@ -175,9 +175,15 @@ def run_scraper_task(self, job_id, user_id, journal, keyword, start_date, end_da
         })
 
         from scraper_adapter import ScraperAdapter
-        from webdriver_manager.chrome import ChromeDriverManager
-
-        driver_path = ChromeDriverManager().install()
+        
+        # Only install ChromeDriver for Selenium-based scrapers
+        # API scrapers (europepmc, pubmed) don't need Chrome
+        api_scrapers = {'europepmc', 'pubmed'}
+        driver_path = None
+        
+        if journal not in api_scrapers:
+            from webdriver_manager.chrome import ChromeDriverManager
+            driver_path = ChromeDriverManager().install()
 
         with flask_app.app_context():
             adapter = ScraperAdapter(job_id=job_id, output_dir=job_output_dir)
