@@ -252,7 +252,10 @@ class ScraperAdapter:
                     raise Exception("Nature scraper failed to complete")
             else:
                 # Selenium-based scrapers use keyword, start_year, end_year
-                scraper = scraper_class(
+                # Wrap in deferred initialization to prevent driver crashes
+                from selenium_scraper_wrapper import SeleniumScraperWrapper
+                scraper = SeleniumScraperWrapper(
+                    scraper_class=scraper_class,
                     keyword=keyword,
                     start_year=start_date,
                     end_year=end_date,
