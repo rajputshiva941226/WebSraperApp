@@ -6,11 +6,11 @@ Includes: Users, Credits, Master Database, and Download Tracking
 from datetime import datetime
 from flask_sqlalchemy import SQLAlchemy
 import uuid
+from werkzeug.security import generate_password_hash, check_password_hash as _wz_check_password_hash
 try:
     import bcrypt as _bcrypt
     _USE_BCRYPT = True
 except ImportError:
-    from werkzeug.security import generate_password_hash, check_password_hash
     _USE_BCRYPT = False
 
 
@@ -21,10 +21,17 @@ def _hash_password(password):
 
 
 def _check_password(password_hash, password):
+    if not password_hash:
+        return False
+    # bcrypt hashes start with $2b$ or $2a$
     if _USE_BCRYPT and password_hash.startswith('$2'):
-        return _bcrypt.checkpw(password.encode('utf-8'), password_hash.encode('utf-8'))
+        try:
+            return _bcrypt.checkpw(password.encode('utf-8'), password_hash.encode('utf-8'))
+        except Exception:
+            return False
+    # Fallback: werkzeug pbkdf2/scrypt hashes (existing users)
     try:
-        return check_password_hash(password_hash, password)
+        return _wz_check_password_hash(password_hash, password)
     except Exception:
         return False
 
