@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Start Scraping - Journal Scraper</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #fafafa;
+            min-height: 100vh;
+        }
+
+        .navbar {
+            background: #000000;
+            padding: 15px 0;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+        }
+
+        .nav-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 0 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            color: white;
+            font-size: 24px;
+            font-weight: bold;
+            text-decoration: none;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 30px;
+        }
+
+        .nav-links a {
+            color: white;
+            text-decoration: none;
+            font-weight: 500;
+            transition: opacity 0.3s;
+        }
+
+        .nav-links a {
+            position: relative;
+        }
+
+        .nav-links a:hover {
+            color: #9f7aea;
+        }
+
+        .nav-links a::after {
+            content: '';
+            position: absolute;
+            bottom: -5px;
+            left: 0;
+            width: 0;
+            height: 2px;
+            background: #9f7aea;
+            transition: width 0.3s;
+        }
+
+        .nav-links a:hover::after {
+            width: 100%;
+        }
+
+        .credit-badge {
+            background: linear-gradient(135deg, #805ad5, #9f7aea);
+            padding: 6px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 600;
+            color: white;
+        }
+
+        .user-menu {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 40px auto;
+            padding: 0 20px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+            margin-bottom: 30px;
+        }
+
+        .card h2 {
+            margin-bottom: 20px;
+            color: #1a202c;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #4a5568;
+        }
+
+        .required {
+            color: #f56565;
+        }
+
+        select, input[type="text"], input[type="date"] {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+
+        select:focus, input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .journal-option {
+            padding: 8px;
+        }
+
+        .date-range {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+
+        .help-text {
+            font-size: 14px;
+            color: #a0aec0;
+            margin-top: 5px;
+        }
+
+        .btn {
+            background: white;
+            color: #805ad5;
+            border: 2px solid #805ad5;
+            padding: 14px 30px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            width: 100%;
+        }
+
+        .btn:hover {
+            background: #805ad5;
+            color: white;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(128, 90, 213, 0.3);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn:disabled {
+            background: #e2e8f0;
+            border-color: #cbd5e0;
+            color: #a0aec0;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .alert {
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .alert-success {
+            background: #c6f6d5;
+            color: #22543d;
+            border: 1px solid #9ae6b4;
+        }
+
+        .alert-error {
+            background: #fed7d7;
+            color: #742a2a;
+            border: 1px solid #fc8181;
+        }
+
+        .job-preview {
+            background: #f7fafc;
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 20px;
+        }
+
+        .job-preview h3 {
+            font-size: 16px;
+            color: #4a5568;
+            margin-bottom: 15px;
+        }
+
+        .preview-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        .preview-item:last-child {
+            border-bottom: none;
+        }
+
+        .preview-label {
+            color: #718096;
+        }
+
+        .preview-value {
+            font-weight: 600;
+            color: #1a202c;
+        }
+
+        .journals-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 10px;
+        }
+
+        .journal-checkbox {
+            padding: 12px 16px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .journal-checkbox.fast-scraper {
+            border-color: #48bb78;
+        }
+
+        .journal-checkbox.fast-scraper input[type="checkbox"]:checked {
+            accent-color: #48bb78;
+        }
+
+        .journal-checkbox.fast-scraper label {
+            color: #2d7a4f;
+            font-weight: 500;
+        }
+
+        .journal-checkbox.slow-scraper {
+            border-color: #fc8181;
+        }
+
+        .journal-checkbox.slow-scraper input[type="checkbox"]:checked {
+            accent-color: #fc8181;
+        }
+
+        .journal-checkbox.slow-scraper label {
+            color: #c53030;
+        }
+
+        .scraper-note {
+            background: #edf2f7;
+            border-left: 4px solid #4299e1;
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin-bottom: 15px;
+            font-size: 14px;
+        }
+
+        .scraper-note strong {
+            color: #2c5282;
+        }
+
+        .fast-indicator {
+            color: #48bb78;
+            font-weight: bold;
+        }
+
+        .slow-indicator {
+            color: #fc8181;
+            font-weight: bold;
+        }
+
+        .pubmed-section {
+            background: #f0fff4;
+            border: 2px solid #48bb78;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .pubmed-section h3 {
+            color: #2d7a4f;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+
+        .select-all-btn {
+            background: #4299e1;
+            color: white;
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-bottom: 10px;
+            margin-right: 10px;
+        }
+
+        .select-all-btn:hover {
+            background: #3182ce;
+        }
+
+        .journal-checkbox:hover {
+            border-color: #667eea;
+            background: #f7fafc;
+        }
+
+        .journal-checkbox input[type="checkbox"] {
+            cursor: pointer;
+            width: 18px;
+            height: 18px;
+        }
+
+        .journal-checkbox input[type="checkbox"]:checked + label {
+            color: #667eea;
+            font-weight: 600;
+        }
+
+        .journal-checkbox.checked {
+            border-color: #667eea;
+            background: #edf2f7;
+        }
+
+        .journal-checkbox label {
+            cursor: pointer;
+            flex: 1;
+        }
+
+        @media (max-width: 768px) {
+            .date-range {
+                grid-template-columns: 1fr;
+            }
+
+            .nav-links {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="/" class="logo">📚 Journal Scraper</a>
+            <div class="nav-links">
+                <a href="/scraper">Start Scraping</a>
+                <a href="/dashboard">Dashboard</a>
+                <a href="/jobs">Jobs</a>
+                {% if session.get('user_id') %}
+                    <div class="user-menu">
+                        <span class="credit-badge">💳 {{ session.get('credits', 0) }} Credits</span>
+                        {% if session.get('user_type') == 'admin' %}
+                            <a href="/admin">Admin Panel</a>
+                        {% endif %}
+                        <a href="/profile">👤 {{ session.get('username') }}</a>
+                        <a href="/logout">Logout</a>
+                    </div>
+                {% else %}
+                    <a href="/login">Login</a>
+                {% endif %}
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="card">
+            <h2>Start New Scraping Job</h2>
+            
+            <div id="alert-container"></div>
+
+            <form id="scraping-form">
+                <div class="form-group">
+                    <label for="conference_name">
+                        Conference Name <span class="required">*</span>
+                    </label>
+                    <input type="text" id="conference_name" name="conference_name" 
+                           placeholder="e.g., ICML2024, NeurIPS2024, CVPR2024" required>
+                    <div class="help-text">Enter the conference name for organizing results</div>
+                </div>
+
+                <div class="form-group">
+                    <label for="keyword">
+                        Search Keyword <span class="required">*</span>
+                    </label>
+                    <input type="text" id="keyword" name="keyword" 
+                           placeholder="e.g., cancer research, diabetes, machine learning" required>
+                    <div class="help-text">Enter the research topic or keyword to search for</div>
+                </div>
+
+                <!-- PubMed Section -->
+                <div class="pubmed-section">
+                    <h3>🧬 PubMed MeSH Scraper (Fast ⚡)</h3>
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label>
+                            <input type="checkbox" name="journals" value="pubmed" id="journal-pubmed" style="margin-right: 8px;">
+                            Enable PubMed Scraper
+                        </label>
+                    </div>
+                    <div class="form-group" id="mesh-options" style="display: none;">
+                        <label for="mesh_type">
+                            MeSH Search Type
+                        </label>
+                        <select id="mesh_type" name="mesh_type">
+                            <option value="all">All Fields</option>
+                            <option value="tiab">Title/Abstract</option>
+                            <option value="mesh">MeSH Terms Only</option>
+                        </select>
+                        <div class="help-text">Select how to search PubMed database</div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>
+                        Select Other Journals <span class="required">*</span>
+                    </label>
+                    <div class="scraper-note">
+                        <strong>⚡ Fast Scrapers (Green):</strong> EuropePMC - API-based, quick results<br>
+                        <strong>🐌 Slower Scrapers (Red):</strong> All others - Browser-based, may take longer
+                    </div>
+                    <button type="button" class="select-all-btn" onclick="selectAllJournals()">Select All</button>
+                    <button type="button" class="select-all-btn" onclick="deselectAllJournals()">Deselect All</button>
+                    <div class="journals-grid" id="journals-container">
+                        {% for key, journal in journals.items() %}
+                        {% if key != 'pubmed' %}
+                        <div class="journal-checkbox {% if key == 'europepmc' %}fast-scraper{% else %}slow-scraper{% endif %}" onclick="toggleJournal(this)">
+                            <input type="checkbox" name="journals" value="{{ key }}" id="journal-{{ key }}">
+                            <label for="journal-{{ key }}">
+                                {% if key == 'europepmc' %}⚡{% else %}🐌{% endif %} {{ journal.name }}
+                            </label>
+                        </div>
+                        {% endif %}
+                        {% endfor %}
+                    </div>
+                    <div class="help-text">Select one or more academic journals to scrape (runs in parallel with 3-5s delay)</div>
+                </div>
+
+                <div class="form-group">
+                    <label>Date Range <span class="required">*</span></label>
+                    <div class="date-range">
+                        <div>
+                            <input type="date" id="start_date" name="start_date" required>
+                            <div class="help-text">Start date</div>
+                        </div>
+                        <div>
+                            <input type="date" id="end_date" name="end_date" required>
+                            <div class="help-text">End date</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="job-preview" id="job-preview" style="display: none;">
+                    <h3>📋 Job Preview</h3>
+                    <div class="preview-item">
+                        <span class="preview-label">Conference:</span>
+                        <span class="preview-value" id="preview-conference">-</span>
+                    </div>
+                    <div class="preview-item">
+                        <span class="preview-label">Journals:</span>
+                        <span class="preview-value" id="preview-journal">-</span>
+                    </div>
+                    <div class="preview-item">
+                        <span class="preview-label">Keyword:</span>
+                        <span class="preview-value" id="preview-keyword">-</span>
+                    </div>
+                    <div class="preview-item">
+                        <span class="preview-label">Date Range:</span>
+                        <span class="preview-value" id="preview-dates">-</span>
+                    </div>
+                </div>
+
+                <button type="submit" class="btn" id="submit-btn">
+                    Start Scraping
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        function toggleJournal(element) {
+            const checkbox = element.querySelector('input[type="checkbox"]');
+            checkbox.checked = !checkbox.checked;
+            element.classList.toggle('checked', checkbox.checked);
+            updatePreview();
+        }
+
+        function selectAllJournals() {
+            document.querySelectorAll('.journal-checkbox:not(.pubmed-section *) input[type="checkbox"]').forEach(cb => {
+                cb.checked = true;
+                cb.closest('.journal-checkbox').classList.add('checked');
+            });
+            updatePreview();
+        }
+
+        function deselectAllJournals() {
+            document.querySelectorAll('.journal-checkbox:not(.pubmed-section *) input[type="checkbox"]').forEach(cb => {
+                cb.checked = false;
+                cb.closest('.journal-checkbox').classList.remove('checked');
+            });
+            updatePreview();
+        }
+
+        // Show/hide MeSH options when PubMed is selected
+        document.getElementById('journal-pubmed').addEventListener('change', function() {
+            document.getElementById('mesh-options').style.display = this.checked ? 'block' : 'none';
+            updatePreview();
+        });
+
+        // Update preview when form changes
+        function updatePreview() {
+            const checkboxes = document.querySelectorAll('input[name="journals"]:checked');
+            const conference = document.getElementById('conference_name');
+            const keyword = document.getElementById('keyword');
+            const startDate = document.getElementById('start_date');
+            const endDate = document.getElementById('end_date');
+            const preview = document.getElementById('job-preview');
+
+            if (checkboxes.length > 0 || keyword.value || startDate.value || endDate.value || conference.value) {
+                preview.style.display = 'block';
+                
+                const journalLabels = Array.from(checkboxes)
+                    .map(cb => {
+                        const label = cb.nextElementSibling || cb.closest('label');
+                        return label ? label.textContent.trim() : cb.value;
+                    })
+                    .join(', ');
+                
+                document.getElementById('preview-conference').textContent = 
+                    conference.value || '-';
+                document.getElementById('preview-journal').textContent = 
+                    journalLabels || '-';
+                document.getElementById('preview-keyword').textContent = 
+                    keyword.value || '-';
+                document.getElementById('preview-dates').textContent = 
+                    (startDate.value && endDate.value) ? 
+                    `${startDate.value} to ${endDate.value}` : '-';
+            }
+        }
+
+        // Add event listeners for checkboxes
+        document.querySelectorAll('input[name="journals"]').forEach(checkbox => {
+            checkbox.addEventListener('change', updatePreview);
+        });
+
+        document.getElementById('conference_name').addEventListener('input', updatePreview);
+        document.getElementById('keyword').addEventListener('input', updatePreview);
+        document.getElementById('start_date').addEventListener('change', updatePreview);
+        document.getElementById('end_date').addEventListener('change', updatePreview);
+
+        function showAlert(message, type = 'success') {
+            const container = document.getElementById('alert-container');
+            const alert = document.createElement('div');
+            alert.className = `alert alert-${type}`;
+            alert.textContent = message;
+            alert.style.display = 'block';
+            container.innerHTML = '';
+            container.appendChild(alert);
+            
+            setTimeout(() => {
+                alert.style.display = 'none';
+            }, 5000);
+        }
+
+        document.getElementById('scraping-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const submitBtn = document.getElementById('submit-btn');
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Starting Job...';
+            
+            const formData = new FormData(e.target);
+            
+            // Get selected journals
+            const journals = Array.from(formData.getAll('journals'));
+            if (journals.length === 0) {
+                showAlert('Please select at least one journal', 'error');
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Start Scraping';
+                return;
+            }
+            
+            // Convert dates to MM/DD/YYYY format
+            const startDate = new Date(formData.get('start_date'));
+            const endDate = new Date(formData.get('end_date'));
+            
+            const data = {
+                journals: journals,  // Send array of journals
+                keyword: formData.get('keyword'),
+                conference_name: formData.get('conference_name'),
+                mesh_type: formData.get('mesh_type') || 'all',
+                start_date: `${String(startDate.getMonth() + 1).padStart(2, '0')}/${String(startDate.getDate()).padStart(2, '0')}/${startDate.getFullYear()}`,
+                end_date: `${String(endDate.getMonth() + 1).padStart(2, '0')}/${String(endDate.getDate()).padStart(2, '0')}/${endDate.getFullYear()}`
+            };
+            
+            try {
+                const response = await fetch('/api/start-scraping', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(data)
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    showAlert(`✅ ${result.message}! Redirecting to jobs page...`, 'success');
+                    e.target.reset();
+                    document.getElementById('job-preview').style.display = 'none';
+                    
+                    // Redirect to jobs page immediately
+                    window.location.href = '/jobs';
+                } else {
+                    showAlert(result.error || 'Failed to start scraping job', 'error');
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = 'Start Scraping';
+                }
+                
+            } catch (error) {
+                showAlert('Network error. Please try again.', 'error');
+                console.error('Error:', error);
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Start Scraping';
+            }
+        });
+    </script>
+</body>
+</html>

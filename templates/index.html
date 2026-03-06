@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Journal Scraper - Author Email Extraction</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 40px;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+            margin-bottom: 30px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        input[type="text"],
+        input[type="date"],
+        select {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+
+        input[type="text"]:focus,
+        input[type="date"]:focus,
+        select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .date-range {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 14px 30px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            width: 100%;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .jobs-section {
+            margin-top: 30px;
+        }
+
+        .jobs-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .jobs-header h2 {
+            color: #333;
+        }
+
+        .refresh-btn {
+            background: #f0f0f0;
+            color: #333;
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .refresh-btn:hover {
+            background: #e0e0e0;
+        }
+
+        .job-item {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-radius: 8px;
+        }
+
+        .job-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .job-title {
+            font-weight: 600;
+            color: #333;
+        }
+
+        .status-badge {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .status-pending {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .status-running {
+            background: #cfe2ff;
+            color: #084298;
+        }
+
+        .status-completed {
+            background: #d1e7dd;
+            color: #0f5132;
+        }
+
+        .status-failed {
+            background: #f8d7da;
+            color: #842029;
+        }
+
+        .job-details {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 10px;
+        }
+
+        .job-details span {
+            display: inline-block;
+            margin-right: 15px;
+        }
+
+        .download-btn {
+            background: #28a745;
+            color: white;
+            padding: 6px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            text-decoration: none;
+            display: inline-block;
+        }
+
+        .download-btn:hover {
+            background: #218838;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+
+        .alert {
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .alert-success {
+            background: #d1e7dd;
+            color: #0f5132;
+            border: 1px solid #badbcc;
+        }
+
+        .alert-error {
+            background: #f8d7da;
+            color: #842029;
+            border: 1px solid #f5c2c7;
+        }
+
+        @media (max-width: 768px) {
+            .date-range {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📚 Journal Scraper</h1>
+            <p>Extract author names and emails from academic journals</p>
+        </div>
+
+        <div class="card">
+            <h2 style="margin-bottom: 20px;">New Scraping Job</h2>
+            
+            <div id="alert-container"></div>
+
+            <form id="scraping-form">
+                <div class="form-group">
+                    <label for="scraper">Select Journal</label>
+                    <select id="scraper" name="scraper" required>
+                        <option value="">Choose a journal...</option>
+                        {% for key, scraper in scrapers.items() %}
+                        <option value="{{ key }}">{{ scraper.name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="keyword">Search Keyword</label>
+                    <input type="text" id="keyword" name="keyword" 
+                           placeholder="e.g., cancer research, diabetes, covid-19" required>
+                </div>
+
+                <div class="form-group">
+                    <label>Date Range</label>
+                    <div class="date-range">
+                        <div>
+                            <input type="date" id="start_date" name="start_date" required>
+                            <small style="color: #666;">Start Date</small>
+                        </div>
+                        <div>
+                            <input type="date" id="end_date" name="end_date" required>
+                            <small style="color: #666;">End Date</small>
+                        </div>
+                    </div>
+                </div>
+
+                <button type="submit" class="btn" id="submit-btn">
+                    🚀 Start Scraping
+                </button>
+            </form>
+        </div>
+
+        <div class="card jobs-section">
+            <div class="jobs-header">
+                <h2>Scraping Jobs</h2>
+                <button class="refresh-btn" onclick="loadJobs()">🔄 Refresh</button>
+            </div>
+            <div id="jobs-container">
+                <div class="empty-state">
+                    <p>No jobs yet. Submit a scraping request to get started.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Auto-refresh jobs every 5 seconds
+        let autoRefreshInterval;
+
+        function showAlert(message, type = 'success') {
+            const container = document.getElementById('alert-container');
+            const alert = document.createElement('div');
+            alert.className = `alert alert-${type}`;
+            alert.textContent = message;
+            container.innerHTML = '';
+            container.appendChild(alert);
+            
+            setTimeout(() => {
+                alert.remove();
+            }, 5000);
+        }
+
+        function formatDate(dateString) {
+            if (!dateString) return 'N/A';
+            const date = new Date(dateString);
+            return date.toLocaleString();
+        }
+
+        function getStatusClass(status) {
+            return `status-${status.toLowerCase()}`;
+        }
+
+        async function loadJobs() {
+            try {
+                const response = await fetch('/api/jobs');
+                const jobs = await response.json();
+                
+                const container = document.getElementById('jobs-container');
+                
+                if (jobs.length === 0) {
+                    container.innerHTML = '<div class="empty-state"><p>No jobs yet. Submit a scraping request to get started.</p></div>';
+                    return;
+                }
+                
+                // Sort jobs by creation date (newest first)
+                jobs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+                
+                container.innerHTML = jobs.map(job => `
+                    <div class="job-item">
+                        <div class="job-header">
+                            <div class="job-title">${job.scraper_name}</div>
+                            <span class="status-badge ${getStatusClass(job.status)}">${job.status}</span>
+                        </div>
+                        <div class="job-details">
+                            <span><strong>Keyword:</strong> ${job.keyword}</span>
+                            <span><strong>Period:</strong> ${job.start_date} to ${job.end_date}</span>
+                        </div>
+                        <div class="job-details">
+                            <span><strong>Created:</strong> ${formatDate(job.created_at)}</span>
+                            ${job.end_time ? `<span><strong>Completed:</strong> ${formatDate(job.end_time)}</span>` : ''}
+                        </div>
+                        ${job.message ? `<div style="margin-top: 8px; color: #666;">${job.message}</div>` : ''}
+                        ${job.status === 'completed' && job.output_file ? 
+                            `<a href="/api/download/${job.id}" class="download-btn" style="margin-top: 10px;">📥 Download Results</a>` : ''}
+                    </div>
+                `).join('');
+                
+            } catch (error) {
+                console.error('Error loading jobs:', error);
+            }
+        }
+
+        document.getElementById('scraping-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const submitBtn = document.getElementById('submit-btn');
+            submitBtn.disabled = true;
+            submitBtn.textContent = '⏳ Starting...';
+            
+            const formData = new FormData(e.target);
+            
+            // Convert dates to MM/DD/YYYY format (as expected by scrapers)
+            const startDate = new Date(formData.get('start_date'));
+            const endDate = new Date(formData.get('end_date'));
+            
+            const data = {
+                scraper: formData.get('scraper'),
+                keyword: formData.get('keyword'),
+                start_date: `${String(startDate.getMonth() + 1).padStart(2, '0')}/${String(startDate.getDate()).padStart(2, '0')}/${startDate.getFullYear()}`,
+                end_date: `${String(endDate.getMonth() + 1).padStart(2, '0')}/${String(endDate.getDate()).padStart(2, '0')}/${endDate.getFullYear()}`
+            };
+            
+            try {
+                const response = await fetch('/api/start-scraping', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(data)
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    showAlert('Scraping job started successfully! Check the jobs section below.', 'success');
+                    e.target.reset();
+                    loadJobs();
+                    
+                    // Start auto-refresh
+                    if (!autoRefreshInterval) {
+                        autoRefreshInterval = setInterval(loadJobs, 5000);
+                    }
+                } else {
+                    showAlert(result.error || 'Failed to start scraping job', 'error');
+                }
+                
+            } catch (error) {
+                showAlert('Network error. Please try again.', 'error');
+                console.error('Error:', error);
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = '🚀 Start Scraping';
+            }
+        });
+
+        // Load jobs on page load
+        loadJobs();
+        
+        // Start auto-refresh
+        autoRefreshInterval = setInterval(loadJobs, 5000);
+    </script>
+</body>
+</html>

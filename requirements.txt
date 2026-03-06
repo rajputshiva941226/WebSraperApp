@@ -1,0 +1,10 @@
+Flask
+selenium
+webdriver-manager
+undetected-chromedriver
+lxml
+beautifulsoup4
+requests
+scrapy
+pandas
+numpy

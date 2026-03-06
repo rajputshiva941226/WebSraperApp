@@ -1,0 +1,317 @@
+"""
+Database Models for Journal Scraper Application
+Includes: Users, Credits, Master Database, and Download Tracking
+"""
+
+from datetime import datetime
+from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
+import uuid
+
+db = SQLAlchemy()
+
+class User(db.Model):
+    """User model for authentication and authorization"""
+    __tablename__ = 'users'
+    
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    username = db.Column(db.String(80), unique=True, nullable=False, index=True)
+    email = db.Column(db.String(120), unique=True, nullable=False, index=True)
+    password_hash = db.Column(db.String(255), nullable=False)
+    
+    # User type: 'admin', 'internal', 'external'
+    user_type = db.Column(db.String(20), nullable=False, default='external')
+    
+    # Credits for downloads
+    credits = db.Column(db.Integer, nullable=False, default=0)
+    
+    # License information
+    license_type = db.Column(db.String(50), default='single')  # 'single', 'multi'
+    machine_id = db.Column(db.String(200), unique=True, nullable=True)  # For single-machine licenses
+    is_active = db.Column(db.Boolean, default=True)
+    is_verified = db.Column(db.Boolean, default=False)
+    allowed_scrapers = db.Column(db.Text, default='all')  # JSON list of allowed scrapers or 'all'
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    last_login = db.Column(db.DateTime)
+    
+    # Relationships
+    downloads = db.relationship('Download', backref='user', lazy='dynamic', cascade='all, delete-orphan')
+    credit_transactions = db.relationship('CreditTransaction', backref='user', lazy='dynamic', cascade='all, delete-orphan')
+    
+    def set_password(self, password):
+        """Hash and set password"""
+        self.password_hash = generate_password_hash(password)
+    
+    def check_password(self, password):
+        """Verify password"""
+        return check_password_hash(self.password_hash, password)
+    
+    def deduct_credits(self, amount, description):
+        """Deduct credits and create transaction record"""
+        if self.credits < amount:
+            return False
+        
+        self.credits -= amount
+        transaction = CreditTransaction(
+            user_id=self.id,
+            amount=-amount,
+            transaction_type='deduction',
+            description=description
+        )
+        db.session.add(transaction)
+        return True
+    
+    def add_credits(self, amount, description):
+        """Add credits and create transaction record"""
+        self.credits += amount
+        transaction = CreditTransaction(
+            user_id=self.id,
+            amount=amount,
+            transaction_type='addition',
+            description=description
+        )
+        db.session.add(transaction)
+    
+    def to_dict(self):
+        """Convert to dictionary"""
+        return {
+            'id': self.id,
+            'username': self.username,
+            'email': self.email,
+            'user_type': self.user_type,
+            'credits': self.credits,
+            'license_type': self.license_type,
+            'is_active': self.is_active,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'last_login': self.last_login.isoformat() if self.last_login else None
+        }
+
+
+class CreditTransaction(db.Model):
+    """Track all credit transactions"""
+    __tablename__ = 'credit_transactions'
+    
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = db.Column(db.String(36), db.ForeignKey('users.id'), nullable=False)
+    
+    amount = db.Column(db.Integer, nullable=False)  # Positive for addition, negative for deduction
+    transaction_type = db.Column(db.String(20), nullable=False)  # 'addition', 'deduction', 'refund'
+    description = db.Column(db.String(255))
+    
+    # Reference to job/download if applicable
+    job_id = db.Column(db.String(36))
+    download_id = db.Column(db.String(36), db.ForeignKey('downloads.id'))
+    
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'amount': self.amount,
+            'transaction_type': self.transaction_type,
+            'description': self.description,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+
+
+class Download(db.Model):
+    """Track all downloads with credit deduction"""
+    __tablename__ = 'downloads'
+    
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = db.Column(db.String(36), db.ForeignKey('users.id'), nullable=False)
+    
+    # Job and file information
+    job_id = db.Column(db.String(36), nullable=False)
+    file_format = db.Column(db.String(10))  # 'csv' or 'xlsx'
+    file_path = db.Column(db.String(500))
+    
+    # Record counts
+    total_records = db.Column(db.Integer, default=0)
+    unique_emails = db.Column(db.Integer, default=0)
+    
+    # Credits
+    credits_deducted = db.Column(db.Integer, default=0)
+    
+    # Metadata
+    journal_name = db.Column(db.String(100))
+    keyword = db.Column(db.String(255))
+    
+    downloaded_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'job_id': self.job_id,
+            'file_format': self.file_format,
+            'total_records': self.total_records,
+            'unique_emails': self.unique_emails,
+            'credits_deducted': self.credits_deducted,
+            'journal_name': self.journal_name,
+            'keyword': self.keyword,
+            'downloaded_at': self.downloaded_at.isoformat() if self.downloaded_at else None
+        }
+
+
+class MasterDatabase(db.Model):
+    """
+    Master database for storing all unique author-email combinations
+    Deduplication based on email
+    """
+    __tablename__ = 'master_database'
+    
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    
+    # Author information
+    author_name = db.Column(db.String(255), nullable=False)
+    email = db.Column(db.String(255), unique=True, nullable=False, index=True)
+    affiliation = db.Column(db.Text)
+    
+    # Source information
+    conference_name = db.Column(db.String(255), index=True)
+    journal_name = db.Column(db.String(100), index=True)
+    article_title = db.Column(db.Text)
+    article_url = db.Column(db.String(500))
+    
+    # Metadata
+    keyword = db.Column(db.String(255), index=True)
+    scraped_date = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    
+    # Job reference
+    job_id = db.Column(db.String(36))
+    
+    # Timestamps
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'author_name': self.author_name,
+            'email': self.email,
+            'affiliation': self.affiliation,
+            'conference_name': self.conference_name,
+            'journal_name': self.journal_name,
+            'article_title': self.article_title,
+            'article_url': self.article_url,
+            'keyword': self.keyword,
+            'scraped_date': self.scraped_date.isoformat() if self.scraped_date else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+
+
+class ConferenceMaster(db.Model):
+    """
+    Master data for conferences uploaded by internal users
+    """
+    __tablename__ = 'conference_master'
+    
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    
+    # Conference information
+    conference_name = db.Column(db.String(255), nullable=False, index=True)
+    conference_year = db.Column(db.Integer)
+    conference_location = db.Column(db.String(255))
+    
+    # Author information
+    author_name = db.Column(db.String(255), nullable=False)
+    email = db.Column(db.String(255), nullable=False, index=True)
+    affiliation = db.Column(db.Text)
+    
+    # Upload metadata
+    uploaded_by = db.Column(db.String(36), db.ForeignKey('users.id'))
+    upload_date = db.Column(db.DateTime, default=datetime.utcnow)
+    source_file = db.Column(db.String(500))
+    
+    # Timestamps
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Composite unique constraint on conference + email
+    __table_args__ = (
+        db.UniqueConstraint('conference_name', 'email', name='unique_conference_email'),
+    )
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'conference_name': self.conference_name,
+            'conference_year': self.conference_year,
+            'author_name': self.author_name,
+            'email': self.email,
+            'affiliation': self.affiliation,
+            'upload_date': self.upload_date.isoformat() if self.upload_date else None
+        }
+
+
+class SearchHistory(db.Model):
+    """
+    Track search history for 7-day retention
+    """
+    __tablename__ = 'search_history'
+    
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = db.Column(db.String(36), db.ForeignKey('users.id'))
+    
+    # Search parameters
+    keyword = db.Column(db.String(255), index=True)
+    conference_name = db.Column(db.String(255))
+    journals = db.Column(db.Text)  # JSON array of journals
+    start_date = db.Column(db.String(20))
+    end_date = db.Column(db.String(20))
+    
+    # Results summary
+    total_results = db.Column(db.Integer, default=0)
+    job_id = db.Column(db.String(36))
+    
+    # Timestamps
+    searched_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    
+    def to_dict(self):
+        import json
+        return {
+            'id': self.id,
+            'keyword': self.keyword,
+            'conference_name': self.conference_name,
+            'journals': json.loads(self.journals) if self.journals else [],
+            'start_date': self.start_date,
+            'end_date': self.end_date,
+            'total_results': self.total_results,
+            'searched_at': self.searched_at.isoformat() if self.searched_at else None
+        }
+
+
+# Utility functions
+
+def init_db(app):
+    """Initialize database with app"""
+    db.init_app(app)
+    with app.app_context():
+        db.create_all()
+        print("Database tables created successfully")
+
+
+def create_admin_user(username, email, password):
+    """Create an admin user"""
+    admin = User(
+        username=username,
+        email=email,
+        user_type='admin',
+        credits=999999,  # Admin gets unlimited credits
+        is_active=True,
+        is_verified=True
+    )
+    admin.set_password(password)
+    db.session.add(admin)
+    db.session.commit()
+    return admin
+
+
+def cleanup_old_search_history(days=7):
+    """Delete search history older than specified days"""
+    from datetime import timedelta
+    cutoff_date = datetime.utcnow() - timedelta(days=days)
+    deleted = SearchHistory.query.filter(SearchHistory.searched_at < cutoff_date).delete()
+    db.session.commit()
+    return deleted

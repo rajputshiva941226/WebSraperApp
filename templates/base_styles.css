@@ -1,0 +1,217 @@
+/* Global Shared Styles for Journal Scraper Application */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    background: #fafafa; /* Off-white background */
+    min-height: 100vh;
+}
+
+/* Black Navbar */
+.navbar {
+    background: #000000;
+    padding: 15px 0;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+}
+
+.nav-container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 0 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.logo {
+    color: white;
+    font-size: 24px;
+    font-weight: bold;
+    text-decoration: none;
+}
+
+.nav-links {
+    display: flex;
+    gap: 30px;
+}
+
+.nav-links a {
+    color: white;
+    text-decoration: none;
+    font-weight: 500;
+    transition: color 0.3s;
+    position: relative;
+}
+
+.nav-links a:hover {
+    color: #9f7aea; /* Purple on hover */
+}
+
+.nav-links a::after {
+    content: '';
+    position: absolute;
+    bottom: -5px;
+    left: 0;
+    width: 0;
+    height: 2px;
+    background: #9f7aea;
+    transition: width 0.3s;
+}
+
+.nav-links a:hover::after {
+    width: 100%;
+}
+
+/* Purple Bordered Buttons with Hover Animation */
+.btn {
+    padding: 12px 32px;
+    border-radius: 6px;
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 16px;
+    transition: all 0.3s ease;
+    display: inline-block;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+    background: white;
+    color: #805ad5;
+    border: 2px solid #805ad5;
+}
+
+.btn:hover {
+    background: #805ad5;
+    color: white;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(128, 90, 213, 0.3);
+}
+
+.btn:active {
+    transform: translateY(0);
+}
+
+.btn-primary {
+    background: #805ad5;
+    color: white;
+    border: 2px solid #805ad5;
+}
+
+.btn-primary:hover {
+    background: #6b46c1;
+    border-color: #6b46c1;
+    box-shadow: 0 4px 12px rgba(128, 90, 213, 0.4);
+}
+
+.btn-secondary {
+    background: white;
+    color: #805ad5;
+    border: 2px solid #805ad5;
+}
+
+.btn-secondary:hover {
+    background: #805ad5;
+    color: white;
+}
+
+.btn-small {
+    padding: 8px 20px;
+    font-size: 14px;
+}
+
+.btn-download {
+    background: white;
+    color: #38a169;
+    border: 2px solid #38a169;
+}
+
+.btn-download:hover {
+    background: #38a169;
+    color: white;
+    border-color: #38a169;
+}
+
+.btn-stop {
+    background: white;
+    color: #e53e3e;
+    border: 2px solid #e53e3e;
+}
+
+.btn-stop:hover {
+    background: #e53e3e;
+    color: white;
+    border-color: #e53e3e;
+}
+
+/* Cards */
+.card {
+    background: white;
+    border-radius: 12px;
+    padding: 30px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+    margin-bottom: 30px;
+    border: 1px solid #e2e8f0;
+}
+
+/* Form Inputs */
+input[type="text"],
+input[type="date"],
+select,
+textarea {
+    width: 100%;
+    padding: 12px;
+    border: 2px solid #e2e8f0;
+    border-radius: 6px;
+    font-size: 16px;
+    transition: all 0.3s;
+}
+
+input[type="text"]:focus,
+input[type="date"]:focus,
+select:focus,
+textarea:focus {
+    outline: none;
+    border-color: #805ad5;
+    box-shadow: 0 0 0 3px rgba(128, 90, 213, 0.1);
+}
+
+/* Status Badges */
+.status-badge {
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.status-pending {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.status-running {
+    background: #dbeafe;
+    color: #1e40af;
+}
+
+.status-completed {
+    background: #d1fae5;
+    color: #065f46;
+}
+
+.status-failed {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+/* Container */
+.container {
+    max-width: 1400px;
+    margin: 40px auto;
+    padding: 0 20px;
+}

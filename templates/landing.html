@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Journal Scraper - Academic Author Extraction</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(-45deg, #667eea, #764ba2, #f093fb, #4facfe);
+            background-size: 400% 400%;
+            animation: gradientShift 15s ease infinite;
+            min-height: 100vh;
+        }
+
+        @keyframes gradientShift {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+
+        .navbar {
+            background: #000000;
+            padding: 15px 0;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+        }
+
+        .nav-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            color: white;
+            font-size: 24px;
+            font-weight: bold;
+            text-decoration: none;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 30px;
+        }
+
+        .nav-links a {
+            color: white;
+            text-decoration: none;
+            font-weight: 500;
+            transition: opacity 0.3s;
+        }
+
+        .nav-links a {
+            position: relative;
+        }
+
+        .nav-links a:hover {
+            color: #9f7aea;
+        }
+
+        .nav-links a::after {
+            content: '';
+            position: absolute;
+            bottom: -5px;
+            left: 0;
+            width: 0;
+            height: 2px;
+            background: #9f7aea;
+            transition: width 0.3s;
+        }
+
+        .nav-links a:hover::after {
+            width: 100%;
+        }
+
+        .credit-badge {
+            background: linear-gradient(135deg, #805ad5, #9f7aea);
+            padding: 6px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+
+        .user-menu {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .hero {
+            max-width: 1200px;
+            margin: 80px auto;
+            padding: 0 20px;
+            text-align: center;
+            color: white;
+            animation: fadeInUp 1s ease-out;
+        }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .hero h1 {
+            font-size: 3.5em;
+            margin-bottom: 20px;
+            line-height: 1.2;
+            background: linear-gradient(120deg, #ffffff, #f0f0f0, #ffffff);
+            background-size: 200% auto;
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            animation: shimmer 3s linear infinite;
+        }
+
+        @keyframes shimmer {
+            to {
+                background-position: 200% center;
+            }
+        }
+
+        .hero p {
+            font-size: 1.3em;
+            opacity: 0.95;
+            margin-bottom: 40px;
+            max-width: 700px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .cta-buttons {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            padding: 16px 40px;
+            border-radius: 10px;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 18px;
+            transition: all 0.3s;
+            display: inline-block;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #805ad5, #9f7aea);
+            color: white;
+            border: 2px solid #805ad5;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .btn-primary::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+            transition: left 0.5s;
+        }
+
+        .btn-primary:hover::before {
+            left: 100%;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 10px 30px rgba(128, 90, 213, 0.5);
+            border-color: #9f7aea;
+        }
+
+        .btn-secondary {
+            background: transparent;
+            color: white;
+            border: 2px solid white;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .btn-secondary::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 0;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.2);
+            transition: width 0.3s;
+            z-index: -1;
+        }
+
+        .btn-secondary:hover::before {
+            width: 100%;
+        }
+
+        .btn-secondary:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 10px 30px rgba(255, 255, 255, 0.3);
+        }
+
+        .features {
+            max-width: 1200px;
+            margin: 60px auto;
+            padding: 0 20px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 30px;
+        }
+
+        .feature-card {
+            background: rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 30px;
+            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            transition: all 0.3s ease;
+            animation: fadeIn 0.6s ease-out backwards;
+        }
+
+        .feature-card:nth-child(1) { animation-delay: 0.1s; }
+        .feature-card:nth-child(2) { animation-delay: 0.2s; }
+        .feature-card:nth-child(3) { animation-delay: 0.3s; }
+        .feature-card:nth-child(4) { animation-delay: 0.4s; }
+        .feature-card:nth-child(5) { animation-delay: 0.5s; }
+        .feature-card:nth-child(6) { animation-delay: 0.6s; }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: scale(0.9);
+            }
+            to {
+                opacity: 1;
+                transform: scale(1);
+            }
+        }
+
+        .feature-card:hover {
+            transform: translateY(-10px) scale(1.03);
+            background: rgba(255, 255, 255, 0.25);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+        }
+
+        .feature-icon {
+            font-size: 50px;
+            margin-bottom: 20px;
+            animation: float 3s ease-in-out infinite;
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-10px); }
+        }
+
+        .feature-card:hover .feature-icon {
+            transform: scale(1.2) rotate(10deg);
+        }
+
+        .feature-card h3 {
+            font-size: 22px;
+            margin-bottom: 15px;
+        }
+
+        .feature-card p {
+            opacity: 0.9;
+            line-height: 1.6;
+        }
+
+        .journals-section {
+            max-width: 1200px;
+            margin: 60px auto;
+            padding: 40px 20px;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+        }
+
+        .journals-section h2 {
+            color: white;
+            text-align: center;
+            font-size: 36px;
+            margin-bottom: 40px;
+        }
+
+        .journals-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 20px;
+        }
+
+        .journal-card {
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            color: white;
+            transition: all 0.3s ease;
+            border: 2px solid transparent;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .journal-card::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 70%);
+            transform: scale(0);
+            transition: transform 0.5s;
+        }
+
+        .journal-card:hover::before {
+            transform: scale(1);
+        }
+
+        .journal-card.enabled {
+            border-color: rgba(255, 255, 255, 0.5);
+        }
+
+        .journal-card:hover {
+            transform: translateY(-8px) scale(1.05);
+            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.3);
+            border-color: rgba(128, 90, 213, 0.8);
+        }
+
+        .journal-icon {
+            font-size: 40px;
+            margin-bottom: 10px;
+        }
+
+        .journal-name {
+            font-weight: 600;
+            font-size: 18px;
+            margin-bottom: 5px;
+        }
+
+        .journal-status {
+            font-size: 12px;
+            opacity: 0.8;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .journal-status.enabled {
+            color: #4ade80;
+        }
+
+        .journal-status.coming-soon {
+            color: #fbbf24;
+        }
+
+        @media (max-width: 768px) {
+            .hero h1 {
+                font-size: 2.5em;
+            }
+
+            .nav-links {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="/" class="logo">📚 Journal Scraper</a>
+            <div class="nav-links">
+                <a href="/scraper">Start Scraping</a>
+                <a href="/dashboard">Dashboard</a>
+                <a href="/jobs">Jobs</a>
+                {% if session.get('user_id') %}
+                    <div class="user-menu">
+                        <span class="credit-badge">💳 {{ session.get('credits', 0) }} Credits</span>
+                        {% if session.get('user_type') == 'admin' %}
+                            <a href="/admin">Admin Panel</a>
+                        {% endif %}
+                        <a href="/profile">👤 {{ session.get('username') }}</a>
+                        <a href="/logout">Logout</a>
+                    </div>
+                {% else %}
+                    <a href="/login">Login</a>
+                {% endif %}
+            </div>
+        </div>
+    </nav>
+
+    <div class="hero">
+        <h1>Academic Author Email Extraction</h1>
+        <p>Extract author contact information from leading academic journals with advanced PDF processing and multi-source scraping capabilities</p>
+        <div class="cta-buttons">
+            <a href="/scraper" class="btn btn-primary">🚀 Start Scraping</a>
+            <a href="/dashboard" class="btn btn-secondary">📊 View Dashboard</a>
+        </div>
+    </div>
+
+    <div class="features">
+        <div class="feature-card">
+            <div class="feature-icon">🎯</div>
+            <h3>Multi-Journal Support</h3>
+            <p>Scrape from 10+ academic journals including BMJ, Cambridge, Oxford, Springer, and more with a unified interface</p>
+        </div>
+
+        <div class="feature-card">
+            <div class="feature-icon">⚡</div>
+            <h3>Real-Time Processing</h3>
+            <p>Track job status in real-time with live updates, progress monitoring, and instant result downloads</p>
+        </div>
+
+        <div class="feature-card">
+            <div class="feature-icon">📊</div>
+            <h3>Detailed Analytics</h3>
+            <p>Comprehensive dashboard with per-journal metrics, success rates, and historical performance tracking</p>
+        </div>
+
+        <div class="feature-card">
+            <div class="feature-icon">🔍</div>
+            <h3>Advanced Extraction</h3>
+            <p>Extract author names, emails, affiliations with support for co-authors and multi-affiliation parsing</p>
+        </div>
+
+        <div class="feature-card">
+            <div class="feature-icon">📄</div>
+            <h3>PDF Processing</h3>
+            <p>Intelligent PDF parsing with metadata extraction, table parsing, and full-document email scanning</p>
+        </div>
+
+        <div class="feature-card">
+            <div class="feature-icon">💾</div>
+            <h3>Flexible Export</h3>
+            <p>Download results as CSV with structured data format ready for analysis and integration</p>
+        </div>
+    </div>
+
+    <div class="journals-section">
+        <h2>Supported Journals</h2>
+        <div class="journals-grid">
+            {% for key, journal in journals.items() %}
+            <div class="journal-card {% if journal.enabled %}enabled{% endif %}">
+                <div class="journal-icon">{{ journal.icon }}</div>
+                <div class="journal-name">{{ journal.name }}</div>
+                <div class="journal-status {% if journal.enabled %}enabled{% else %}coming-soon{% endif %}">
+                    {% if journal.enabled %}✓ Available{% else %}Coming Soon{% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</body>
+</html>

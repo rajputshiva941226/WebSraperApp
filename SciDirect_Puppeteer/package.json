@@ -1,0 +1,20 @@
+{
+  "name": "scidirect-scraper",
+  "version": "1.0.0",
+  "main": "scraper.js",
+  "bin": "scraper.js",
+  "pkg": {
+    "targets": [
+      "node18-win-x64"
+    ],
+    "outputPath": "dist"
+  },
+  "scripts": {
+    "build": "pkg . --output SciDirect_Scraper_Ver1.exe --compress GZip"
+  },
+  "dependencies": {
+    "csv-parser": "^3.0.0",
+    "csv-writer": "^1.6.0",
+    "puppeteer-core": "^24.31.0"
+  }
+}
