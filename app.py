@@ -973,6 +973,12 @@ def download_results(job_id):
         try:
             df = pd.read_csv(output_file)
             xlsx_path = output_file.replace('.csv', '.xlsx')
+            
+            # Ensure directory is writable
+            try:
+                os.chmod(os.path.dirname(xlsx_path), 0o777)
+            except Exception:
+                pass
 
             # Detect actual column names dynamically
             email_col = next((c for c in df.columns if c.lower() in ('email', 'emails', 'email_address')), None)
@@ -996,6 +1002,12 @@ def download_results(job_id):
                     ]
                 })
                 stats_df.to_excel(writer, sheet_name='Statistics', index=False)
+            
+            # Ensure file is readable
+            try:
+                os.chmod(xlsx_path, 0o666)
+            except Exception:
+                pass
 
             return send_file(xlsx_path, as_attachment=True,
                              download_name=f"{journal_name_safe}_{keyword_safe}_results.xlsx")

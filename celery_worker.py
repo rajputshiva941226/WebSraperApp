@@ -127,6 +127,14 @@ def run_scraper_task(self, job_id, user_id, journal, keyword, start_date, end_da
     upload_folder = flask_app.config.get('UPLOAD_FOLDER', 'results')
     job_output_dir = os.path.join(upload_folder, user_id, job_id)
     os.makedirs(job_output_dir, exist_ok=True)
+    
+    # Ensure directory is world-readable/writable for Flask process
+    try:
+        os.chmod(job_output_dir, 0o777)
+        os.chmod(os.path.join(upload_folder, user_id), 0o777)
+        os.chmod(upload_folder, 0o777)
+    except Exception:
+        pass  # Ignore chmod errors, not critical
 
     start_time = time.time()
 
