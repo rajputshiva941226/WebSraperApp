@@ -5,16 +5,17 @@ Wants=postgresql.service redis.service
 
 [Service]
 Type=simple
-User=www-data
-Group=www-data
+User=ubuntu
+Group=ubuntu
 WorkingDirectory=/var/www/journal-scraper
 
 # ---- Environment ----
 Environment=SECRET_KEY=CHANGE_THIS_TO_A_LONG_RANDOM_SECRET
-Environment=DATABASE_URL=postgresql://scraper_user:YOUR_PASSWORD@localhost/journal_scraper
+Environment=DATABASE_URL=postgresql://scraper_user:ScraperPass2024!@localhost:5432/journal_scraper
 Environment=REDIS_URL=redis://localhost:6379/0
 Environment=UPLOAD_FOLDER=/var/www/journal-scraper/results
 Environment=DATA_FOLDER=/var/www/journal-scraper/data
+Environment=PYTHONPATH=/var/www/journal-scraper
 
 # ---- Process ----
 # --concurrency=2 means 2 parallel scraper jobs max (each runs Chrome)
