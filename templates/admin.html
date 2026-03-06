@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Admin Panel - Journal Scraper</title>
     <style>
+        /* ===== REPLACED ENTIRELY ===== */
         * {
             margin: 0;
             padding: 0;
@@ -156,6 +157,29 @@
         .btn-success {
             background: #48bb78;
             color: white;
+        }
+
+        .btn-success2 {
+            background: #48bb78;
+            color: white;
+        }
+
+        .btn-warning {
+            background: #ed8936;
+            color: white;
+        }
+
+        .btn-warning:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(237,137,54,0.3);
+        }
+
+        .action-btns {
+            white-space: nowrap;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            align-items: center;
         }
 
         .btn-small {
@@ -374,7 +398,7 @@
         <div class="users-table">
             <div class="table-controls">
                 <h2>User Management</h2>
-                <button class="btn btn-primary" onclick="openCreateUserModal()">➕ Create User</button>
+                <button class="btn btn-primary" onclick="openModal('createUserModal')">➕ Create User</button>
             </div>
 
             <table>
@@ -392,29 +416,46 @@
                 </thead>
                 <tbody>
                     {% for user in users %}
-                    <tr>
+                    <tr id="row-{{ user.id }}">
                         <td><strong>{{ user.username }}</strong></td>
                         <td>{{ user.email }}</td>
                         <td>
-                            <span class="badge badge-{{ user.user_type }}">
-                                {{ user.user_type|upper }}
-                            </span>
+                            <span class="badge badge-{{ user.user_type }}">{{ user.user_type|upper }}</span>
                         </td>
-                        <td><strong>{{ user.credits }}</strong></td>
+                        <td><strong id="credits-{{ user.id }}">{{ user.credits }}</strong></td>
                         <td>{{ user.license_type|capitalize }}</td>
                         <td>
-                            <span class="badge badge-{{ 'active' if user.is_active else 'inactive' }}">
+                            <span class="badge badge-{{ 'active' if user.is_active else 'inactive' }}" id="status-{{ user.id }}">
                                 {{ 'Active' if user.is_active else 'Inactive' }}
                             </span>
                         </td>
                         <td>{{ user.created_at.strftime('%Y-%m-%d') if user.created_at else 'N/A' }}</td>
-                        <td>
-                            <button class="btn btn-success btn-small" onclick="addCredits({{ user.id|tojson }}, {{ user.username|tojson }})">💳 Credits</button>
-                            <button class="btn btn-primary btn-small" onclick="manageScrapers({{ user.id|tojson }}, {{ user.username|tojson }}, {{ (user.allowed_scrapers or 'all')|tojson }})">🔧 Scrapers</button>
-                            {% if not user.user_type == 'admin' or users|selectattr('user_type', 'equalto', 'admin')|list|length > 1 %}
-                            <button class="btn btn-danger btn-small" onclick="toggleUser({{ user.id|tojson }}, {{ user.username|tojson }}, {{ user.is_active|lower }})">
+                        <td class="action-btns">
+                            <button class="btn btn-success btn-small"
+                                data-uid="{{ user.id }}" data-uname="{{ user.username }}"
+                                onclick="openCreditsModal(this)">💳 Credits</button>
+                            <button class="btn btn-primary btn-small"
+                                data-uid="{{ user.id }}" data-uname="{{ user.username }}"
+                                data-scrapers="{{ (user.allowed_scrapers or 'all')|e }}"
+                                onclick="openScrapersModal(this)">🔧 Scrapers</button>
+                            <button class="btn btn-warning btn-small"
+                                data-uid="{{ user.id }}"
+                                data-uname="{{ user.username }}"
+                                data-email="{{ user.email }}"
+                                data-utype="{{ user.user_type }}"
+                                data-license="{{ user.license_type }}"
+                                data-credits="{{ user.credits }}"
+                                onclick="openEditModal(this)">✏️ Edit</button>
+                            <button class="btn btn-{{ 'danger' if user.is_active else 'success2' }} btn-small"
+                                data-uid="{{ user.id }}" data-uname="{{ user.username }}"
+                                data-active="{{ 'true' if user.is_active else 'false' }}"
+                                onclick="toggleUser(this)">
                                 {{ '🚫 Disable' if user.is_active else '✅ Enable' }}
                             </button>
+                            {% if user.user_type != 'admin' or users|selectattr('user_type','equalto','admin')|list|length > 1 %}
+                            <button class="btn btn-danger btn-small"
+                                data-uid="{{ user.id }}" data-uname="{{ user.username }}"
+                                onclick="openDeleteModal(this)">🗑️ Delete</button>
                             {% endif %}
                         </td>
                     </tr>
@@ -424,22 +465,25 @@
         </div>
     </div>
 
-    <!-- Create User Modal -->
+    <!-- Toast notification -->
+    <div id="toast" style="display:none;position:fixed;bottom:30px;right:30px;background:#1a202c;color:#fff;padding:14px 24px;border-radius:10px;font-size:14px;font-weight:600;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,0.3);max-width:360px;"></div>
+
+    <!-- ===== CREATE USER MODAL ===== -->
     <div id="createUserModal" class="modal">
-        <div class="modal-content" style="max-width:600px; max-height:90vh; overflow-y:auto;">
+        <div class="modal-content" style="max-width:600px;max-height:90vh;overflow-y:auto;">
             <h3>Create New User</h3>
             <form method="POST" action="/admin/create-user">
                 <div class="form-group">
                     <label>Username</label>
-                    <input type="text" name="username" required>
+                    <input type="text" name="username" required autocomplete="off">
                 </div>
                 <div class="form-group">
                     <label>Email</label>
-                    <input type="email" name="email" required>
+                    <input type="email" name="email" required autocomplete="off">
                 </div>
                 <div class="form-group">
-                    <label>Password</label>
-                    <input type="password" name="password" required>
+                    <label>Password <small style="color:#718096;font-weight:400;">(min 8 characters, stored with bcrypt)</small></label>
+                    <input type="password" name="password" required minlength="8" autocomplete="new-password">
                 </div>
                 <div class="form-group">
                     <label>User Type</label>
@@ -450,12 +494,19 @@
                     </select>
                 </div>
                 <div class="form-group">
+                    <label>License Type</label>
+                    <select name="license_type">
+                        <option value="multi">Multi (any machine)</option>
+                        <option value="single">Single (locked to one machine)</option>
+                    </select>
+                </div>
+                <div class="form-group">
                     <label>Initial Credits</label>
                     <input type="number" name="credits" value="100" min="0">
                 </div>
                 <div class="form-group">
-                    <label style="margin-bottom:10px; display:block;">Allowed Scrapers</label>
-                    <label style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+                    <label style="margin-bottom:8px;display:block;">Allowed Scrapers</label>
+                    <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-weight:400;">
                         <input type="checkbox" name="all_scrapers" id="create_all_scrapers" checked onchange="toggleCreateAllScrapers()">
                         <strong>Allow All Scrapers</strong>
                     </label>
@@ -474,153 +525,302 @@
                     </div>
                 </div>
                 <div class="modal-actions">
-                    <button type="button" class="btn" onclick="closeCreateUserModal()">Cancel</button>
+                    <button type="button" class="btn" onclick="closeModal('createUserModal')">Cancel</button>
                     <button type="submit" class="btn btn-primary">Create User</button>
                 </div>
             </form>
         </div>
     </div>
 
-    <!-- Add Credits Modal -->
+    <!-- ===== CREDITS MODAL ===== -->
     <div id="addCreditsModal" class="modal">
         <div class="modal-content">
-            <h3>Manage Credits</h3>
-            <form method="POST" action="/admin/add-credits">
-                <input type="hidden" name="user_id" id="credits_user_id">
-                <p>Managing credits for: <strong id="credits_username"></strong></p>
-                <div class="form-group">
-                    <label>Credits Amount (use negative to deduct)</label>
-                    <input type="number" name="amount" value="100" required>
-                </div>
-                <div class="form-group">
-                    <label>Reason</label>
-                    <input type="text" name="reason" placeholder="e.g., Monthly allocation, Purchase, Deduction" required>
-                </div>
-                <div class="modal-actions">
-                    <button type="button" class="btn" onclick="closeAddCreditsModal()">Cancel</button>
-                    <button type="submit" class="btn btn-success">Update Credits</button>
-                </div>
-            </form>
+            <h3>💳 Manage Credits</h3>
+            <p style="margin-bottom:16px;">User: <strong id="credits_username"></strong></p>
+            <input type="hidden" id="credits_user_id">
+            <div class="form-group">
+                <label>Amount (negative to deduct)</label>
+                <input type="number" id="credits_amount" value="100" required>
+            </div>
+            <div class="form-group">
+                <label>Reason</label>
+                <input type="text" id="credits_reason" placeholder="e.g., Monthly allocation, Purchase" value="Admin adjustment">
+            </div>
+            <div class="modal-actions">
+                <button class="btn" onclick="closeModal('addCreditsModal')">Cancel</button>
+                <button class="btn btn-success" onclick="submitCredits()">Update Credits</button>
+            </div>
         </div>
     </div>
 
-    <!-- Manage Scrapers Modal -->
+    <!-- ===== SCRAPERS MODAL ===== -->
     <div id="manageScrapersModal" class="modal">
         <div class="modal-content" style="max-width:560px;">
-            <h3>Manage Scrapers</h3>
-            <form method="POST" action="/admin/manage-scrapers">
-                <input type="hidden" name="user_id" id="scrapers_user_id">
-                <p style="margin-bottom:14px;">Managing scrapers for: <strong id="scrapers_username"></strong></p>
-                <div class="form-group" style="margin-bottom:10px;">
-                    <label style="display:flex;align-items:center;gap:8px;">
-                        <input type="checkbox" id="all_scrapers" onchange="toggleAllScrapers()">
-                        <strong>Allow All Scrapers</strong>
-                    </label>
-                </div>
-                <div id="scraper_checkboxes" class="scraper-grid">
-                    <label><input type="checkbox" name="scrapers" value="bmj"> BMJ Journals</label>
-                    <label><input type="checkbox" name="scrapers" value="cambridge"> Cambridge</label>
-                    <label><input type="checkbox" name="scrapers" value="europepmc"> Europe PMC</label>
-                    <label><input type="checkbox" name="scrapers" value="nature"> Nature</label>
-                    <label><input type="checkbox" name="scrapers" value="springer"> Springer</label>
-                    <label><input type="checkbox" name="scrapers" value="oxford"> Oxford Academic</label>
-                    <label><input type="checkbox" name="scrapers" value="lippincott"> Lippincott</label>
-                    <label><input type="checkbox" name="scrapers" value="sage"> SAGE Journals</label>
-                    <label><input type="checkbox" name="scrapers" value="emerald"> Emerald</label>
-                    <label><input type="checkbox" name="scrapers" value="mdpi"> MDPI</label>
-                    <label><input type="checkbox" name="scrapers" value="pubmed"> PubMed</label>
-                </div>
-                <div class="modal-actions">
-                    <button type="button" class="btn" onclick="closeManageScrapersModal()">Cancel</button>
-                    <button type="submit" class="btn btn-primary">Save Permissions</button>
-                </div>
-            </form>
+            <h3>🔧 Manage Scrapers</h3>
+            <p style="margin-bottom:14px;">User: <strong id="scrapers_username"></strong></p>
+            <input type="hidden" id="scrapers_user_id">
+            <div class="form-group" style="margin-bottom:10px;">
+                <label style="display:flex;align-items:center;gap:8px;font-weight:400;">
+                    <input type="checkbox" id="all_scrapers_check" onchange="toggleAllScrapers()">
+                    <strong>Allow All Scrapers</strong>
+                </label>
+            </div>
+            <div id="scraper_checkboxes" class="scraper-grid">
+                <label><input type="checkbox" class="scraper-cb" value="bmj"> BMJ Journals</label>
+                <label><input type="checkbox" class="scraper-cb" value="cambridge"> Cambridge</label>
+                <label><input type="checkbox" class="scraper-cb" value="europepmc"> Europe PMC</label>
+                <label><input type="checkbox" class="scraper-cb" value="nature"> Nature</label>
+                <label><input type="checkbox" class="scraper-cb" value="springer"> Springer</label>
+                <label><input type="checkbox" class="scraper-cb" value="oxford"> Oxford Academic</label>
+                <label><input type="checkbox" class="scraper-cb" value="lippincott"> Lippincott</label>
+                <label><input type="checkbox" class="scraper-cb" value="sage"> SAGE Journals</label>
+                <label><input type="checkbox" class="scraper-cb" value="emerald"> Emerald</label>
+                <label><input type="checkbox" class="scraper-cb" value="mdpi"> MDPI</label>
+                <label><input type="checkbox" class="scraper-cb" value="pubmed"> PubMed</label>
+            </div>
+            <div class="modal-actions">
+                <button class="btn" onclick="closeModal('manageScrapersModal')">Cancel</button>
+                <button class="btn btn-primary" onclick="submitScrapers()">Save Permissions</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== EDIT USER MODAL ===== -->
+    <div id="editUserModal" class="modal">
+        <div class="modal-content" style="max-width:560px;max-height:90vh;overflow-y:auto;">
+            <h3>✏️ Edit User</h3>
+            <input type="hidden" id="edit_user_id">
+            <div class="form-group">
+                <label>Username</label>
+                <input type="text" id="edit_username" autocomplete="off">
+            </div>
+            <div class="form-group">
+                <label>Email</label>
+                <input type="email" id="edit_email" autocomplete="off">
+            </div>
+            <div class="form-group">
+                <label>New Password <small style="color:#718096;font-weight:400;">(leave blank to keep current)</small></label>
+                <input type="password" id="edit_password" autocomplete="new-password" minlength="8" placeholder="Leave blank to keep current">
+            </div>
+            <div class="form-group">
+                <label>User Type</label>
+                <select id="edit_user_type">
+                    <option value="external">External</option>
+                    <option value="internal">Internal</option>
+                    <option value="admin">Admin</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>License Type</label>
+                <select id="edit_license_type">
+                    <option value="multi">Multi (any machine)</option>
+                    <option value="single">Single (locked to one machine)</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Set Credits (absolute value)</label>
+                <input type="number" id="edit_credits" min="0">
+            </div>
+            <div class="modal-actions">
+                <button class="btn" onclick="closeModal('editUserModal')">Cancel</button>
+                <button class="btn btn-primary" onclick="submitEditUser()">Save Changes</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== DELETE CONFIRM MODAL ===== -->
+    <div id="deleteUserModal" class="modal">
+        <div class="modal-content" style="max-width:440px;">
+            <h3 style="color:#e53e3e;">🗑️ Delete User</h3>
+            <p style="margin:16px 0;">Are you sure you want to permanently delete user <strong id="delete_username"></strong>? This cannot be undone.</p>
+            <input type="hidden" id="delete_user_id">
+            <div class="modal-actions">
+                <button class="btn" onclick="closeModal('deleteUserModal')">Cancel</button>
+                <button class="btn btn-danger" onclick="submitDeleteUser()">Delete Permanently</button>
+            </div>
         </div>
     </div>
 
     <script>
-        function openCreateUserModal() {
-            document.getElementById('createUserModal').classList.add('active');
+        // ===== MODAL HELPERS =====
+        function openModal(id) { document.getElementById(id).classList.add('active'); }
+        function closeModal(id) { document.getElementById(id).classList.remove('active'); }
+
+        window.addEventListener('click', function(e) {
+            if (e.target.classList.contains('modal')) {
+                e.target.classList.remove('active');
+            }
+        });
+
+        // ===== TOAST =====
+        function showToast(msg, isError) {
+            const t = document.getElementById('toast');
+            t.textContent = msg;
+            t.style.background = isError ? '#e53e3e' : '#2f855a';
+            t.style.display = 'block';
+            setTimeout(() => { t.style.display = 'none'; }, 4000);
         }
 
-        function closeCreateUserModal() {
-            document.getElementById('createUserModal').classList.remove('active');
-        }
-
+        // ===== CREATE USER =====
         function toggleCreateAllScrapers() {
             const allChecked = document.getElementById('create_all_scrapers').checked;
             const box = document.getElementById('create_scraper_checkboxes');
-            if (allChecked) {
-                box.style.display = 'none';
-            } else {
-                box.style.display = 'grid';
-            }
+            box.style.display = allChecked ? 'none' : 'grid';
             box.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = !allChecked);
         }
 
-        function addCredits(userId, username) {
-            document.getElementById('credits_user_id').value = userId;
-            document.getElementById('credits_username').textContent = username;
-            document.getElementById('addCreditsModal').classList.add('active');
+        // ===== CREDITS =====
+        function openCreditsModal(btn) {
+            document.getElementById('credits_user_id').value = btn.dataset.uid;
+            document.getElementById('credits_username').textContent = btn.dataset.uname;
+            document.getElementById('credits_amount').value = 100;
+            document.getElementById('credits_reason').value = 'Admin adjustment';
+            openModal('addCreditsModal');
         }
 
-        function closeAddCreditsModal() {
-            document.getElementById('addCreditsModal').classList.remove('active');
-        }
+        function submitCredits() {
+            const userId = document.getElementById('credits_user_id').value;
+            const amount = parseInt(document.getElementById('credits_amount').value);
+            const reason = document.getElementById('credits_reason').value.trim();
+            if (!reason) { showToast('Please enter a reason', true); return; }
+            if (isNaN(amount)) { showToast('Invalid amount', true); return; }
 
-        function toggleUser(userId, username, isActive) {
-            const action = isActive ? 'disable' : 'enable';
-            if (confirm(`Are you sure you want to ${action} user "${username}"?`)) {
-                window.location.href = `/admin/toggle-user/${userId}`;
-            }
-        }
-
-        function manageScrapers(userId, username, allowedScrapers) {
-            document.getElementById('scrapers_user_id').value = userId;
-            document.getElementById('scrapers_username').textContent = username;
-            
-            // Parse allowed scrapers
-            const checkboxes = document.querySelectorAll('#scraper_checkboxes input[type="checkbox"]');
-            if (allowedScrapers === 'all') {
-                document.getElementById('all_scrapers').checked = true;
-                checkboxes.forEach(cb => {
-                    cb.checked = true;
-                    cb.disabled = true;
-                });
-            } else {
-                document.getElementById('all_scrapers').checked = false;
-                try {
-                    const allowed = JSON.parse(allowedScrapers);
-                    checkboxes.forEach(cb => {
-                        cb.checked = allowed.includes(cb.value);
-                        cb.disabled = false;
-                    });
-                } catch (e) {
-                    checkboxes.forEach(cb => cb.checked = false);
+            fetch('/admin/add-credits', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({user_id: userId, amount: amount, reason: reason})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    closeModal('addCreditsModal');
+                    const el = document.getElementById('credits-' + userId);
+                    if (el) el.textContent = data.new_credits;
+                    showToast(data.message, false);
+                } else {
+                    showToast(data.error || 'Failed to update credits', true);
                 }
-            }
-            
-            document.getElementById('manageScrapersModal').classList.add('active');
+            })
+            .catch(() => showToast('Network error', true));
         }
 
-        function closeManageScrapersModal() {
-            document.getElementById('manageScrapersModal').classList.remove('active');
+        // ===== SCRAPERS =====
+        function openScrapersModal(btn) {
+            document.getElementById('scrapers_user_id').value = btn.dataset.uid;
+            document.getElementById('scrapers_username').textContent = btn.dataset.uname;
+            const scrapers = btn.dataset.scrapers;
+            const cbs = document.querySelectorAll('.scraper-cb');
+            const allCheck = document.getElementById('all_scrapers_check');
+
+            if (scrapers === 'all') {
+                allCheck.checked = true;
+                cbs.forEach(cb => { cb.checked = true; cb.disabled = true; });
+            } else {
+                allCheck.checked = false;
+                let allowed = [];
+                try { allowed = JSON.parse(scrapers); } catch(e) {}
+                cbs.forEach(cb => { cb.checked = allowed.includes(cb.value); cb.disabled = false; });
+            }
+            openModal('manageScrapersModal');
         }
 
         function toggleAllScrapers() {
-            const allChecked = document.getElementById('all_scrapers').checked;
-            const checkboxes = document.querySelectorAll('#scraper_checkboxes input[type="checkbox"]');
-            checkboxes.forEach(cb => {
+            const allChecked = document.getElementById('all_scrapers_check').checked;
+            document.querySelectorAll('.scraper-cb').forEach(cb => {
                 cb.checked = allChecked;
                 cb.disabled = allChecked;
             });
         }
 
-        // Close modals on outside click
-        window.onclick = function(event) {
-            if (event.target.classList.contains('modal')) {
-                event.target.classList.remove('active');
+        function submitScrapers() {
+            const userId = document.getElementById('scrapers_user_id').value;
+            const allChecked = document.getElementById('all_scrapers_check').checked;
+            const selected = Array.from(document.querySelectorAll('.scraper-cb:checked')).map(cb => cb.value);
+
+            fetch('/admin/manage-scrapers', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({user_id: userId, all_scrapers: allChecked, scrapers: selected})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    closeModal('manageScrapersModal');
+                    showToast(data.message, false);
+                } else {
+                    showToast(data.error || 'Failed to update scrapers', true);
+                }
+            })
+            .catch(() => showToast('Network error', true));
+        }
+
+        // ===== EDIT USER =====
+        function openEditModal(btn) {
+            document.getElementById('edit_user_id').value = btn.dataset.uid;
+            document.getElementById('edit_username').value = btn.dataset.uname;
+            document.getElementById('edit_email').value = btn.dataset.email;
+            document.getElementById('edit_password').value = '';
+            document.getElementById('edit_user_type').value = btn.dataset.utype;
+            document.getElementById('edit_license_type').value = btn.dataset.license;
+            document.getElementById('edit_credits').value = btn.dataset.credits;
+            openModal('editUserModal');
+        }
+
+        function submitEditUser() {
+            const userId = document.getElementById('edit_user_id').value;
+            const password = document.getElementById('edit_password').value;
+            if (password && password.length < 8) {
+                showToast('Password must be at least 8 characters', true);
+                return;
             }
+            const payload = {
+                user_id: userId,
+                username: document.getElementById('edit_username').value.trim(),
+                email: document.getElementById('edit_email').value.trim(),
+                user_type: document.getElementById('edit_user_type').value,
+                license_type: document.getElementById('edit_license_type').value,
+                credits: document.getElementById('edit_credits').value
+            };
+            if (password) payload.password = password;
+
+            fetch('/admin/edit-user', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    closeModal('editUserModal');
+                    showToast(data.message, false);
+                    setTimeout(() => location.reload(), 1200);
+                } else {
+                    showToast(data.error || 'Update failed', true);
+                }
+            })
+            .catch(() => showToast('Network error', true));
+        }
+
+        // ===== TOGGLE ENABLE/DISABLE =====
+        function toggleUser(btn) {
+            const userId = btn.dataset.uid;
+            const username = btn.dataset.uname;
+            const isActive = btn.dataset.active === 'true';
+            const action = isActive ? 'disable' : 'enable';
+            if (!confirm(`Are you sure you want to ${action} user "${username}"?`)) return;
+            window.location.href = `/admin/toggle-user/${userId}`;
+        }
+
+        // ===== DELETE =====
+        function openDeleteModal(btn) {
+            document.getElementById('delete_user_id').value = btn.dataset.uid;
+            document.getElementById('delete_username').textContent = btn.dataset.uname;
+            openModal('deleteUserModal');
+        }
+
+        function submitDeleteUser() {
+            const userId = document.getElementById('delete_user_id').value;
+            window.location.href = `/admin/delete-user/${userId}`;
         }
     </script>
 </body>

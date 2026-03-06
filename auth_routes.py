@@ -3,8 +3,7 @@ Authentication Routes - Login, Logout, Registration
 """
 
 from flask import Blueprint, request, jsonify, render_template, redirect, url_for, session, flash
-from models import db, User
-from werkzeug.security import check_password_hash
+from models import db, User, _hash_password, _check_password
 import hashlib
 import platform
 
@@ -38,7 +37,7 @@ def login():
     if not user:
         return render_template('login.html', error='Invalid username or password')
     
-    if not check_password_hash(user.password_hash, password):
+    if not _check_password(user.password_hash, password):
         return render_template('login.html', error='Invalid username or password')
     
     if not user.is_active:
@@ -111,12 +110,10 @@ def register():
         user_type = 'external'
     
     # Create new user
-    from werkzeug.security import generate_password_hash
-    
     new_user = User(
         username=username,
         email=email,
-        password_hash=generate_password_hash(password),
+        password_hash=_hash_password(password),
         user_type=user_type,
         license_type=license_type,
         credits=initial_credits,

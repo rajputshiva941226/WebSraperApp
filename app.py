@@ -498,51 +498,55 @@ def scraper_page():
 def dashboard():
     """Dashboard with metrics"""
     if 'user_id' not in session:
-        return render_template('login.html', 
+        return render_template('login.html',
             error='Please login to access the dashboard. Contact admin@email.com to create an account.')
-    
-    # Calculate overall stats
-    total_jobs = sum(m['total_jobs'] for m in journal_metrics.values())
-    total_successful = sum(m['successful_jobs'] for m in journal_metrics.values())
-    total_failed = sum(m['failed_jobs'] for m in journal_metrics.values())
-    total_authors = sum(m['total_authors_extracted'] for m in journal_metrics.values())
-    total_emails = sum(m['total_emails_extracted'] for m in journal_metrics.values())
-    
-    success_rate = (total_successful / total_jobs * 100) if total_jobs > 0 else 0
-    
-    # Get recent jobs from DB (persistent) + in-memory active jobs
+
+    user_id = session.get('user_id')
+    user_type = session.get('user_type', 'external')
+    is_admin = (user_type == 'admin')
+
+    # Pull stats from DB filtered by user (admins see all)
     try:
-        db_recent = Job.query.order_by(Job.created_at.desc()).limit(10).all()
+        from sqlalchemy import func
+        base_q = Job.query if is_admin else Job.query.filter_by(user_id=user_id)
+        total_jobs = base_q.count()
+        total_successful = base_q.filter_by(status='completed').count() if is_admin else Job.query.filter_by(user_id=user_id, status='completed').count()
+        total_failed = base_q.filter_by(status='failed').count() if is_admin else Job.query.filter_by(user_id=user_id, status='failed').count()
+        author_q = db.session.query(func.sum(Job.unique_authors))
+        email_q = db.session.query(func.sum(Job.unique_emails))
+        if not is_admin:
+            author_q = author_q.filter(Job.user_id == user_id)
+            email_q = email_q.filter(Job.user_id == user_id)
+        total_authors = author_q.scalar() or 0
+        total_emails = email_q.scalar() or 0
+        success_rate = (total_successful / total_jobs * 100) if total_jobs > 0 else 0
+    except Exception:
+        total_jobs = total_successful = total_failed = total_authors = total_emails = 0
+        success_rate = 0
+
+    # Get recent jobs filtered by user
+    try:
+        recent_q = Job.query if is_admin else Job.query.filter_by(user_id=user_id)
+        db_recent = recent_q.order_by(Job.created_at.desc()).limit(10).all()
         db_recent_dicts = [j.to_dict() for j in db_recent]
     except Exception:
         db_recent_dicts = []
+
     # Merge with in-memory for live progress
     seen = set()
     recent_jobs = []
     for job in list(active_jobs.values()) + db_recent_dicts:
         jid = job.get('id')
         if jid and jid not in seen:
-            recent_jobs.append(job)
-            seen.add(jid)
+            if is_admin or job.get('user_id') == user_id:
+                recent_jobs.append(job)
+                seen.add(jid)
     recent_jobs = sorted(recent_jobs, key=lambda x: x.get('created_at', ''), reverse=True)[:10]
 
-    # Also pull stats from DB for accuracy
-    try:
-        from sqlalchemy import func
-        db_total = Job.query.count()
-        db_completed = Job.query.filter_by(status='completed').count()
-        db_failed = Job.query.filter_by(status='failed').count()
-        db_authors = db.session.query(func.sum(Job.unique_authors)).scalar() or 0
-        db_emails = db.session.query(func.sum(Job.unique_emails)).scalar() or 0
-        if db_total > total_jobs:
-            total_jobs = db_total
-            total_successful = db_completed
-            total_failed = db_failed
-            success_rate = (db_completed / db_total * 100) if db_total > 0 else 0
-            total_authors = db_authors
-            total_emails = db_emails
-    except Exception:
-        pass
+    # Active jobs count (user-filtered)
+    active_count = len([j for j in active_jobs.values()
+                        if j['status'] in ['pending', 'running']
+                        and (is_admin or j.get('user_id') == user_id)])
 
     stats = {
         'total_jobs': total_jobs,
@@ -551,9 +555,9 @@ def dashboard():
         'success_rate': round(success_rate, 1),
         'total_authors': total_authors,
         'total_emails': total_emails,
-        'active_jobs': len([j for j in active_jobs.values() if j['status'] in ['pending', 'running']])
+        'active_jobs': active_count
     }
-    
+
     return render_template(
         'dashboard.html',
         journals=JOURNALS,
@@ -689,6 +693,37 @@ def start_scraping():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/jobs')
+def list_jobs():
+    """List jobs - admins see all, regular users see only their own"""
+    if 'user_id' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
+
+    user_id = session.get('user_id')
+    user_type = session.get('user_type', 'external')
+    is_admin = (user_type == 'admin')
+
+    # Fetch from DB (filtered)
+    try:
+        if is_admin:
+            db_jobs = Job.query.order_by(Job.created_at.desc()).limit(200).all()
+        else:
+            db_jobs = Job.query.filter_by(user_id=user_id).order_by(Job.created_at.desc()).limit(200).all()
+        db_job_dicts = {j.id: j.to_dict() for j in db_jobs}
+    except Exception as e:
+        print(f"[DB] Error fetching jobs: {e}")
+        db_job_dicts = {}
+
+    # Merge with in-memory for live progress, respecting user filter
+    merged = dict(db_job_dicts)
+    for job_id_key, job in active_jobs.items():
+        if is_admin or job.get('user_id') == user_id:
+            merged[job_id_key] = job
+
+    result = sorted(merged.values(), key=lambda x: x.get('created_at', ''), reverse=True)
+    return jsonify(result[:200])
+
+
 @app.route('/api/job-progress/<job_id>')
 def job_progress(job_id):
     """Get progress of a running job"""
@@ -723,39 +758,6 @@ def job_status(job_id):
         pass
     return jsonify({'error': 'Job not found'}), 404
 
-@app.route('/api/jobs')
-def list_jobs():
-    """List all jobs - reads from DB for persistence, merges with in-memory for live progress"""
-    user_id = session.get('user_id')
-    user_type = session.get('user_type', 'external')
-
-    # Fetch from DB
-    try:
-        if user_type == 'admin':
-            db_jobs = Job.query.order_by(Job.created_at.desc()).limit(200).all()
-        else:
-            db_jobs = Job.query.filter_by(user_id=user_id).order_by(Job.created_at.desc()).limit(200).all()
-        db_job_dicts = {j.id: j.to_dict() for j in db_jobs}
-    except Exception as e:
-        print(f"[DB] Error fetching jobs: {e}")
-        db_job_dicts = {}
-
-    # Merge: in-memory (live progress) takes precedence over DB
-    merged = {}
-    for job_id, job in db_job_dicts.items():
-        merged[job_id] = job
-    for job_id, job in active_jobs.items():
-        if user_type == 'admin' or job.get('user_id') == user_id or job_id in db_job_dicts:
-            merged[job_id] = job
-
-    # Also include in-memory jobs not yet saved (edge case)
-    for job_id, job in active_jobs.items():
-        if job_id not in merged:
-            if user_type == 'admin' or job.get('conference') == session.get('username'):
-                merged[job_id] = job
-
-    result = sorted(merged.values(), key=lambda x: x.get('created_at', ''), reverse=True)
-    return jsonify(result[:200])
 
 @app.route('/api/stop-job/<job_id>', methods=['POST'])
 def stop_job(job_id):

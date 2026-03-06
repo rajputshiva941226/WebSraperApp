@@ -3,9 +3,9 @@ Admin Panel Routes - User Management
 """
 
 from flask import Blueprint, request, jsonify, render_template, redirect, url_for, session, flash
-from models import db, User
-from werkzeug.security import generate_password_hash
+from models import db, User, _hash_password
 from functools import wraps
+import json as _json
 
 admin_bp = Blueprint('admin', __name__, url_prefix='/admin')
 
@@ -61,14 +61,18 @@ def create_user():
     else:
         allowed_scrapers = json.dumps(scrapers)
 
+    license_type = request.form.get('license_type', 'multi')
+    if license_type not in ('single', 'multi'):
+        license_type = 'multi'
+
     # Create user
     new_user = User(
         username=username,
         email=email,
-        password_hash=generate_password_hash(password),
+        password_hash=_hash_password(password),
         user_type=user_type,
         credits=credits,
-        license_type='multi',  # Default to multi for admin-created users
+        license_type=license_type,
         is_active=True,
         is_verified=True,
         allowed_scrapers=allowed_scrapers
@@ -86,15 +90,19 @@ def create_user():
 @admin_required
 def add_credits():
     """Add or deduct credits from a user with transaction logging"""
-    user_id = request.form.get('user_id')
-    amount = request.form.get('amount', type=int)
-    reason = request.form.get('reason', 'Admin adjustment')
-    
+    user_id = request.form.get('user_id') or (request.json or {}).get('user_id')
+    amount_raw = request.form.get('amount') or (request.json or {}).get('amount')
+    reason = request.form.get('reason') or (request.json or {}).get('reason', 'Admin adjustment')
+
+    try:
+        amount = int(amount_raw)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Invalid amount'}), 400
+
     user = User.query.get(user_id)
     if not user:
-        return redirect(url_for('admin.admin_panel'))
-    
-    # Create credit transaction record
+        return jsonify({'error': 'User not found'}), 404
+
     from models import CreditTransaction
     transaction = CreditTransaction(
         user_id=user.id,
@@ -102,18 +110,18 @@ def add_credits():
         transaction_type='admin_adjustment',
         description=f'{reason} (by admin: {session.get("username")})'
     )
-    
     user.credits += amount
     db.session.add(transaction)
     db.session.commit()
-    
-    # Update session if it's the current user
+
     if session.get('user_id') == user_id:
         session['credits'] = user.credits
-    
-    users = User.query.order_by(User.created_at.desc()).all()
+
     action = 'Added' if amount > 0 else 'Deducted'
-    return render_template('admin.html', users=users, 
+    if request.is_json:
+        return jsonify({'success': True, 'message': f'{action} {abs(amount)} credits for {user.username}', 'new_credits': user.credits})
+    users = User.query.order_by(User.created_at.desc()).all()
+    return render_template('admin.html', users=users,
         message=f'{action} {abs(amount)} credits for {user.username}', message_type='success')
 
 
@@ -151,25 +159,103 @@ def toggle_user(user_id):
 @admin_required
 def manage_scrapers():
     """Update user's allowed scrapers"""
-    import json
-    user_id = request.form.get('user_id')
-    scrapers = request.form.getlist('scrapers')
-    all_scrapers = request.form.get('all_scrapers') == 'on'
-    
+    if request.is_json:
+        data = request.json
+        user_id = data.get('user_id')
+        scrapers = data.get('scrapers', [])
+        all_scrapers = data.get('all_scrapers', False)
+    else:
+        user_id = request.form.get('user_id')
+        scrapers = request.form.getlist('scrapers')
+        all_scrapers = request.form.get('all_scrapers') == 'on'
+
     user = User.query.get(user_id)
     if not user:
+        if request.is_json:
+            return jsonify({'error': 'User not found'}), 404
         return redirect(url_for('admin.admin_panel'))
-    
-    if all_scrapers or not scrapers:
-        user.allowed_scrapers = 'all'
-    else:
-        user.allowed_scrapers = json.dumps(scrapers)
-    
+
+    user.allowed_scrapers = 'all' if (all_scrapers or not scrapers) else _json.dumps(scrapers)
     db.session.commit()
-    
+
+    if request.is_json:
+        return jsonify({'success': True, 'message': f'Updated scraper permissions for {user.username}'})
     users = User.query.order_by(User.created_at.desc()).all()
-    return render_template('admin.html', users=users, 
+    return render_template('admin.html', users=users,
         message=f'Updated scraper permissions for {user.username}', message_type='success')
+
+
+@admin_bp.route('/edit-user', methods=['POST'])
+@admin_required
+def edit_user():
+    """Edit user details: username, email, password, user_type, license_type, credits"""
+    if request.is_json:
+        data = request.json
+    else:
+        data = request.form
+
+    user_id = data.get('user_id')
+    user = User.query.get(user_id)
+    if not user:
+        if request.is_json:
+            return jsonify({'error': 'User not found'}), 404
+        return redirect(url_for('admin.admin_panel'))
+
+    new_username = data.get('username', '').strip()
+    new_email = data.get('email', '').strip()
+    new_password = data.get('password', '').strip()
+    new_user_type = data.get('user_type', user.user_type)
+    new_license_type = data.get('license_type', user.license_type)
+    new_credits = data.get('credits')
+
+    # Validate uniqueness
+    if new_username and new_username != user.username:
+        if User.query.filter(User.username == new_username, User.id != user_id).first():
+            if request.is_json:
+                return jsonify({'error': 'Username already taken'}), 400
+            users = User.query.order_by(User.created_at.desc()).all()
+            return render_template('admin.html', users=users, message='Username already taken', message_type='error')
+        user.username = new_username
+
+    if new_email and new_email != user.email:
+        if User.query.filter(User.email == new_email, User.id != user_id).first():
+            if request.is_json:
+                return jsonify({'error': 'Email already taken'}), 400
+            users = User.query.order_by(User.created_at.desc()).all()
+            return render_template('admin.html', users=users, message='Email already taken', message_type='error')
+        user.email = new_email
+
+    if new_password and len(new_password) >= 8:
+        user.password_hash = _hash_password(new_password)
+
+    if new_user_type in ('admin', 'internal', 'external'):
+        user.user_type = new_user_type
+
+    if new_license_type in ('single', 'multi'):
+        user.license_type = new_license_type
+        if new_license_type == 'multi':
+            user.machine_id = None  # Clear machine lock for multi-license
+
+    if new_credits is not None:
+        try:
+            user.credits = int(new_credits)
+        except (TypeError, ValueError):
+            pass
+
+    db.session.commit()
+
+    # Update session if editing self
+    if session.get('user_id') == user_id:
+        session['username'] = user.username
+        session['user_type'] = user.user_type
+        session['credits'] = user.credits
+        session['email'] = user.email
+
+    if request.is_json:
+        return jsonify({'success': True, 'message': f'User {user.username} updated successfully'})
+    users = User.query.order_by(User.created_at.desc()).all()
+    return render_template('admin.html', users=users,
+        message=f'User {user.username} updated successfully', message_type='success')
 
 
 @admin_bp.route('/delete-user/<user_id>')

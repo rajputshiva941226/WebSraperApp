@@ -5,8 +5,28 @@ Includes: Users, Credits, Master Database, and Download Tracking
 
 from datetime import datetime
 from flask_sqlalchemy import SQLAlchemy
-from werkzeug.security import generate_password_hash, check_password_hash
 import uuid
+try:
+    import bcrypt as _bcrypt
+    _USE_BCRYPT = True
+except ImportError:
+    from werkzeug.security import generate_password_hash, check_password_hash
+    _USE_BCRYPT = False
+
+
+def _hash_password(password):
+    if _USE_BCRYPT:
+        return _bcrypt.hashpw(password.encode('utf-8'), _bcrypt.gensalt(rounds=12)).decode('utf-8')
+    return generate_password_hash(password, method='pbkdf2:sha256:260000')
+
+
+def _check_password(password_hash, password):
+    if _USE_BCRYPT and password_hash.startswith('$2'):
+        return _bcrypt.checkpw(password.encode('utf-8'), password_hash.encode('utf-8'))
+    try:
+        return check_password_hash(password_hash, password)
+    except Exception:
+        return False
 
 db = SQLAlchemy()
 
@@ -37,15 +57,15 @@ class User(db.Model):
     # Relationships
     downloads = db.relationship('Download', backref='user', lazy='dynamic', cascade='all, delete-orphan')
     credit_transactions = db.relationship('CreditTransaction', backref='user', lazy='dynamic', cascade='all, delete-orphan')
-    
+
     def set_password(self, password):
-        """Hash and set password"""
-        self.password_hash = generate_password_hash(password)
-    
+        """Hash and set password using bcrypt"""
+        self.password_hash = _hash_password(password)
+
     def check_password(self, password):
-        """Verify password"""
-        return check_password_hash(self.password_hash, password)
-    
+        """Verify password using bcrypt-aware check"""
+        return _check_password(self.password_hash, password)
+
     def deduct_credits(self, amount, description):
         """Deduct credits and create transaction record"""
         if self.credits < amount:
@@ -378,7 +398,7 @@ def create_admin_user(username, email, password):
         is_active=True,
         is_verified=True
     )
-    admin.set_password(password)
+    admin.password_hash = _hash_password(password)
     db.session.add(admin)
     db.session.commit()
     return admin
