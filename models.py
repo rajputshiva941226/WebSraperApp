@@ -245,6 +245,82 @@ class ConferenceMaster(db.Model):
         }
 
 
+class Job(db.Model):
+    """
+    Track scraping jobs
+    """
+    __tablename__ = 'job'
+    
+    id = db.Column(db.String(36), primary_key=True)
+    user_id = db.Column(db.String(36), db.ForeignKey('users.id'))
+    
+    # Job parameters
+    journal = db.Column(db.String(50), index=True)
+    journal_name = db.Column(db.String(255))
+    keyword = db.Column(db.String(255), index=True)
+    conference = db.Column(db.String(255))
+    start_date = db.Column(db.String(20))
+    end_date = db.Column(db.String(20))
+    mesh_type = db.Column(db.String(50))
+    
+    # Job status
+    status = db.Column(db.String(20), default='pending', index=True)  # pending, running, completed, failed
+    progress = db.Column(db.Integer, default=0)
+    message = db.Column(db.Text)
+    error = db.Column(db.Text)
+    
+    # Job results
+    output_file = db.Column(db.String(500))
+    authors_count = db.Column(db.Integer, default=0)
+    emails_count = db.Column(db.Integer, default=0)
+    unique_authors = db.Column(db.Integer, default=0)
+    unique_emails = db.Column(db.Integer, default=0)
+    unique_links = db.Column(db.Integer, default=0)
+    
+    # Current scraping state
+    current_url = db.Column(db.String(500))
+    links_count = db.Column(db.Integer, default=0)
+    
+    # Timing
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    start_time = db.Column(db.DateTime)
+    end_time = db.Column(db.DateTime)
+    duration = db.Column(db.Float)
+    
+    # Flags
+    has_partial_results = db.Column(db.Boolean, default=False)
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'journal': self.journal,
+            'journal_name': self.journal_name,
+            'keyword': self.keyword,
+            'conference': self.conference,
+            'start_date': self.start_date,
+            'end_date': self.end_date,
+            'mesh_type': self.mesh_type,
+            'status': self.status,
+            'progress': self.progress,
+            'message': self.message,
+            'error': self.error,
+            'output_file': self.output_file,
+            'authors_count': self.authors_count,
+            'emails_count': self.emails_count,
+            'unique_authors': self.unique_authors,
+            'unique_emails': self.unique_emails,
+            'unique_links': self.unique_links,
+            'current_url': self.current_url,
+            'links_count': self.links_count,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'start_time': self.start_time.isoformat() if self.start_time else None,
+            'end_time': self.end_time.isoformat() if self.end_time else None,
+            'duration': self.duration,
+            'has_partial_results': self.has_partial_results
+        }
+
+
 class SearchHistory(db.Model):
     """
     Track search history for 7-day retention
