@@ -171,10 +171,18 @@ def run_scraper_task(self, job_id, user_id, journal, keyword, start_date, end_da
     # ------------------------------------------------------------------
     # Progress callback — writes live progress to DB
     # ------------------------------------------------------------------
+    _last_stop_check = [0]  # Track last stop check time
+    
     def progress_callback(progress, status, current_url='', links_count=0,
                           authors_count=0, emails_count=0):
-        if _is_stop_requested(job_id):
-            raise KeyboardInterrupt('Job stopped by user')
+        import time as time_module
+        
+        # Check for stop request frequently (at least every 2 seconds)
+        current_time = time_module.time()
+        if current_time - _last_stop_check[0] > 2:
+            _last_stop_check[0] = current_time
+            if _is_stop_requested(job_id):
+                raise KeyboardInterrupt('Job stopped by user')
 
         if progress % 5 == 0 or progress == 100:
             _db_update(job_id, {

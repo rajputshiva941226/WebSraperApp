@@ -960,7 +960,11 @@ def download_results(job_id):
     if not output_file or not os.path.exists(output_file):
         import glob as _glob
         candidates = []
+        
+        # If output_file is relative, make it absolute
         if output_file:
+            if not os.path.isabs(output_file):
+                output_file = os.path.join(results_dir, output_file)
             candidates.append(output_file)
             candidates.append(os.path.join(results_dir, os.path.basename(output_file)))
         
