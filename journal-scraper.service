@@ -5,18 +5,19 @@ Wants=postgresql.service redis.service
 
 [Service]
 Type=simple
-User=www-data
-Group=www-data
+User=ubuntu
+Group=ubuntu
 WorkingDirectory=/var/www/journal-scraper
 
 # ---- Environment ----
 Environment=FLASK_ENV=production
 Environment=FLASK_DEBUG=0
 Environment=SECRET_KEY=CHANGE_THIS_TO_A_LONG_RANDOM_SECRET
-Environment=DATABASE_URL=postgresql://scraper_user:YOUR_PASSWORD@localhost/journal_scraper
+Environment=DATABASE_URL=postgresql://scraper_user:ScraperPass2024!@localhost:5432/journal_scraper
 Environment=REDIS_URL=redis://localhost:6379/0
 Environment=UPLOAD_FOLDER=/var/www/journal-scraper/results
 Environment=DATA_FOLDER=/var/www/journal-scraper/data
+Environment=PYTHONPATH=/var/www/journal-scraper
 
 # ---- Process ----
 ExecStart=/var/www/journal-scraper/venv/bin/gunicorn \
@@ -25,9 +26,6 @@ ExecStart=/var/www/journal-scraper/venv/bin/gunicorn \
     --worker-class gthread \
     --timeout 120 \
     --bind 0.0.0.0:5000 \
-    --access-logfile /var/log/journal-scraper/access.log \
-    --error-logfile /var/log/journal-scraper/error.log \
-    --capture-output \
     app:app
 
 ExecReload=/bin/kill -s HUP $MAINPID
