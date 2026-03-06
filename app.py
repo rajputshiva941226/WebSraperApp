@@ -15,6 +15,7 @@ from flask import Flask, render_template, request, jsonify, send_file, redirect,
 from werkzeug.utils import secure_filename
 import uuid
 from collections import defaultdict
+import pandas as pd
 from models import db, init_db, Job
 from auth_routes import auth_bp
 from credit_routes import credit_bp
