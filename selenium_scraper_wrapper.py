@@ -1,93 +1,3 @@
-# """
-# Wrapper to safely initialize Selenium-based scrapers with deferred driver setup.
-# Prevents worker crashes from Chrome initialization failures.
-# """
-
-# import logging
-# import time
-
-# logger = logging.getLogger(__name__)
-
-
-# class SeleniumScraperWrapper:
-#     """
-#     Wraps Selenium scrapers to defer driver initialization until scraping starts.
-#     This prevents worker crashes when Chrome fails to initialize.
-#     """
-    
-#     def __init__(self, scraper_class, keyword, start_year, end_year, driver_path):
-#         """
-#         Initialize wrapper without creating the driver yet.
-        
-#         Args:
-#             scraper_class: The actual scraper class (e.g., SpringerAuthorScraper)
-#             keyword: Search keyword
-#             start_year: Start year/date
-#             end_year: End year/date
-#             driver_path: Path to ChromeDriver
-#         """
-#         self.scraper_class = scraper_class
-#         self.keyword = keyword
-#         self.start_year = start_year
-#         self.end_year = end_year
-#         self.driver_path = driver_path
-#         self.scraper_instance = None
-#         self._initialized = False
-        
-#         logger.info(f"SeleniumScraperWrapper initialized for {scraper_class.__name__}")
-    
-#     def _initialize_scraper(self):
-#         """
-#         Actually create the scraper instance (which initializes the driver).
-#         This is called lazily when scraping starts.
-#         """
-#         if self._initialized:
-#             return
-        
-#         try:
-#             logger.info(f"Initializing {self.scraper_class.__name__} with driver_path={self.driver_path}")
-            
-#             # Create the scraper instance - this will initialize the driver
-#             self.scraper_instance = self.scraper_class(
-#                 keyword=self.keyword,
-#                 start_year=self.start_year,
-#                 end_year=self.end_year,
-#                 driver_path=self.driver_path
-#             )
-#             self._initialized = True
-#             logger.info(f"{self.scraper_class.__name__} initialized successfully")
-            
-#         except Exception as e:
-#             logger.error(f"Failed to initialize {self.scraper_class.__name__}: {e}", exc_info=True)
-#             raise RuntimeError(f"Selenium scraper initialization failed: {str(e)}")
-    
-#     def run(self):
-#         """
-#         Run the scraper (initializes driver if not already done).
-#         """
-#         self._initialize_scraper()
-#         if self.scraper_instance:
-#             return self.scraper_instance.run()
-#         raise RuntimeError("Scraper instance not initialized")
-    
-#     def get_results(self):
-#         """Get results from the scraper."""
-#         if not self.scraper_instance:
-#             raise RuntimeError("Scraper not initialized")
-#         return getattr(self.scraper_instance, 'results', [])
-    
-#     def __getattr__(self, name):
-#         """
-#         Delegate attribute access to the actual scraper instance.
-#         Initialize if needed.
-#         """
-#         if name.startswith('_'):
-#             raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
-        
-#         self._initialize_scraper()
-#         return getattr(self.scraper_instance, name)
-
-
 """
 SeleniumScraperWrapper — Safely runs Selenium-based scrapers inside Celery workers.
 
@@ -209,12 +119,21 @@ def _scraper_subprocess_entry(
         if 'progress_callback' in scraper_class.__init__.__code__.co_varnames:
             init_kwargs['progress_callback'] = _relay_progress
 
-        # Instantiate — this triggers __init__ → self.run() in current scrapers.
-        # Future scrapers that separate init from run() will also work because
-        # scraper_adapter.py can call scraper.run() explicitly after init.
+        # Instantiate WITHOUT running — scrapers must NOT call self.run() in __init__
         _instance = scraper_class(**init_kwargs)
 
-        progress_queue.put((_MSG_DONE, 100, 'Scraping completed successfully', {}))
+        # Explicitly call run() — returns (output_file, summary) or a path string
+        output_file = None
+        if hasattr(_instance, 'run') and callable(_instance.run):
+            result = _instance.run()
+            if isinstance(result, tuple) and len(result) >= 1:
+                output_file = result[0]
+            elif isinstance(result, str) and os.path.exists(result):
+                output_file = result
+
+        progress_queue.put((_MSG_DONE, 100, 'Scraping completed successfully', {
+            'output_file': output_file or '',
+        }))
 
     except KeyboardInterrupt:
         progress_queue.put((_MSG_ERROR, 0, 'Scraper stopped by user', {}))
@@ -337,8 +256,14 @@ class SeleniumScraperWrapper:
                 f"Selenium scraper initialization failed: {outcome['message']}"
             )
 
-        # Discover output file produced by the scraper
-        output_file = self._find_output_file()
+        # Prefer the output_file path sent back from the subprocess via DONE message,
+        # then fall back to scanning the output directory for the newest CSV.
+        output_file = (
+            outcome.get('output_file') or
+            self._find_output_file()
+        )
+        if output_file and not os.path.exists(output_file):
+            output_file = self._find_output_file()
         summary     = {
             'scraper':    self.scraper_class.__name__,
             'keyword':    self.keyword,
@@ -417,7 +342,7 @@ class SeleniumScraperWrapper:
 
                     elif msg_type == _MSG_DONE:
                         self._relay_progress(100, message, extra)
-                        outcome = {'type': _MSG_DONE, 'message': message}
+                        outcome = {'type': _MSG_DONE, 'message': message, 'output_file': extra.get('output_file', '')}
                         drained_terminal = True
 
                     elif msg_type == _MSG_ERROR:

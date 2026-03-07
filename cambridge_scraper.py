@@ -33,7 +33,7 @@ class CambridgeScraper:
         # propagated before any FileHandler existed → zero log output.
         self._setup_logger()
         self._init_driver()
-        self.run()
+        # run() is called explicitly by SeleniumScraperWrapper._scraper_subprocess_entry
 
     # ─────────────────────────────────────────────────────────────────────
     # Logger
@@ -193,15 +193,15 @@ class CambridgeScraper:
             phase1_ok = True
         except Exception as exc:
             self.logger.error(f"Cambridge ==> Phase 1 failed: {exc}")
-        finally:
-            if not phase1_ok and self.driver:
-                try:
-                    self.driver.quit()
-                except Exception:
-                    pass
 
+        # Return early if Phase 1 failed — quit driver first
         if not phase1_ok:
-            return authors_path  # nothing to scrape
+            try:
+                if self.driver:
+                    self.driver.quit()
+            except Exception:
+                pass
+            return authors_path
 
         self._progress(40, "PHASE 2: Reading URLs and extracting author information...")
         self.scrape_authors_from_url_file(work_dir, url_file, authors_file)
@@ -209,11 +209,11 @@ class CambridgeScraper:
         self._progress(100, "Scraping completed.")
         self.logger.info("Cambridge ==> Scraping completed.")
 
-        if self.driver:
-            try:
+        try:
+            if self.driver:
                 self.driver.quit()
-            except Exception:
-                pass
+        except Exception:
+            pass
 
         return authors_path
 
