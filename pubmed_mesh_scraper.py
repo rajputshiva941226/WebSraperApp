@@ -37,7 +37,7 @@
 #     "title":    "[Title]",
 #     "abstract": "[Abstract]",
 #     "tiab":     "[Title/Abstract]",
-#     "all":      "[All Fields]",
+#     "all":      "",
 # }
 
 # # NCBI hard cap: esearch returns at most ~9,999 IDs per date-window.
@@ -121,7 +121,13 @@
 #         return p
 
 #     def _term(self) -> str:
-#         return f"{self.query}{self.field_tag}"
+#         if not self.field_tag:
+#             # "all" mode — no tag, let NCBI auto-map exactly like the website
+#             return self.query
+#         else:
+#             # For specific fields, quote multi-word terms for exact phrase matching
+#             q = f'"{self.query}"' if " " in self.query else self.query
+#             return f"{q}{self.field_tag}"
 
 #     # ── Phase 1: collect PMIDs (parallel across weekly windows) ────────────────
 
@@ -807,7 +813,7 @@ SEARCH_FIELDS = {
     "title":    "[Title]",
     "abstract": "[Abstract]",
     "tiab":     "[Title/Abstract]",
-    "all":      "[All Fields]",
+    "all":      "",
 }
 
 NCBI_RESULT_CAP = 9_900
@@ -884,7 +890,13 @@ class PubMedScraper:
         return {"api_key": self.api_key} if self.api_key else {}
 
     def _term(self) -> str:
-        return f"{self.query}{self.field_tag}"
+        if not self.field_tag:
+            # "all" mode — no tag, let NCBI auto-map exactly like the website
+            return self.query
+        else:
+            # For specific fields, quote multi-word terms for exact phrase matching
+            q = f'"{self.query}"' if " " in self.query else self.query
+            return f"{q}{self.field_tag}"
 
     # ── Phase 1: collect PMIDs ─────────────────────────────────────────────────
 

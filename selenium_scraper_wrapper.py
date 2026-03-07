@@ -35,6 +35,17 @@ SeleniumScraperWrapper — Safely runs Selenium-based scrapers inside Celery wor
     parent drains the queue in a background thread and calls
     the progress_callback supplied by ScraperAdapter.
 
+  TIMEOUT COORDINATION
+  ────────────────────
+  _DEFAULT_TIMEOUT (this file)   →  28,200s  (7h 50m)  fires first → raises RuntimeError
+  Celery soft_time_limit         →  28,800s  (8h 00m)  fires second → saves partial results
+  Celery hard time_limit         →  30,600s  (8h 30m)  SIGKILL
+
+  The wrapper timeout MUST be shorter than Celery's soft limit so that
+  when a job times out, the wrapper raises a catchable Exception →
+  Celery's except block runs → partial results are saved to DB →
+  download buttons appear in the UI.
+
   To add a new Selenium scraper, register it in scraper_adapter.py
   and wrap it here — zero changes needed to this file.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -44,7 +55,6 @@ from __future__ import annotations
 
 import logging
 import os
-import threading
 import time
 from typing import Callable, Optional, Type
 
@@ -54,9 +64,12 @@ import billiard.context
 logger = logging.getLogger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────
-_DEFAULT_TIMEOUT   = 3_600   # 1 h hard timeout for the subprocess
-_QUEUE_POLL_SLEEP  = 0.2     # seconds between queue drain iterations
-_SUBPROCESS_JOIN_TIMEOUT = 30  # seconds to wait for clean subprocess exit
+# FIX: Was 3_600 (1 hour) — Springer jobs with 1000+ articles need much longer.
+# This MUST stay below Celery's soft_time_limit (28_800s) so the exception
+# is catchable and partial results can be saved before Celery hard-kills the task.
+_DEFAULT_TIMEOUT         = 28_200   # 7h 50m — safely below Celery's 8h soft limit
+_QUEUE_POLL_SLEEP        = 0.2      # seconds between queue drain iterations
+_SUBPROCESS_JOIN_TIMEOUT = 30       # seconds to wait for clean subprocess exit
 
 # Message type constants — sent over the inter-process Queue
 _MSG_PROGRESS = 'progress'  # (type, pct, msg, extra)
@@ -84,20 +97,14 @@ def _scraper_subprocess_entry(
     The scraper classes call self.run() inside __init__, so instantiation
     IS execution.  We wrap it in try/except and relay all outcomes.
     """
-    # Install a cooperative stop hook so long-running scrapers can be halted.
-    # Each scraper's internal loops should check _stop_requested() periodically.
     def _stop_requested() -> bool:
         return stop_event.is_set()
 
-    # Attach stop hook to the class at runtime so scrapers can call it
-    # without depending on this module at import time.
     scraper_class._stop_requested = staticmethod(_stop_requested)
 
     try:
         progress_queue.put((_MSG_PROGRESS, 1, 'Initializing Chrome driver…', {}))
 
-        # Build a wrapped progress reporter that the scraper can call
-        # (ScraperAdapter injects this via scraper.set_progress_callback if supported).
         def _relay_progress(
             progress:      int,
             status:        str,
@@ -115,14 +122,11 @@ def _scraper_subprocess_entry(
                 'emails_count':  emails_count,
             }))
 
-        # Inject the relay callback if the scraper supports it
         if 'progress_callback' in scraper_class.__init__.__code__.co_varnames:
             init_kwargs['progress_callback'] = _relay_progress
 
-        # Instantiate WITHOUT running — scrapers must NOT call self.run() in __init__
         _instance = scraper_class(**init_kwargs)
 
-        # Explicitly call run() — returns (output_file, summary) or a path string
         output_file = None
         if hasattr(_instance, 'run') and callable(_instance.run):
             result = _instance.run()
@@ -165,9 +169,6 @@ class SeleniumScraperWrapper:
         )
         wrapper.set_progress_callback(callback)
         output_file, summary = wrapper.run()
-
-    Not used for API-based scrapers (europepmc, pubmed) — those run directly
-    in the Celery task without any subprocess overhead.
     """
 
     def __init__(
@@ -195,8 +196,8 @@ class SeleniumScraperWrapper:
         self._stop_event:  Optional[billiard.Event]  = None
 
         logger.info(
-            "[Wrapper][%s] Created for %s (timeout=%ds)",
-            self.job_id[:8], scraper_class.__name__, timeout,
+            "[Wrapper][%s] Created for %s (timeout=%ds / %.1fh)",
+            self.job_id[:8], scraper_class.__name__, timeout, timeout / 3600,
         )
 
     # ── Public interface ─────────────────────────────────────────
@@ -214,7 +215,6 @@ class SeleniumScraperWrapper:
             (output_file_path, summary_dict)
             output_file_path is None if the scraper produced no output.
         """
-        # Build billiard context — 'spawn' is safest for Chrome + Celery
         ctx       = billiard.get_context('spawn')
         q         = ctx.Queue(maxsize=1_000)
         stop_evt  = ctx.Event()
@@ -240,31 +240,28 @@ class SeleniumScraperWrapper:
         self._subprocess = process
 
         logger.info(
-            "[Wrapper][%s] Launching subprocess for %s",
+            "[Wrapper][%s] Launching subprocess for %s (timeout=%ds / %.1fh)",
             self.job_id[:8], self.scraper_class.__name__,
+            self.timeout, self.timeout / 3600,
         )
         process.start()
 
-        # Drain the queue in this thread (blocking) — relays progress to callback
         outcome = self._drain_queue_until_done(q, process)
-
-        # Clean up
         self._join_subprocess(process)
 
         if outcome['type'] == _MSG_ERROR:
             raise RuntimeError(
-                f"Selenium scraper initialization failed: {outcome['message']}"
+                f"Selenium scraper failed: {outcome['message']}"
             )
 
-        # Prefer the output_file path sent back from the subprocess via DONE message,
-        # then fall back to scanning the output directory for the newest CSV.
-        output_file = (
-            outcome.get('output_file') or
-            self._find_output_file()
-        )
-        if output_file and not os.path.exists(output_file):
+        # Prefer the output_file path returned by the subprocess DONE message,
+        # then fall back to scanning the output directory — always preferring
+        # author/email files over Phase-1 URL-collection files.
+        output_file = outcome.get('output_file') or ''
+        if not output_file or not os.path.exists(output_file):
             output_file = self._find_output_file()
-        summary     = {
+
+        summary = {
             'scraper':    self.scraper_class.__name__,
             'keyword':    self.keyword,
             'start_year': self.start_year,
@@ -302,23 +299,27 @@ class SeleniumScraperWrapper:
         Returns the final outcome dict.
         """
         deadline = time.monotonic() + self.timeout
-        outcome  = {'type': _MSG_ERROR, 'message': 'Timed out waiting for scraper'}
+        outcome  = {'type': _MSG_ERROR, 'message': f'Timed out after {self.timeout}s'}
 
         while True:
-            # Hard timeout — subprocess is taking too long
+            # ── Hard timeout ─────────────────────────────────────
             if time.monotonic() > deadline:
+                elapsed_h = self.timeout / 3600
                 logger.error(
-                    "[Wrapper][%s] Timeout after %ds — terminating subprocess",
-                    self.job_id[:8], self.timeout,
+                    "[Wrapper][%s] Timeout after %ds (%.1fh) — terminating subprocess",
+                    self.job_id[:8], self.timeout, elapsed_h,
                 )
                 self.stop()
                 time.sleep(2)
                 if process.is_alive():
                     process.terminate()
-                outcome = {'type': _MSG_ERROR, 'message': f'Timed out after {self.timeout}s'}
+                outcome = {
+                    'type':    _MSG_ERROR,
+                    'message': f'Timed out after {self.timeout}s ({elapsed_h:.1f}h)',
+                }
                 break
 
-            # Subprocess died unexpectedly without sending a terminal message
+            # ── Subprocess died without a terminal message ───────
             if not process.is_alive() and q.empty():
                 exit_code = process.exitcode
                 if exit_code != 0:
@@ -327,10 +328,14 @@ class SeleniumScraperWrapper:
                     outcome = {'type': _MSG_ERROR, 'message': msg}
                 else:
                     # Scraper completed but forgot to send DONE — treat as success
-                    outcome = {'type': _MSG_DONE, 'message': 'Completed (no terminal message)'}
+                    outcome = {
+                        'type':    _MSG_DONE,
+                        'message': 'Completed (no terminal message)',
+                        'output_file': '',
+                    }
                 break
 
-            # Drain all available messages from the queue
+            # ── Drain all available queue messages ───────────────
             drained_terminal = False
             while not q.empty():
                 try:
@@ -342,7 +347,11 @@ class SeleniumScraperWrapper:
 
                     elif msg_type == _MSG_DONE:
                         self._relay_progress(100, message, extra)
-                        outcome = {'type': _MSG_DONE, 'message': message, 'output_file': extra.get('output_file', '')}
+                        outcome = {
+                            'type':        _MSG_DONE,
+                            'message':     message,
+                            'output_file': extra.get('output_file', ''),
+                        }
                         drained_terminal = True
 
                     elif msg_type == _MSG_ERROR:
@@ -389,7 +398,10 @@ class SeleniumScraperWrapper:
             process.terminate()
             process.join(timeout=5)
             if process.is_alive():
-                logger.error("[Wrapper][%s] Subprocess did not die after SIGTERM — sending SIGKILL", self.job_id[:8])
+                logger.error(
+                    "[Wrapper][%s] Subprocess did not die after SIGTERM — sending SIGKILL",
+                    self.job_id[:8],
+                )
                 process.kill()
         logger.info(
             "[Wrapper][%s] Subprocess exited with code %s",
@@ -398,8 +410,16 @@ class SeleniumScraperWrapper:
 
     def _find_output_file(self) -> Optional[str]:
         """
-        Locate the CSV file produced by the scraper.
-        Checks output_dir first, then falls back to current directory.
+        Locate the CSV produced by the scraper.
+
+        Priority order (same logic as celery_worker._find_partial_csv):
+          1. Files with 'author', 'email', or 'result' in the name
+             that are NOT pure Phase-1 URL collection files (_urls.csv).
+          2. Any non-url file (by modification time, newest first).
+          3. Last resort: the newest file regardless of name.
+
+        This ensures Springer's *_authors.csv is always preferred over
+        *_urls.csv when both exist in the output directory.
         """
         import glob as _glob
 
@@ -412,13 +432,46 @@ class SeleniumScraperWrapper:
             search_dirs.append(keyword_dir)
 
         for d in search_dirs:
-            files = sorted(
+            all_csvs = sorted(
                 _glob.glob(os.path.join(d, '*.csv')),
                 key=os.path.getmtime,
-                reverse=True,
+                reverse=True,  # newest first
             )
-            if files:
-                return files[0]
+            if not all_csvs:
+                continue
+
+            # Priority 1: author/email/result files that aren't url-only
+            email_files = [
+                f for f in all_csvs
+                if any(k in os.path.basename(f).lower()
+                       for k in ('author', 'email', 'result'))
+                and '_urls' not in os.path.basename(f).lower()
+            ]
+            if email_files:
+                logger.info(
+                    "[Wrapper][%s] Found email/author file: %s",
+                    self.job_id[:8], email_files[0],
+                )
+                return email_files[0]
+
+            # Priority 2: any file that isn't a pure url-collection file
+            non_url_files = [
+                f for f in all_csvs
+                if '_urls' not in os.path.basename(f).lower()
+            ]
+            if non_url_files:
+                logger.info(
+                    "[Wrapper][%s] Found non-url file: %s",
+                    self.job_id[:8], non_url_files[0],
+                )
+                return non_url_files[0]
+
+            # Last resort: return newest regardless of name
+            logger.warning(
+                "[Wrapper][%s] Only url files found — returning: %s",
+                self.job_id[:8], all_csvs[0],
+            )
+            return all_csvs[0]
 
         return None
 

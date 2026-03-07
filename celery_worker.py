@@ -984,10 +984,38 @@ def _count_results_detailed(filepath: str):
 
 
 def _find_partial_csv(job_output_dir: str) -> str | None:
-    """Return the first CSV found in the job output directory, or None."""
+    """
+    Return the best partial-results CSV in the job output directory.
+    Prefers author/email files over Phase-1 URL-collection files.
+    Springer (and Cambridge) both write two CSVs:
+      *_urls.csv     → article links only  (Phase 1 — never the download target)
+      *_authors.csv  → emails + authors    (Phase 2 — this is what users want)
+    """
     try:
-        files = glob.glob(os.path.join(job_output_dir, '*.csv'))
-        return files[0] if files else None
+        all_files = glob.glob(os.path.join(job_output_dir, '*.csv'))
+        if not all_files:
+            return None
+
+        # Priority 1: files with 'author' or 'email' in name (exclude url-only)
+        email_files = [
+            f for f in all_files
+            if any(k in os.path.basename(f).lower() for k in ('author', 'email', 'result'))
+            and '_urls' not in os.path.basename(f).lower()
+        ]
+        if email_files:
+            return email_files[0]
+
+        # Priority 2: any file that isn't a pure url-collection file
+        non_url_files = [
+            f for f in all_files
+            if '_urls' not in os.path.basename(f).lower()
+        ]
+        if non_url_files:
+            return non_url_files[0]
+
+        # Last resort: return whatever exists (even if it's a urls file)
+        return all_files[0]
+
     except Exception:
         return None
 
