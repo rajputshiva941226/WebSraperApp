@@ -1,1142 +1,3 @@
-<!-- <!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jobs Manager - Journal Scraper</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: #fafafa;
-            min-height: 100vh;
-        }
-
-        .navbar {
-            background: #000000;
-            padding: 15px 0;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
-        }
-
-        .nav-container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 0 20px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .logo {
-            color: white;
-            font-size: 24px;
-            font-weight: bold;
-            text-decoration: none;
-        }
-
-        .nav-links {
-            display: flex;
-            gap: 30px;
-        }
-
-        .nav-links a {
-            color: white;
-            text-decoration: none;
-            font-weight: 500;
-            transition: opacity 0.3s;
-        }
-
-        .nav-links a {
-            position: relative;
-        }
-
-        .nav-links a:hover {
-            color: #9f7aea;
-        }
-
-        .nav-links a::after {
-            content: '';
-            position: absolute;
-            bottom: -5px;
-            left: 0;
-            width: 0;
-            height: 2px;
-            background: #9f7aea;
-            transition: width 0.3s;
-        }
-
-        .nav-links a:hover::after {
-            width: 100%;
-        }
-
-        .credit-badge {
-            background: linear-gradient(135deg, #805ad5, #9f7aea);
-            padding: 6px 16px;
-            border-radius: 20px;
-            font-size: 14px;
-            font-weight: 600;
-            color: white;
-        }
-
-        .user-menu {
-            display: flex;
-            align-items: center;
-            gap: 20px;
-        }
-
-        .container {
-            max-width: 1400px;
-            margin: 30px auto;
-            padding: 0 20px;
-        }
-
-        .page-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 30px;
-        }
-
-        .page-header h1 {
-            font-size: 32px;
-            color: #1a202c;
-        }
-
-        .header-actions {
-            display: flex;
-            gap: 10px;
-        }
-
-        .btn {
-            padding: 10px 20px;
-            border-radius: 8px;
-            background: white;
-            color: #805ad5;
-            border: 2px solid #805ad5;
-            cursor: pointer;
-            font-weight: 600;
-            transition: all 0.3s ease;
-        }
-
-        .btn-primary {
-            background: #805ad5;
-            color: white;
-            border: 2px solid #805ad5;
-        }
-
-        .btn-primary:hover {
-            background: #6b46c1;
-            border-color: #6b46c1;
-        }
-
-        .btn-secondary {
-            background: white;
-            color: #805ad5;
-            border: 2px solid #805ad5;
-        }
-
-        .btn:hover {
-            background: #805ad5;
-            color: white;
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(128, 90, 213, 0.3);
-        }
-
-        .btn-small {
-            padding: 6px 16px;
-            font-size: 14px;
-        }
-
-        .btn-download {
-            background: white;
-            color: #38a169;
-            border: 2px solid #38a169;
-        }
-
-        .btn-download:hover {
-            background: #38a169;
-            color: white;
-        }
-
-        .btn-stop {
-            background: white;
-            color: #e53e3e;
-            border: 2px solid #e53e3e;
-        }
-
-        .btn-stop:hover {
-            background: #e53e3e;
-            color: white;
-        }
-
-        .filters {
-            background: white;
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
-            display: flex;
-            gap: 15px;
-            flex-wrap: wrap;
-            align-items: center;
-        }
-
-        .filter-group {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .filter-group label {
-            font-weight: 600;
-            color: #4a5568;
-            font-size: 14px;
-        }
-
-        .filter-group select {
-            padding: 8px 12px;
-            border: 2px solid #e2e8f0;
-            border-radius: 6px;
-            font-size: 14px;
-        }
-
-        .jobs-container {
-            display: grid;
-            gap: 15px;
-        }
-
-        .job-card {
-            background: white;
-            border-radius: 12px;
-            padding: 20px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
-            border-left: 4px solid #e2e8f0;
-            transition: all 0.3s;
-        }
-
-        .job-card:hover {
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-        }
-
-        .job-card.completed {
-            border-left-color: #48bb78;
-        }
-
-        .job-card.running {
-            border-left-color: #4299e1;
-            animation: pulse 2s infinite;
-        }
-
-        .job-card.failed {
-            border-left-color: #f56565;
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.8; }
-        }
-
-        .job-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            margin-bottom: 15px;
-        }
-
-        .job-title {
-            font-size: 18px;
-            font-weight: 600;
-            color: #1a202c;
-            margin-bottom: 5px;
-        }
-
-        .job-meta {
-            display: flex;
-            gap: 15px;
-            font-size: 14px;
-            color: #718096;
-            flex-wrap: wrap;
-        }
-
-        .job-meta-item {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-        }
-
-        .status-badge {
-            padding: 6px 12px;
-            border-radius: 20px;
-            font-size: 12px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .status-pending {
-            background: #fef3c7;
-            color: #92400e;
-        }
-
-        .status-running {
-            background: #dbeafe;
-            color: #1e40af;
-        }
-
-        .status-completed {
-            background: #d1fae5;
-            color: #065f46;
-        }
-
-        .status-failed {
-            background: #fee2e2;
-            color: #991b1b;
-        }
-
-        .status-stopped {
-            background: #f5e0cc;
-            color: #8b5a00;
-        }
-
-        .job-stats {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 15px;
-            margin: 15px 0;
-            padding: 15px;
-            background: #f7fafc;
-            border-radius: 8px;
-        }
-
-        .stat-item {
-            text-align: center;
-        }
-
-        .stat-value {
-            font-size: 24px;
-            font-weight: bold;
-            color: #667eea;
-        }
-
-        .stat-label {
-            font-size: 12px;
-            color: #718096;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .job-message {
-            padding: 10px;
-            background: #f7fafc;
-            border-radius: 6px;
-            font-size: 14px;
-            color: #4a5568;
-            margin-top: 10px;
-        }
-
-        .job-actions {
-            margin-top: 15px;
-            display: flex;
-            gap: 10px;
-        }
-
-        .btn-small {
-            padding: 8px 16px;
-            font-size: 14px;
-        }
-
-        .btn-download {
-            background: #48bb78;
-            color: white;
-        }
-
-        .btn-download:hover {
-            background: #38a169;
-        }
-
-        .empty-state {
-            background: white;
-            border-radius: 12px;
-            padding: 60px 20px;
-            text-align: center;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
-        }
-
-        .empty-state-icon {
-            font-size: 64px;
-            margin-bottom: 20px;
-        }
-
-        .empty-state h3 {
-            color: #1a202c;
-            margin-bottom: 10px;
-        }
-
-        .empty-state p {
-            color: #718096;
-        }
-
-        .loading {
-            text-align: center;
-            padding: 40px;
-            color: #718096;
-        }
-
-        .progress-bar {
-            height: 4px;
-            background: #e2e8f0;
-            border-radius: 2px;
-            overflow: hidden;
-            margin-top: 10px;
-        }
-
-        .progress-fill {
-            height: 100%;
-            background: linear-gradient(90deg, #667eea, #764ba2);
-            width: 0%;
-            animation: progress 2s ease-in-out infinite;
-        }
-
-        @keyframes progress {
-            0% { width: 0%; }
-            50% { width: 70%; }
-            100% { width: 100%; }
-        }
-
-        .error-message {
-            background: #fed7d7;
-            border-left: 4px solid #f56565;
-            color: #742a2a;
-            padding: 12px 16px;
-            border-radius: 6px;
-            margin-top: 15px;
-            font-size: 14px;
-            font-weight: 500;
-        }
-
-        .error-icon {
-            margin-right: 8px;
-        }
-
-        .job-controls {
-            display: flex;
-            gap: 10px;
-            margin-top: 15px;
-        }
-
-        .btn-stop {
-            background: #f56565;
-            color: white;
-        }
-
-        .btn-stop:hover {
-            background: #e53e3e;
-        }
-
-        .btn-resume {
-            background: #48bb78;
-            color: white;
-        }
-
-        .btn-resume:hover {
-            background: #38a169;
-        }
-
-        .current-url-section {
-            margin-top: 12px;
-            padding: 10px;
-            background: #edf2f7;
-            border-radius: 6px;
-            font-size: 13px;
-            color: #4a5568;
-            word-break: break-word;
-        }
-
-        .current-url-label {
-            font-weight: 600;
-            color: #2d3748;
-            margin-bottom: 4px;
-        }
-
-        .current-url-value {
-            color: #718096;
-            font-family: monospace;
-            font-size: 12px;
-        }
-
-        .stats-row {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-            gap: 10px;
-            margin-top: 12px;
-            padding: 10px;
-            background: #f7fafc;
-            border-radius: 6px;
-        }
-
-        .stat-badge {
-            text-align: center;
-            padding: 8px;
-        }
-
-        .stat-badge-label {
-            font-size: 12px;
-            color: #718096;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: 4px;
-        }
-
-        .stat-badge-value {
-            font-size: 18px;
-            font-weight: bold;
-            color: #667eea;
-        }
-
-        .tabs-container {
-            background: white;
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
-        }
-
-        .tabs-header {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 20px;
-            border-bottom: 2px solid #e2e8f0;
-            padding-bottom: 10px;
-        }
-
-        .tab-button {
-            padding: 10px 20px;
-            background: none;
-            border: none;
-            cursor: pointer;
-            font-weight: 600;
-            color: #718096;
-            border-radius: 8px 8px 0 0;
-            transition: all 0.3s;
-            position: relative;
-        }
-
-        .tab-button:hover {
-            background: #f7fafc;
-            color: #667eea;
-        }
-
-        .tab-button.active {
-            color: #667eea;
-            background: #edf2f7;
-        }
-
-        .tab-button.active::after {
-            content: '';
-            position: absolute;
-            bottom: -12px;
-            left: 0;
-            right: 0;
-            height: 3px;
-            background: #667eea;
-            border-radius: 2px;
-        }
-
-        .tab-content {
-            display: none;
-        }
-
-        .tab-content.active {
-            display: block;
-        }
-
-        .tab-stats {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 15px;
-            margin-bottom: 20px;
-        }
-
-        .tab-stat-card {
-            background: #f7fafc;
-            padding: 15px;
-            border-radius: 8px;
-            text-align: center;
-        }
-
-        .tab-stat-value {
-            font-size: 24px;
-            font-weight: bold;
-            color: #667eea;
-        }
-
-        .tab-stat-label {
-            font-size: 12px;
-            color: #718096;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-top: 5px;
-        }
-
-        .jobs-grid {
-            display: grid;
-            gap: 15px;
-        }
-
-        .btn-bulk-download {
-            background: #9f7aea;
-            color: white;
-        }
-
-        .btn-bulk-download:hover {
-            background: #805ad5;
-        }
-
-        .bulk-actions {
-            background: white;
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .bulk-info {
-            color: #718096;
-            font-size: 14px;
-        }
-
-        @media (max-width: 768px) {
-            .page-header {
-                flex-direction: column;
-                align-items: flex-start;
-                gap: 15px;
-            }
-
-            .filters {
-                flex-direction: column;
-                align-items: stretch;
-            }
-
-            .nav-links {
-                display: none;
-            }
-        }
-    </style>
-</head>
-<body>
-    <nav class="navbar">
-        <div class="nav-container">
-            <a href="/" class="logo">📚 Journal Scraper</a>
-            <div class="nav-links">
-                <a href="/scraper">Start Scraping</a>
-                <a href="/dashboard">Dashboard</a>
-                <a href="/jobs">Jobs</a>
-                {% if session.get('user_id') %}
-                    <div class="user-menu">
-                        <span class="credit-badge">💳 {{ session.get('credits', 0) }} Credits</span>
-                        {% if session.get('user_type') == 'admin' %}
-                            <a href="/admin">Admin Panel</a>
-                        {% endif %}
-                        <a href="/profile">👤 {{ session.get('username') }}</a>
-                        <a href="/logout">Logout</a>
-                    </div>
-                {% else %}
-                    <a href="/login">Login</a>
-                {% endif %}
-            </div>
-        </div>
-    </nav>
-
-    <div class="container">
-        <div class="page-header">
-            <h1>Jobs Manager</h1>
-            <div class="header-actions">
-                <a href="/scraper" class="btn btn-primary">New Job</a>
-            </div>
-        </div>
-
-        <div class="bulk-actions">
-            <div class="bulk-info">
-                <strong>Bulk Actions:</strong> <span id="completed-count">0</span> completed jobs available for download
-            </div>
-            <div>
-                <button class="btn btn-small btn-bulk-download" onclick="downloadAllCompleted()" id="bulk-download-btn" disabled>
-                    📦 Download All Completed
-                </button>
-            </div>
-        </div>
-
-        <div class="tabs-container">
-            <div class="tabs-header" id="tabs-header">
-                <button class="tab-button active" onclick="switchTab('all')">📊 All Jobs</button>
-            </div>
-            
-            <div id="tab-all" class="tab-content active">
-                <div class="tab-stats" id="all-stats">
-                    <div class="tab-stat-card">
-                        <div class="tab-stat-value" id="total-jobs-count">0</div>
-                        <div class="tab-stat-label">Total Jobs</div>
-                    </div>
-                    <div class="tab-stat-card">
-                        <div class="tab-stat-value" id="running-jobs-count">0</div>
-                        <div class="tab-stat-label">Running</div>
-                    </div>
-                    <div class="tab-stat-card">
-                        <div class="tab-stat-value" id="completed-jobs-count">0</div>
-                        <div class="tab-stat-label">Completed</div>
-                    </div>
-                    <div class="tab-stat-card">
-                        <div class="tab-stat-value" id="failed-jobs-count">0</div>
-                        <div class="tab-stat-label">Failed</div>
-                    </div>
-                </div>
-                <div class="jobs-container" id="all-jobs-container"></div>
-            </div>
-        </div>
-
-        <div class="filters">
-            <div class="filter-group">
-                <label>Status:</label>
-                <select id="filter-status" onchange="filterJobs()">
-                    <option value="all">All</option>
-                    <option value="pending">Pending</option>
-                    <option value="running">Running</option>
-                    <option value="completed">Completed</option>
-                    <option value="failed">Failed</option>
-                    <option value="stopped">Stopped</option>
-                </select>
-            </div>
-
-            <div class="filter-group">
-                <label>Journal:</label>
-                <select id="filter-journal" onchange="filterJobs()">
-                    <option value="all">All Journals</option>
-                </select>
-            </div>
-
-            <div style="margin-left: auto; color: #718096; font-size: 14px;">
-                <span id="job-count">Loading...</span>
-            </div>
-        </div>
-
-        <div id="jobs-container" class="jobs-container">
-            <div class="loading">
-                <div style="font-size: 48px; margin-bottom: 10px;">⏳</div>
-                Loading jobs...
-            </div>
-        </div>
-    </div>
-
-    <script>
-        let allJobs = [];
-        let autoRefreshInterval;
-        let currentTab = 'all';
-        let journalTabs = new Set();
-
-        function downloadAllCompleted() {
-            const completedJobs = allJobs.filter(job => job.status === 'completed');
-            if (completedJobs.length === 0) {
-                alert('No completed jobs to download');
-                return;
-            }
-            
-            // Use the bulk download endpoint
-            window.location.href = '/api/download-bulk';
-        }
-        
-        function updateBulkActions() {
-            const completedJobs = allJobs.filter(job => job.status === 'completed');
-            const completedCount = document.getElementById('completed-count');
-            const bulkDownloadBtn = document.getElementById('bulk-download-btn');
-            
-            completedCount.textContent = completedJobs.length;
-            bulkDownloadBtn.disabled = completedJobs.length === 0;
-        }
-
-        function switchTab(tabName) {
-            // Hide all tabs
-            document.querySelectorAll('.tab-content').forEach(tab => {
-                tab.classList.remove('active');
-            });
-            document.querySelectorAll('.tab-button').forEach(btn => {
-                btn.classList.remove('active');
-            });
-            
-            // Show selected tab
-            document.getElementById(`tab-${tabName}`).classList.add('active');
-            event.target.classList.add('active');
-            currentTab = tabName;
-            
-            // Update jobs display for the selected tab
-            updateTabContent(tabName);
-        }
-        
-        function updateTabContent(tabName) {
-            let filteredJobs = allJobs;
-            
-            if (tabName !== 'all') {
-                filteredJobs = allJobs.filter(job => job.journal === tabName);
-            }
-            
-            const container = document.getElementById(`${tabName}-jobs-container`);
-            if (filteredJobs.length === 0) {
-                container.innerHTML = `
-                    <div class="empty-state">
-                        <div class="empty-state-icon">📭</div>
-                        <h3>No Jobs Found</h3>
-                        <p>No jobs for this journal yet</p>
-                    </div>
-                `;
-            } else {
-                container.innerHTML = filteredJobs.map(job => renderJob(job)).join('');
-            }
-            
-            // Update tab stats
-            updateTabStats(tabName, filteredJobs);
-        }
-        
-        function updateTabStats(tabName, jobs) {
-            const stats = {
-                total: jobs.length,
-                running: jobs.filter(j => j.status === 'running' || j.status === 'pending').length,
-                completed: jobs.filter(j => j.status === 'completed').length,
-                failed: jobs.filter(j => j.status === 'failed' || j.status === 'stopped').length
-            };
-            
-            // Safely update elements with null checks
-            const totalCount = document.getElementById(`${tabName}-jobs-count`);
-            const runningCount = document.getElementById(`${tabName}-running-count`);
-            const completedCount = document.getElementById(`${tabName}-completed-count`);
-            const failedCount = document.getElementById(`${tabName}-failed-count`);
-            
-            if (totalCount) totalCount.textContent = stats.total;
-            if (runningCount) runningCount.textContent = stats.running;
-            if (completedCount) completedCount.textContent = stats.completed;
-            if (failedCount) failedCount.textContent = stats.failed;
-        }
-        
-        function createJournalTabs(jobs) {
-            const journals = [...new Set(jobs.map(j => j.journal))];
-            const tabsHeader = document.getElementById('tabs-header');
-            const tabsContainer = document.querySelector('.tabs-container');
-            
-            // Only create tabs for journals that don't exist yet
-            const existingJournalTabs = new Set();
-            const existingTabButtons = tabsHeader.querySelectorAll('.tab-button:not(:first-child)');
-            existingTabButtons.forEach(tab => {
-                const journalName = tab.textContent.trim();
-                // Find the corresponding journal key
-                const job = jobs.find(j => j.journal_name === journalName);
-                if (job) {
-                    existingJournalTabs.add(job.journal);
-                }
-            });
-            
-            // Create tabs only for new journals
-            journals.forEach(journal => {
-                if (!existingJournalTabs.has(journal) && !journalTabs.has(journal)) {
-                    journalTabs.add(journal);
-                    
-                    const job = jobs.find(j => j.journal === journal);
-                    const journalName = job ? job.journal_name : journal;
-                    
-                    // Create tab button
-                    const tabButton = document.createElement('button');
-                    tabButton.className = 'tab-button';
-                    tabButton.onclick = () => switchTab(journal);
-                    tabButton.textContent = journalName;
-                    tabsHeader.appendChild(tabButton);
-                    
-                    // Create tab content
-                    const tabContent = document.createElement('div');
-                    tabContent.id = `tab-${journal}`;
-                    tabContent.className = 'tab-content';
-                    tabContent.innerHTML = `
-                        <div class="tab-stats">
-                            <div class="tab-stat-card">
-                                <div class="tab-stat-value" id="${journal}-jobs-count">0</div>
-                                <div class="tab-stat-label">Total Jobs</div>
-                            </div>
-                            <div class="tab-stat-card">
-                                <div class="tab-stat-value" id="${journal}-running-count">0</div>
-                                <div class="tab-stat-label">Running</div>
-                            </div>
-                            <div class="tab-stat-card">
-                                <div class="tab-stat-value" id="${journal}-completed-count">0</div>
-                                <div class="tab-stat-label">Completed</div>
-                            </div>
-                            <div class="tab-stat-card">
-                                <div class="tab-stat-value" id="${journal}-failed-count">0</div>
-                                <div class="tab-stat-label">Failed</div>
-                            </div>
-                        </div>
-                        <div class="jobs-container" id="${journal}-jobs-container"></div>
-                    `;
-                    tabsContainer.appendChild(tabContent);
-                }
-            });
-        }
-
-        function formatDate(dateString) {
-            if (!dateString) return 'N/A';
-            const date = new Date(dateString);
-            return date.toLocaleString();
-        }
-
-        function formatDuration(seconds) {
-            if (!seconds) return '-';
-            const minutes = Math.floor(seconds / 60);
-            const secs = Math.floor(seconds % 60);
-            return `${minutes}m ${secs}s`;
-        }
-
-        function getStatusClass(status) {
-            return `status-${status.toLowerCase()}`;
-        }
-
-        function renderJob(job) {
-            const statsHtml = job.status === 'completed' ? `
-                <div class="job-stats">
-                    <div class="stat-item">
-                        <div class="stat-value">${job.authors_count || 0}</div>
-                        <div class="stat-label">Authors</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-value">${job.emails_count || 0}</div>
-                        <div class="stat-label">Emails</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-value">${job.links_count || 0}</div>
-                        <div class="stat-label">Links</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-value">${formatDuration(job.duration)}</div>
-                        <div class="stat-label">Duration</div>
-                    </div>
-                </div>
-            ` : job.status === 'running' || job.status === 'pending' ? `
-                <div class="stats-row">
-                    <div class="stat-badge">
-                        <div class="stat-badge-label">Authors</div>
-                        <div class="stat-badge-value">${job.authors_count || 0}</div>
-                    </div>
-                    <div class="stat-badge">
-                        <div class="stat-badge-label">Links</div>
-                        <div class="stat-badge-value">${job.links_count || 0}</div>
-                    </div>
-                    <div class="stat-badge">
-                        <div class="stat-badge-label">Progress</div>
-                        <div class="stat-badge-value">${job.progress || 0}%</div>
-                    </div>
-                </div>
-                ${job.status === 'running' ? `
-                    <div class="current-url-section">
-                        <div class="current-url-label">🌐 Current URL:</div>
-                        <div class="current-url-value">${job.current_url || 'Loading...'}</div>
-                    </div>
-                ` : ''}
-                <div class="progress-bar">
-                    <div class="progress-fill"></div>
-                </div>
-            ` : '';
-
-            const errorHtml = job.status === 'failed' && job.error ? `
-                <div class="error-message">
-                    <span class="error-icon">✗</span>
-                    <strong>Error:</strong> ${job.error}
-                </div>
-            ` : '';
-
-            const controlsHtml = (job.status === 'running' || job.status === 'pending') ? `
-                <div class="job-controls">
-                    <button class="btn btn-small btn-stop" onclick="stopJob('${job.id}')">
-                        ⏹️ Stop Job
-                    </button>
-                </div>
-            ` : '';
-
-            const actionsHtml = (job.status === 'completed' || (job.status === 'failed' && job.has_partial_results)) ? `
-                <div class="job-actions">
-                    <a href="/api/download/${job.id}?format=csv" class="btn btn-small btn-download">
-                        📄 Download CSV
-                    </a>
-                    <a href="/api/download/${job.id}?format=xlsx" class="btn btn-small btn-download" style="margin-left: 10px;">
-                        📊 Download XLSX
-                    </a>
-                    ${job.status === 'failed' && job.has_partial_results ? '<span style="color: #f59e0b; font-size: 11px; margin-left: 10px;">⚠ Partial Results</span>' : ''}
-                </div>
-            ` : '';
-
-            return `
-                <div class="job-card ${job.status}" data-status="${job.status}" data-journal="${job.journal}">
-                    <div class="job-header">
-                        <div>
-                            <div class="job-title">${job.journal_name}</div>
-                            <div class="job-meta">
-                                <span class="job-meta-item">🔍 ${job.keyword}</span>
-                                <span class="job-meta-item">📅 ${job.start_date} - ${job.end_date}</span>
-                            </div>
-                        </div>
-                        <span class="status-badge ${getStatusClass(job.status)}">${job.status}</span>
-                    </div>
-                    
-                    ${statsHtml}
-                    
-                    <div class="job-meta">
-                        <span class="job-meta-item">
-                            🕐 Created: ${formatDate(job.created_at)}
-                        </span>
-                        ${job.end_time ? `
-                            <span class="job-meta-item">
-                                ✅ Finished: ${formatDate(job.end_time)}
-                            </span>
-                        ` : ''}
-                    </div>
-                    
-                    ${errorHtml}
-                    ${job.message && job.status !== 'failed' ? `<div class="job-message">${job.message}</div>` : ''}
-                    ${controlsHtml}
-                    ${actionsHtml}
-                </div>
-            `;
-        }
-
-        async function stopJob(jobId) {
-            try {
-                const response = await fetch(`/api/stop-job/${jobId}`, {
-                    method: 'POST'
-                });
-                
-                if (response.ok) {
-                    const result = await response.json();
-                    console.log('Job stopped:', result);
-                    loadJobs();  // Refresh the job list
-                } else {
-                    const error = await response.json();
-                    alert('Error stopping job: ' + error.error);
-                }
-            } catch (error) {
-                console.error('Error stopping job:', error);
-                alert('Failed to stop job');
-            }
-        }
-
-        async function loadJobs() {
-            try {
-                const response = await fetch('/api/jobs');
-                allJobs = await response.json();
-                
-                // Check if there are any running jobs - if not, stop polling
-                const hasRunningJobs = allJobs.some(j => j.status === 'running' || j.status === 'pending');
-                if (!hasRunningJobs && autoRefreshInterval) {
-                    clearInterval(autoRefreshInterval);
-                    autoRefreshInterval = null;
-                    console.log('All jobs completed, stopped polling');
-                }
-                // Note: Don't create new intervals here - only the initial one at page load
-                
-                // Populate journal filter
-                const journals = [...new Set(allJobs.map(j => j.journal))];
-                const journalFilter = document.getElementById('filter-journal');
-                const currentValue = journalFilter.value;
-                journalFilter.innerHTML = '<option value="all">All Journals</option>' +
-                    journals.map(j => {
-                        const job = allJobs.find(job => job.journal === j);
-                        return `<option value="${j}">${job.journal_name}</option>`;
-                    }).join('');
-                journalFilter.value = currentValue;
-                
-                // Create journal tabs if they don't exist
-                createJournalTabs(allJobs);
-                
-                // Update current tab content
-                updateTabContent(currentTab);
-                
-                // Update overall stats
-                updateTabStats('all', allJobs);
-                
-                // Update bulk actions
-                updateBulkActions();
-                
-            } catch (error) {
-                console.error('Error loading jobs:', error);
-                document.getElementById('jobs-container').innerHTML = `
-                    <div class="empty-state">
-                        <div class="empty-state-icon">✗</div>
-                        <h3>Error Loading Jobs</h3>
-                        <p>Please try refreshing the page</p>
-                    </div>
-                `;
-            }
-        }
-
-        function filterJobs() {
-            const statusFilter = document.getElementById('filter-status').value;
-            const journalFilter = document.getElementById('filter-journal').value;
-            
-            let filtered = allJobs;
-            
-            if (statusFilter !== 'all') {
-                filtered = filtered.filter(j => j.status === statusFilter);
-            }
-            
-            if (journalFilter !== 'all') {
-                filtered = filtered.filter(j => j.journal === journalFilter);
-            }
-            
-            const container = document.getElementById('jobs-container');
-            document.getElementById('job-count').textContent = 
-                `${filtered.length} of ${allJobs.length} jobs`;
-            
-            if (filtered.length === 0) {
-                container.innerHTML = `
-                    <div class="empty-state">
-                        <div class="empty-state-icon">📭</div>
-                        <h3>No Jobs Found</h3>
-                        <p>No jobs match the selected filters</p>
-                    </div>
-                `;
-            } else {
-                container.innerHTML = filtered.map(job => renderJob(job)).join('');
-            }
-        }
-
-        // Load jobs on page load
-        loadJobs();
-        
-        // Auto-refresh every 3 seconds for better real-time updates - but stops when all jobs are completed/failed/stopped
-        // Only create ONE interval at startup
-        if (!autoRefreshInterval) {
-            autoRefreshInterval = setInterval(loadJobs, 3000);
-        }
-        
-        // Stop auto-refresh when page is hidden
-        document.addEventListener('visibilitychange', () => {
-            if (document.hidden) {
-                clearInterval(autoRefreshInterval);
-                autoRefreshInterval = null;
-            } else {
-                loadJobs().then(() => {
-                    // Only restart polling if there are running jobs
-                    const hasRunningJobs = allJobs.some(j => j.status === 'running' || j.status === 'pending');
-                    if (hasRunningJobs && !autoRefreshInterval) {
-                        autoRefreshInterval = setInterval(loadJobs, 3000);
-                    }
-                });
-            }
-        });
-    </script>
-</body>
-</html> -->
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1334,15 +195,13 @@
         }
 
         .filters {
-            background: white;
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
             display: flex;
             gap: 15px;
             flex-wrap: wrap;
             align-items: center;
+            padding: 12px 0 16px;
+            border-bottom: 1px solid #e2e8f0;
+            margin-bottom: 20px;
         }
 
         .filter-group {
@@ -1712,30 +571,30 @@
 
         .tab-stats {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 15px;
+            grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+            gap: 12px;
             margin-bottom: 20px;
         }
 
         .tab-stat-card {
             background: #f7fafc;
-            padding: 15px;
+            padding: 12px 10px;
             border-radius: 8px;
             text-align: center;
         }
 
         .tab-stat-value {
-            font-size: 24px;
+            font-size: 22px;
             font-weight: bold;
             color: #667eea;
         }
 
         .tab-stat-label {
-            font-size: 12px;
+            font-size: 11px;
             color: #718096;
             text-transform: uppercase;
             letter-spacing: 0.5px;
-            margin-top: 5px;
+            margin-top: 4px;
         }
 
         .jobs-grid { display: grid; gap: 15px; }
@@ -1821,7 +680,30 @@
             <div class="tabs-header" id="tabs-header">
                 <button class="tab-button active" onclick="switchTab('all', event)">📊 All Jobs</button>
             </div>
-            
+
+            <!-- Filters live here, above the job list, inside the single card -->
+            <div class="filters">
+                <div class="filter-group">
+                    <label>Status:</label>
+                    <select id="filter-status" onchange="filterJobs()">
+                        <option value="all">All</option>
+                        <option value="pending">Pending</option>
+                        <option value="running">Running</option>
+                        <option value="completed">Completed</option>
+                        <option value="failed">Failed</option>
+                        <option value="stopped">Stopped</option>
+                    </select>
+                </div>
+                <div class="filter-group" id="journal-filter-group">
+                    <select id="filter-journal" onchange="filterJobs()">
+                        <option value="all">All Journals</option>
+                    </select>
+                </div>
+                <div style="margin-left: auto; color: #718096; font-size: 14px;">
+                    <span id="job-count">Loading...</span>
+                </div>
+            </div>
+
             <div id="tab-all" class="tab-content active">
                 <div class="tab-stats" id="all-stats">
                     <div class="tab-stat-card">
@@ -1829,51 +711,32 @@
                         <div class="tab-stat-label">Total Jobs</div>
                     </div>
                     <div class="tab-stat-card">
-                        <div class="tab-stat-value" id="running-jobs-count">0</div>
+                        <div class="tab-stat-value" id="running-jobs-count" style="color:#4299e1">0</div>
                         <div class="tab-stat-label">Running</div>
                     </div>
                     <div class="tab-stat-card">
-                        <div class="tab-stat-value" id="completed-jobs-count">0</div>
+                        <div class="tab-stat-value" id="pending-jobs-count" style="color:#d69e2e">0</div>
+                        <div class="tab-stat-label">Pending</div>
+                    </div>
+                    <div class="tab-stat-card">
+                        <div class="tab-stat-value" id="completed-jobs-count" style="color:#48bb78">0</div>
                         <div class="tab-stat-label">Completed</div>
                     </div>
                     <div class="tab-stat-card">
-                        <div class="tab-stat-value" id="failed-jobs-count">0</div>
+                        <div class="tab-stat-value" id="failed-jobs-count" style="color:#f56565">0</div>
                         <div class="tab-stat-label">Failed</div>
                     </div>
+                    <div class="tab-stat-card">
+                        <div class="tab-stat-value" id="stopped-jobs-count" style="color:#a0aec0">0</div>
+                        <div class="tab-stat-label">Stopped</div>
+                    </div>
                 </div>
-                <div class="jobs-container" id="all-jobs-container"></div>
-            </div>
-        </div>
-
-        <div class="filters">
-            <div class="filter-group">
-                <label>Status:</label>
-                <select id="filter-status" onchange="filterJobs()">
-                    <option value="all">All</option>
-                    <option value="pending">Pending</option>
-                    <option value="running">Running</option>
-                    <option value="completed">Completed</option>
-                    <option value="failed">Failed</option>
-                    <option value="stopped">Stopped</option>
-                </select>
-            </div>
-
-            <div class="filter-group">
-                <label>Journal:</label>
-                <select id="filter-journal" onchange="filterJobs()">
-                    <option value="all">All Journals</option>
-                </select>
-            </div>
-
-            <div style="margin-left: auto; color: #718096; font-size: 14px;">
-                <span id="job-count">Loading...</span>
-            </div>
-        </div>
-
-        <div id="jobs-container" class="jobs-container">
-            <div class="loading">
-                <div style="font-size: 48px; margin-bottom: 10px;">⏳</div>
-                Loading jobs...
+                <div class="jobs-container" id="all-jobs-container">
+                    <div class="loading">
+                        <div style="font-size: 48px; margin-bottom: 10px;">⏳</div>
+                        Loading jobs...
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -1914,42 +777,66 @@
             if (ev && ev.target) ev.target.classList.add('active');
             currentTab = tabName;
 
-            updateTabContent(tabName);
+            // Hide journal dropdown on journal-specific tabs (it's redundant)
+            const journalFilterGroup = document.getElementById('journal-filter-group');
+            if (journalFilterGroup) {
+                journalFilterGroup.style.display = tabName === 'all' ? '' : 'none';
+            }
+
+            // Reset status filter on tab switch so you see all jobs for that tab
+            document.getElementById('filter-status').value = 'all';
+
+            filterJobs();
         }
 
         function updateTabContent(tabName) {
-            let filtered = tabName === 'all' ? allJobs : allJobs.filter(j => j.journal === tabName);
+            // Re-read current filter values every time
+            filterJobs();
+        }
 
-            const container = document.getElementById(`${tabName}-jobs-container`);
-            if (!container) return;
+        function filterJobs() {
+            const statusFilter  = document.getElementById('filter-status').value;
+            const journalFilter = document.getElementById('filter-journal').value;
 
-            if (filtered.length === 0) {
-                container.innerHTML = `
-                    <div class="empty-state">
-                        <div class="empty-state-icon">📭</div>
-                        <h3>No Jobs Found</h3>
-                        <p>No jobs match the selected filters</p>
-                    </div>`;
-            } else {
-                container.innerHTML = filtered.map(job => renderJob(job)).join('');
+            // Scope to current tab's journal first
+            let base = currentTab === 'all'
+                ? allJobs
+                : allJobs.filter(j => j.journal === currentTab);
+
+            // Journal dropdown only applies on "All" tab
+            if (currentTab === 'all' && journalFilter !== 'all') {
+                base = base.filter(j => j.journal === journalFilter);
             }
 
-            updateTabStats(tabName, filtered);
+            // Status filter
+            if (statusFilter !== 'all') base = base.filter(j => j.status === statusFilter);
+
+            document.getElementById('job-count').textContent =
+                `${base.length} of ${allJobs.length} jobs`;
+
+            const container = document.getElementById(`${currentTab}-jobs-container`);
+            if (!container) return;
+
+            container.innerHTML = base.length === 0 ? `
+                <div class="empty-state">
+                    <div class="empty-state-icon">📭</div>
+                    <h3>No Jobs Found</h3>
+                    <p>No jobs match the selected filters</p>
+                </div>` : base.map(job => renderJob(job)).join('');
+
+            // Stats always match what's currently shown
+            updateTabStats(currentTab, base);
         }
 
         function updateTabStats(tabName, jobs) {
-            const ids = {
-                total:     `${tabName === 'all' ? 'total' : tabName}-jobs-count`,
-                running:   `${tabName === 'all' ? 'running' : tabName + '-running'}-count`,
-                completed: `${tabName === 'all' ? 'completed' : tabName + '-completed'}-count`,
-                failed:    `${tabName === 'all' ? 'failed' : tabName + '-failed'}-count`,
-            };
-
+            const pre = tabName === 'all' ? '' : tabName + '-';
             const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
-            set(ids.total,     jobs.length);
-            set(ids.running,   jobs.filter(j => j.status === 'running' || j.status === 'pending').length);
-            set(ids.completed, jobs.filter(j => j.status === 'completed').length);
-            set(ids.failed,    jobs.filter(j => j.status === 'failed' || j.status === 'stopped').length);
+            set(`${pre}total-jobs-count`,     jobs.length);
+            set(`${pre}running-jobs-count`,   jobs.filter(j => j.status === 'running').length);
+            set(`${pre}pending-jobs-count`,   jobs.filter(j => j.status === 'pending').length);
+            set(`${pre}completed-jobs-count`, jobs.filter(j => j.status === 'completed').length);
+            set(`${pre}failed-jobs-count`,    jobs.filter(j => j.status === 'failed').length);
+            set(`${pre}stopped-jobs-count`,   jobs.filter(j => j.status === 'stopped').length);
         }
 
         function createJournalTabs(jobs) {
@@ -1976,20 +863,28 @@
                 tabContent.innerHTML = `
                     <div class="tab-stats">
                         <div class="tab-stat-card">
-                            <div class="tab-stat-value" id="${journal}-jobs-count">0</div>
+                            <div class="tab-stat-value" id="${journal}-total-jobs-count">0</div>
                             <div class="tab-stat-label">Total Jobs</div>
                         </div>
                         <div class="tab-stat-card">
-                            <div class="tab-stat-value" id="${journal}-running-count">0</div>
+                            <div class="tab-stat-value" id="${journal}-running-jobs-count" style="color:#4299e1">0</div>
                             <div class="tab-stat-label">Running</div>
                         </div>
                         <div class="tab-stat-card">
-                            <div class="tab-stat-value" id="${journal}-completed-count">0</div>
+                            <div class="tab-stat-value" id="${journal}-pending-jobs-count" style="color:#d69e2e">0</div>
+                            <div class="tab-stat-label">Pending</div>
+                        </div>
+                        <div class="tab-stat-card">
+                            <div class="tab-stat-value" id="${journal}-completed-jobs-count" style="color:#48bb78">0</div>
                             <div class="tab-stat-label">Completed</div>
                         </div>
                         <div class="tab-stat-card">
-                            <div class="tab-stat-value" id="${journal}-failed-count">0</div>
+                            <div class="tab-stat-value" id="${journal}-failed-jobs-count" style="color:#f56565">0</div>
                             <div class="tab-stat-label">Failed</div>
+                        </div>
+                        <div class="tab-stat-card">
+                            <div class="tab-stat-value" id="${journal}-stopped-jobs-count" style="color:#a0aec0">0</div>
+                            <div class="tab-stat-label">Stopped</div>
                         </div>
                     </div>
                     <div class="jobs-container" id="${journal}-jobs-container"></div>`;
@@ -2200,7 +1095,7 @@
                     autoRefreshInterval = null;
                 }
 
-                /* Populate journal filter */
+                /* Populate journal filter — preserve current selection */
                 const journals      = [...new Set(allJobs.map(j => j.journal))];
                 const journalFilter = document.getElementById('filter-journal');
                 const curVal        = journalFilter.value;
@@ -2212,40 +1107,20 @@
                 journalFilter.value = curVal;
 
                 createJournalTabs(allJobs);
-                updateTabContent(currentTab);
                 updateTabStats('all', allJobs);
                 updateBulkActions();
-                filterJobs();
+                filterJobs();   // single render call — respects active tab + filters
 
             } catch (err) {
                 console.error('Error loading jobs:', err);
-                document.getElementById('jobs-container').innerHTML = `
+                const c = document.getElementById(`${currentTab}-jobs-container`);
+                if (c) c.innerHTML = `
                     <div class="empty-state">
                         <div class="empty-state-icon">✗</div>
                         <h3>Error Loading Jobs</h3>
                         <p>Please try refreshing the page</p>
                     </div>`;
             }
-        }
-
-        function filterJobs() {
-            const statusFilter  = document.getElementById('filter-status').value;
-            const journalFilter = document.getElementById('filter-journal').value;
-
-            let filtered = allJobs;
-            if (statusFilter  !== 'all') filtered = filtered.filter(j => j.status  === statusFilter);
-            if (journalFilter !== 'all') filtered = filtered.filter(j => j.journal === journalFilter);
-
-            document.getElementById('job-count').textContent =
-                `${filtered.length} of ${allJobs.length} jobs`;
-
-            const container = document.getElementById('jobs-container');
-            container.innerHTML = filtered.length === 0 ? `
-                <div class="empty-state">
-                    <div class="empty-state-icon">📭</div>
-                    <h3>No Jobs Found</h3>
-                    <p>No jobs match the selected filters</p>
-                </div>` : filtered.map(job => renderJob(job)).join('');
         }
 
         /* ── Bootstrap ── */
