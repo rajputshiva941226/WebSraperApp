@@ -95,6 +95,8 @@ class CambridgeScraper:
             options.add_argument('--disable-background-timer-throttling')
             options.add_argument('--disable-backgrounding-occluded-windows')
             options.add_argument('--disable-renderer-backgrounding')
+            # Eager: DOM ready is enough, skip waiting for images/JS
+            options.page_load_strategy = 'eager'
 
             self.uc_temp_dir = tempfile.mkdtemp(prefix="Cambridge_")
 
@@ -104,7 +106,8 @@ class CambridgeScraper:
                 version_main=None,
                 use_subprocess=False
             )
-            self.wait = WebDriverWait(self.driver, 60)
+            self.driver.set_page_load_timeout(45)  # prevents 120s HTTP pool hang
+            self.wait = WebDriverWait(self.driver, 30)
 
             # Verify browser is alive
             time.sleep(2)
@@ -130,6 +133,30 @@ class CambridgeScraper:
             except Exception:
                 pass
 
+    def _reinit_driver(self):
+        """Kill the dead Chrome session and start a fresh one."""
+        self.logger.warning("Cambridge ==> Reinitialising Chrome after session failure...")
+        try:
+            if self.driver:
+                try:
+                    self.driver.quit()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        self.driver = None
+        time.sleep(3)
+        self._init_driver()
+        self.logger.info("Cambridge ==> Chrome reinitialised successfully")
+
+    def _is_driver_alive(self):
+        """Quick check if ChromeDriver session is still responsive."""
+        try:
+            _ = self.driver.current_url
+            return True
+        except Exception:
+            return False
+
     # ─────────────────────────────────────────────────────────────────────
     # Main run
     # ─────────────────────────────────────────────────────────────────────
@@ -154,25 +181,41 @@ class CambridgeScraper:
         safe_ed = self.end_year.replace('/', '-')
         url_file     = f"Cambridge_{safe_kw}_{safe_sd}-{safe_ed}_urls.csv"
         authors_file = f"Cambridge_{safe_kw}_{safe_sd}-{safe_ed}_authors.csv"
+        authors_path = os.path.join(work_dir, authors_file)
 
         self.initialize_csv(work_dir, url_file,     ["Article_URL"])
         self.initialize_csv(work_dir, authors_file, ["Article URL", "Name", "Email", "Match Score"])
 
+        phase1_ok = False
         try:
             self._progress(5, "PHASE 1: Extracting article URLs from all pages...")
             self.scrape_article_links_streaming(work_dir, url_file)
-
-            self._progress(40, "PHASE 2: Reading URLs and extracting author information...")
-            self.scrape_authors_from_url_file(work_dir, url_file, authors_file)
-
-            self._progress(100, "Scraping completed.")
-            self.logger.info("Cambridge ==> Scraping completed.")
+            phase1_ok = True
+        except Exception as exc:
+            self.logger.error(f"Cambridge ==> Phase 1 failed: {exc}")
         finally:
-            if self.driver:
+            if not phase1_ok and self.driver:
                 try:
                     self.driver.quit()
                 except Exception:
                     pass
+
+        if not phase1_ok:
+            return authors_path  # nothing to scrape
+
+        self._progress(40, "PHASE 2: Reading URLs and extracting author information...")
+        self.scrape_authors_from_url_file(work_dir, url_file, authors_file)
+
+        self._progress(100, "Scraping completed.")
+        self.logger.info("Cambridge ==> Scraping completed.")
+
+        if self.driver:
+            try:
+                self.driver.quit()
+            except Exception:
+                pass
+
+        return authors_path
 
     # ─────────────────────────────────────────────────────────────────────
     # CSV helpers
@@ -306,25 +349,109 @@ class CambridgeScraper:
                     for row in csv.DictReader(file)
                     if row.get("Article_URL", "").strip()
                 ]
-
-            total = len(urls)
-            self.logger.info(f"Cambridge ==> Processing {total} articles")
-
-            for idx, article_url in enumerate(urls, 1):
-                self.logger.info(f"Cambridge ==> Processing article {idx}/{total}: {article_url}")
-                self.scrape_article_streaming(article_url, output_dir, authors_file)
-                pct = int(40 + (idx / total) * 55)              # 40 → 95%
-                self._progress(pct, f"Author extraction: {idx}/{total}",
-                               current_url=article_url)
-
-            self.logger.info(f"Cambridge ==> Completed processing {total} articles")
         except Exception as e:
-            self.logger.error(f"Cambridge ==> Error reading URL file: {e}")
+            self.logger.error(f"Cambridge ==> Could not read URL file: {e}")
+            return
+
+        total = len(urls)
+        self.logger.info(f"Cambridge ==> Processing {total} articles")
+
+        consecutive_failures = 0
+        MAX_CONSECUTIVE_FAILURES = 3
+
+        for idx, article_url in enumerate(urls, 1):
+            self.logger.info(f"Cambridge ==> Processing article {idx}/{total}: {article_url}")
+
+            # Check if driver is still alive before each article
+            if not self._is_driver_alive():
+                self.logger.warning("Cambridge ==> Driver session dead, reinitialising...")
+                try:
+                    self._reinit_driver()
+                    consecutive_failures = 0
+                except Exception as reinit_err:
+                    self.logger.error(f"Cambridge ==> Driver reinit failed: {reinit_err}")
+                    self.logger.error("Cambridge ==> Cannot continue, saving partial results")
+                    break
+
+            try:
+                self.scrape_article_streaming(article_url, output_dir, authors_file)
+                consecutive_failures = 0  # Reset on success
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:
+                from selenium.common.exceptions import WebDriverException
+                err_str = str(e)
+                # HTTPConnectionPool ReadTimeout = Chrome is stuck but session may be alive
+                # WebDriverException with "invalid session" = Chrome is dead, must reinit
+                is_session_dead = (
+                    isinstance(e, WebDriverException) and
+                    any(kw in err_str for kw in [
+                        "invalid session", "chrome not reachable",
+                        "session deleted", "no such session",
+                        "connection refused", "failed to receive"
+                    ])
+                )
+                is_load_timeout = "Read timed out" in err_str or "TimeoutException" in type(e).__name__
+
+                if is_load_timeout:
+                    # Page was just slow — Chrome is fine, skip to next article
+                    self.logger.warning(
+                        f"Cambridge ==> Page load timed out on article {idx}/{total} — skipping"
+                    )
+                    try:
+                        self.driver.execute_script("window.stop();")
+                    except Exception:
+                        pass
+                    consecutive_failures = 0
+                    continue
+
+                self.logger.error(f"Cambridge ==> Error on article {idx}/{total}: {e}")
+                consecutive_failures += 1
+
+                # Session-dead or repeated failures — reinit driver
+                if is_session_dead or consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    self.logger.warning(
+                        f"Cambridge ==> Driver appears dead (consecutive={consecutive_failures}), "
+                        "reinitialising..."
+                    )
+                    try:
+                        self._reinit_driver()
+                        consecutive_failures = 0
+                    except Exception as reinit_err:
+                        self.logger.error(f"Cambridge ==> Driver reinit failed: {reinit_err}")
+                        self.logger.error("Cambridge ==> Stopping article loop, saving partial results")
+                        break
+
+                continue  # Skip to next article — never exit the loop on a single failure
+
+            pct = int(40 + (idx / total) * 55)   # 40 → 95%
+            self._progress(pct, f"Author extraction: {idx}/{total}",
+                           current_url=article_url)
+
+        self.logger.info(f"Cambridge ==> Completed processing {total} articles")
 
     def scrape_article_streaming(self, article_url, directory, filename):
-        """Scrape article and write author data immediately to CSV."""
+        """Scrape article and write author data immediately to CSV.
+
+        Raises:
+            WebDriverException  — if Chrome session is dead (triggers reinit in caller)
+            TimeoutException    — if page load times out (safe to continue, Chrome still alive)
+        """
+        from selenium.common.exceptions import TimeoutException as SeleniumTimeout
+        from selenium.common.exceptions import WebDriverException
+
         self.logger.info(f"Cambridge ==> Scraping article: {article_url}")
-        self.driver.get(article_url)
+
+        try:
+            self.driver.get(article_url)
+        except SeleniumTimeout:
+            # Page load hit the 45s timeout — stop loading and continue with DOM we have
+            self.logger.warning(f"Cambridge ==> Page load timeout on {article_url} — stopping load and proceeding")
+            try:
+                self.driver.execute_script("window.stop();")
+            except Exception:
+                pass
+        # WebDriverException (session dead) is NOT caught here — bubbles up to caller
 
         try:
             WebDriverWait(self.driver, 10).until(
