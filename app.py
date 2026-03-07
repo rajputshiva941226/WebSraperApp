@@ -27,12 +27,11 @@ from flask_login import LoginManager
 _USE_CELERY = bool(os.environ.get('REDIS_URL'))
 if _USE_CELERY:
     try:
-        from celery_worker import run_scraper_task as _celery_run_scraper
+        from celery_worker import run_scraper_task as _celery_run_scraper, SELENIUM_SCRAPERS, API_SCRAPERS
         print("[Celery] Redis found — jobs will run via Celery workers")
     except ImportError:
         _USE_CELERY = False
         print("[Celery] celery_worker import failed — falling back to threads")
-
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'change-this-in-production')
@@ -677,64 +676,61 @@ def jobs_page():
 
 @app.route('/api/start-scraping', methods=['POST'])
 def start_scraping():
-    """API endpoint to start scraping jobs (supports multiple journals)"""
+    """Start scraping jobs — supports multiple journals."""
     try:
         data = request.get_json()
-        
-        # Support both single journal (backward compatibility) and multiple journals
+
         journals = data.get('journals', [])
         if not journals and 'journal' in data:
             journals = [data['journal']]
-        
         if not journals:
             return jsonify({'error': 'No journals selected'}), 400
-        
-        # Validate all journals
+
         for journal in journals:
             if journal not in JOURNALS or not JOURNALS[journal]['enabled']:
                 return jsonify({'error': f'Invalid or disabled journal: {journal}'}), 400
-        
-        # Get conference name and mesh type
+
         conference_name = data.get('conference_name', 'default')
-        mesh_type = data.get('mesh_type', 'all')
-        
-        # Create job entries for each journal
-        job_ids = []
-        selenium_count = 0  # Track selenium scrapers for delay
-        user_id = session.get('user_id')
-        
-        for idx, journal in enumerate(journals):
-            # Generate unique job ID
+        mesh_type       = data.get('mesh_type', 'all')
+        job_ids         = []
+        user_id         = session.get('user_id')
+        selenium_count  = 0
+
+        for journal in journals:
             job_id = str(uuid.uuid4())
             job_ids.append(job_id)
-            
-            # Create job entry in memory
-            active_jobs[job_id] = {
-                'id': job_id,
-                'user_id': user_id,
-                'journal': journal,
-                'journal_name': JOURNALS[journal]['name'],
-                'keyword': data['keyword'],
-                'conference': conference_name,
-                'conference_name': conference_name,
-                'mesh_type': mesh_type if journal == 'pubmed' else None,
-                'start_date': data['start_date'],
-                'end_date': data['end_date'],
-                'status': 'pending',
-                'created_at': datetime.now().isoformat(),
-                'authors_count': 0,
-                'emails_count': 0,
-                'links_count': 0,
-                'unique_authors': 0,
-                'unique_emails': 0,
-                'unique_links': 0,
-                'current_url': '',
-                'progress': 0,
-                'message': 'Job queued',
-                'paused': False
-            }
-            
-            # Persist job to database
+
+            # ── FIX 1: Only populate active_jobs for thread-based execution.
+            # With Celery, active_jobs causes split-brain across Gunicorn workers
+            # because each process owns a separate copy of the dict.
+            # The DB (written by the Celery worker via _db_update) is authoritative.
+            if not _USE_CELERY:
+                active_jobs[job_id] = {
+                    'id':            job_id,
+                    'user_id':       user_id,
+                    'journal':       journal,
+                    'journal_name':  JOURNALS[journal]['name'],
+                    'keyword':       data['keyword'],
+                    'conference':    conference_name,
+                    'conference_name': conference_name,
+                    'mesh_type':     mesh_type if journal == 'pubmed' else None,
+                    'start_date':    data['start_date'],
+                    'end_date':      data['end_date'],
+                    'status':        'pending',
+                    'created_at':    datetime.now().isoformat(),
+                    'authors_count': 0,
+                    'emails_count':  0,
+                    'links_count':   0,
+                    'unique_authors': 0,
+                    'unique_emails':  0,
+                    'unique_links':   0,
+                    'current_url':   '',
+                    'progress':      0,
+                    'message':       'Job queued',
+                    'paused':        False,
+                }
+
+            # Persist to DB — both Celery and thread paths need this
             try:
                 db_job = Job(
                     id=job_id,
@@ -749,35 +745,39 @@ def start_scraping():
                     status='pending',
                     progress=0,
                     message='Job queued',
-                    created_at=datetime.utcnow()
+                    created_at=datetime.utcnow(),
                 )
                 db.session.add(db_job)
                 db.session.commit()
             except Exception as db_err:
-                print(f"[DB] Failed to save job to DB: {db_err}")
+                print(f"[DB] Failed to save job: {db_err}")
                 db.session.rollback()
-            
-            # Initialize stop flag
+
             job_stop_flags[job_id] = False
-            
-            # Add delay between selenium-based scrapers (3-5 seconds)
-            # API-based scrapers (europepmc, pubmed) can start immediately
+
+            # Stagger delay between selenium scrapers
             delay = 0
             if JOURNALS[journal]['type'] == 'selenium':
                 if selenium_count > 0:
                     import random
                     delay = random.uniform(3, 5)
                 selenium_count += 1
-            
-            # Dispatch job — use Celery if Redis is configured, else thread
+
             if _USE_CELERY:
+                # Route to the right queue so selenium/api workers can be
+                # scaled independently:
+                #   celery -A celery_worker worker -Q selenium --concurrency=2
+                #   celery -A celery_worker worker -Q api      --concurrency=8
+                queue = 'selenium' if journal in SELENIUM_SCRAPERS else 'api'
                 task = _celery_run_scraper.apply_async(
                     args=(job_id, user_id, journal, data['keyword'],
                           data['start_date'], data['end_date'],
                           conference_name, mesh_type),
-                    countdown=delay  # Celery handles stagger delay natively
+                    countdown=delay,
+                    queue=queue,
                 )
-                # Store Celery task id in DB for tracking
+                # Write the Celery task ID back to DB so recover_stuck_jobs
+                # can distinguish "Celery accepted" from "never started"
                 try:
                     db_j = Job.query.get(job_id)
                     if db_j:
@@ -790,95 +790,109 @@ def start_scraping():
                     target=run_scraper_task,
                     args=(job_id, user_id, journal, data['keyword'],
                           data['start_date'], data['end_date'],
-                          conference_name, mesh_type, delay)
+                          conference_name, mesh_type, delay),
                 )
                 thread.daemon = True
                 thread.start()
                 job_threads[job_id] = thread
-                # Apply delay in main thread to stagger selenium starts
                 if delay > 0:
                     time.sleep(delay)
-        
+
         return jsonify({
-            'success': True,
-            'job_ids': job_ids,
-            'message': f'Started {len(job_ids)} scraping job(s) successfully'
+            'success':  True,
+            'job_ids':  job_ids,
+            'message':  f'Started {len(job_ids)} scraping job(s) successfully',
         })
-        
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
+
 @app.route('/api/jobs')
 def list_jobs():
-    """List jobs - DB only, admins see all, regular users see only their own"""
+    """List jobs — DB is primary source; in-memory overlay only for threads."""
     if 'user_id' not in session:
         return jsonify({'error': 'Not authenticated'}), 401
 
-    user_id = session.get('user_id')
+    user_id  = session.get('user_id')
     is_admin = (session.get('user_type', 'external') == 'admin')
 
     try:
-        q = Job.query if is_admin else Job.query.filter_by(user_id=user_id)
+        q       = Job.query if is_admin else Job.query.filter_by(user_id=user_id)
         db_jobs = q.order_by(Job.created_at.desc()).limit(200).all()
-        result = [j.to_dict() for j in db_jobs]
+        result  = [j.to_dict() for j in db_jobs]
     except Exception as e:
         print(f"[DB] Error fetching jobs: {e}")
         result = []
 
-    # Overlay live-cache fields (progress, message, current_url) for running jobs
-    live_map = {jid: j for jid, j in active_jobs.items()
-                if is_admin or j.get('user_id') == user_id}
-    for item in result:
-        if item['id'] in live_map:
-            live = live_map[item['id']]
-            item['progress'] = live.get('progress', item.get('progress', 0))
-            item['message'] = live.get('message', item.get('message', ''))
-            item['current_url'] = live.get('current_url', item.get('current_url', ''))
-            item['authors_count'] = live.get('authors_count', item.get('authors_count', 0))
-            item['emails_count'] = live.get('emails_count', item.get('emails_count', 0))
-            item['links_count'] = live.get('links_count', item.get('links_count', 0))
+    # ── FIX 2: Skip the in-memory overlay when Celery is active.
+    # With multiple Gunicorn workers, active_jobs is inconsistent across
+    # processes (each worker holds its own dict).  Overlaying it onto DB
+    # data causes stale progress=0 / message="Job queued" to overwrite
+    # fresh completed DB rows (the PubMed "0 emails" bug).
+    # Celery workers write directly to DB, so DB is always current.
+    if not _USE_CELERY:
+        live_map = {jid: j for jid, j in active_jobs.items()
+                    if is_admin or j.get('user_id') == user_id}
+        for item in result:
+            if item['id'] in live_map:
+                live = live_map[item['id']]
+                # Only overlay if the in-memory status is more recent
+                # (i.e. the job is still actively running in this process)
+                if live.get('status') in ('pending', 'running'):
+                    item['progress']      = live.get('progress',      item.get('progress', 0))
+                    item['message']       = live.get('message',        item.get('message', ''))
+                    item['current_url']   = live.get('current_url',    item.get('current_url', ''))
+                    item['authors_count'] = live.get('authors_count',  item.get('authors_count', 0))
+                    item['emails_count']  = live.get('emails_count',   item.get('emails_count', 0))
+                    item['links_count']   = live.get('links_count',    item.get('links_count', 0))
 
     return jsonify(result)
 
 
 @app.route('/api/job-progress/<job_id>')
 def job_progress(job_id):
-    """Get progress of a running job - DB + live cache overlay"""
+    """Live progress for a single job — DB + optional thread overlay."""
     try:
         db_job = Job.query.get(job_id)
         if not db_job:
             return jsonify({'error': 'Job not found'}), 404
         data = db_job.to_dict()
-        # Overlay live cache for smoother progress updates
-        if job_id in active_jobs:
+
+        # ── FIX 2: Same guard as list_jobs — skip overlay for Celery jobs
+        if not _USE_CELERY and job_id in active_jobs:
             live = active_jobs[job_id]
-            data['progress'] = live.get('progress', data.get('progress', 0))
-            data['message'] = live.get('message', data.get('message', ''))
-            data['current_url'] = live.get('current_url', data.get('current_url', ''))
-            data['authors_count'] = live.get('authors_count', data.get('authors_count', 0))
-            data['emails_count'] = live.get('emails_count', data.get('emails_count', 0))
-            data['links_count'] = live.get('links_count', data.get('links_count', 0))
+            if live.get('status') in ('pending', 'running'):
+                data['progress']      = live.get('progress',      data.get('progress', 0))
+                data['message']       = live.get('message',        data.get('message', ''))
+                data['current_url']   = live.get('current_url',    data.get('current_url', ''))
+                data['authors_count'] = live.get('authors_count',  data.get('authors_count', 0))
+                data['emails_count']  = live.get('emails_count',   data.get('emails_count', 0))
+                data['links_count']   = live.get('links_count',    data.get('links_count', 0))
+
         return jsonify(data)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/job-status/<job_id>')
 def job_status(job_id):
-    """Get the status of a scraping job - DB primary source"""
+    """Compact status check — DB primary, thread overlay only when needed."""
     try:
         db_job = Job.query.get(job_id)
         if db_job:
             data = db_job.to_dict()
-            if job_id in active_jobs:
+            # ── FIX 2: Celery jobs — DB is always authoritative
+            if not _USE_CELERY and job_id in active_jobs:
                 live = active_jobs[job_id]
-                data['progress'] = live.get('progress', data.get('progress', 0))
-                data['message'] = live.get('message', data.get('message', ''))
-                data['current_url'] = live.get('current_url', '')
+                if live.get('status') in ('pending', 'running'):
+                    data['progress']    = live.get('progress',    data.get('progress', 0))
+                    data['message']     = live.get('message',     data.get('message', ''))
+                    data['current_url'] = live.get('current_url', '')
             return jsonify(data)
     except Exception:
         pass
     return jsonify({'error': 'Job not found'}), 404
-
 
 @app.route('/api/stop-job/<job_id>', methods=['POST'])
 def stop_job(job_id):
@@ -1202,37 +1216,80 @@ else:
 load_metrics()
 
 
+
 def recover_stuck_jobs():
     """
-    On startup: mark any jobs that were 'running'/'pending' when the server
-    last crashed/restarted as 'interrupted'.  Workers for those jobs are gone,
-    so leaving them as 'running' would confuse the UI forever.
-    Also pre-populate job_stop_flags so the in-memory cooperative-stop check
-    picks up any stop_requested=True rows that were set before restart.
+    On startup: clean up jobs left in running/pending state from a previous
+    server session.
+
+    Rules
+    ─────
+    • Thread-based jobs (no worker_task_id, or very old heartbeat):
+      Mark failed after 2 minutes of silence — worker thread is gone.
+
+    • Celery jobs with worker_task_id set (Celery accepted the task):
+      Give a 10-minute grace period.  The task may legitimately sit in
+      'pending' waiting for a worker to pick it up, or in 'running' while
+      the worker is between heartbeat ticks.  Killing these immediately
+      was the source of "worker task is lost → running" flip-flop.
+
+    • Celery jobs with NO worker_task_id:
+      The task was never accepted (broker down, submit failed).
+      Mark failed immediately so the UI doesn't show a zombie.
     """
+    _THREAD_STALE_SECS  = 120    # 2 min for thread jobs
+    _CELERY_GRACE_SECS  = 600    # 10 min for Celery jobs
+
     try:
         with app.app_context():
             stuck = Job.query.filter(Job.status.in_(['running', 'pending'])).all()
+            recovered = 0
+
             for job in stuck:
-                # If last heartbeat is older than 2 minutes (or never set), worker is gone
-                stale = True
+                now = datetime.utcnow()
+
+                has_celery_task = bool(job.worker_task_id)
+
                 if job.last_heartbeat_at:
-                    age = (datetime.utcnow() - job.last_heartbeat_at).total_seconds()
-                    stale = age > 120
+                    age = (now - job.last_heartbeat_at).total_seconds()
+                else:
+                    # No heartbeat ever set — use created_at as proxy
+                    age = (now - job.created_at).total_seconds() if job.created_at else 9999
+
+                if has_celery_task:
+                    # Celery job — generous grace period
+                    stale = age > _CELERY_GRACE_SECS
+                    reason = (f"Celery worker lost after {int(age)}s "
+                              f"(task {job.worker_task_id[:8]}…)")
+                else:
+                    # Thread job or task never submitted — short timeout
+                    stale = age > _THREAD_STALE_SECS
+                    reason = f"Thread worker lost after {int(age)}s (no task ID)"
+
                 if stale:
-                    job.status = 'failed'
-                    job.message = 'Interrupted: server restarted while job was running'
-                    job.error = 'Worker process lost on server restart'
-                    print(f"[Recovery] Marked stuck job {job.id[:8]}... ({job.journal}) as failed")
-            # Pre-load any pending stop flags
+                    job.status  = 'failed'
+                    job.message = f'Interrupted: server restarted while job was running'
+                    job.error   = reason
+                    recovered  += 1
+                    print(f"[Recovery] Marked stuck job {job.id[:8]}… "
+                          f"({job.journal}) as failed — {reason}")
+                else:
+                    print(f"[Recovery] Keeping job {job.id[:8]}… "
+                          f"({job.journal}) in '{job.status}' — "
+                          f"age={int(age)}s, grace={'Celery' if has_celery_task else 'thread'}")
+
+            # Pre-load stop flags
             stop_jobs = Job.query.filter_by(stop_requested=True).all()
-            for job in stop_jobs:
-                job_stop_flags[job.id] = True
+            for j in stop_jobs:
+                job_stop_flags[j.id] = True
+
             db.session.commit()
-            print(f"[Recovery] Checked {len(stuck)} stuck jobs, loaded {len(stop_jobs)} stop flags")
+            print(f"[Recovery] Checked {len(stuck)} stuck jobs "
+                  f"({recovered} marked failed), "
+                  f"loaded {len(stop_jobs)} stop flags")
+
     except Exception as e:
         print(f"[Recovery] Error during startup recovery: {e}")
-
 
 recover_stuck_jobs()
 
