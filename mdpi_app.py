@@ -76,9 +76,28 @@ class MDPIScraper:
         self._cb     = progress_callback
         self._driver: Optional[uc.Chrome] = None
 
+        # ── File log handler — always write to output_dir/mdpi_debug.log ────
+        # Celery may suppress or buffer stdout/stderr.  This guarantees a
+        # persistent on-disk record of every step, screenshot path, and error.
+        self._log_path = os.path.join(self.output_dir, 'mdpi_debug.log')
+        _fh = logging.FileHandler(self._log_path, encoding='utf-8')
+        _fh.setLevel(logging.DEBUG)
+        _fh.setFormatter(logging.Formatter(
+            '%(asctime)s  %(levelname)-8s  %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        ))
+        # Attach to both the module logger and root logger so uc/selenium
+        # messages also land in the file.
+        logging.getLogger('undetected_chromedriver').addHandler(_fh)
+        logging.getLogger('selenium').addHandler(_fh)
+        logger.addHandler(_fh)
+        logging.getLogger().addHandler(_fh)   # root logger
+        self._file_handler = _fh
+        # ────────────────────────────────────────────────────────────────────
+
         logger.info(
-            "[MDPI] Initialised — keyword=%r  years=%s-%s  out=%s",
-            keyword, start_year, end_year, self.output_dir,
+            "[MDPI] Initialised — keyword=%r  years=%s-%s  out=%s  log=%s",
+            keyword, start_year, end_year, self.output_dir, self._log_path,
         )
 
     # ── Progress helper ──────────────────────────────────────────
@@ -111,6 +130,139 @@ class MDPIScraper:
 
     # ── Chrome lifecycle ─────────────────────────────────────────
 
+    @staticmethod
+    def _diagnose_environment() -> None:
+        """
+        Log a full diagnostic snapshot of the process environment before
+        Chrome launch so that 'session not created' errors can be debugged
+        from the Celery/Flask log without SSH access.
+
+        Covers: OS, Python, Chrome binary, chromedriver, DISPLAY,
+        XAUTHORITY, running X sessions, /dev/shm size, and UID/GID.
+        """
+        import platform, shutil, subprocess, pwd, grp
+
+        diag: list[str] = ["[MDPI][DIAG] ══════ Environment Diagnostic ══════"]
+
+        # ── OS / Python ──────────────────────────────────────────────────────
+        diag.append(f"[MDPI][DIAG] OS          : {platform.platform()}")
+        diag.append(f"[MDPI][DIAG] Python      : {platform.python_version()} "
+                    f"@ {platform.python_implementation()}")
+
+        # ── Process identity ─────────────────────────────────────────────────
+        try:
+            uid  = os.getuid()
+            gid  = os.getgid()
+            uname = pwd.getpwuid(uid).pw_name
+            gname = grp.getgrgid(gid).gr_name
+            diag.append(f"[MDPI][DIAG] UID/GID     : {uid}/{gid} ({uname}/{gname})")
+            diag.append(f"[MDPI][DIAG] HOME        : {os.path.expanduser('~')}")
+        except Exception as e:
+            diag.append(f"[MDPI][DIAG] UID/GID     : unknown ({e})")
+
+        # ── X display ────────────────────────────────────────────────────────
+        display    = os.environ.get('DISPLAY', '<NOT SET>')
+        xauth      = os.environ.get('XAUTHORITY', '<NOT SET>')
+        dbus       = os.environ.get('DBUS_SESSION_BUS_ADDRESS', '<NOT SET>')
+        diag.append(f"[MDPI][DIAG] DISPLAY     : {display}")
+        diag.append(f"[MDPI][DIAG] XAUTHORITY  : {xauth}")
+        diag.append(f"[MDPI][DIAG] DBUS_SESSION: {dbus}")
+
+        # Check if XAUTHORITY file actually exists and is readable
+        if xauth and xauth != '<NOT SET>':
+            exists   = os.path.exists(xauth)
+            readable = os.access(xauth, os.R_OK) if exists else False
+            diag.append(f"[MDPI][DIAG] XAUTH file  : exists={exists}  readable={readable}")
+        else:
+            # Try common GNOME3 XAUTHORITY locations
+            uid_str  = str(os.getuid()) if hasattr(os, 'getuid') else '1000'
+            candidates = [
+                f"/run/user/{uid_str}/gdm/Xauthority",
+                os.path.expanduser("~/.Xauthority"),
+                f"/home/ubuntu/.Xauthority",
+                f"/root/.Xauthority",
+            ]
+            found_xauth = None
+            for p in candidates:
+                if os.path.exists(p) and os.access(p, os.R_OK):
+                    found_xauth = p
+                    break
+            diag.append(f"[MDPI][DIAG] XAUTH probe : {found_xauth or 'NOT FOUND — Chrome WILL FAIL'}")
+            if found_xauth:
+                diag.append(f"[MDPI][DIAG] XAUTH FIX   : setting XAUTHORITY={found_xauth}")
+                os.environ['XAUTHORITY'] = found_xauth
+
+        # ── Check xhost / X accessibility ────────────────────────────────────
+        try:
+            r = subprocess.run(['xdpyinfo', '-display', display],
+                               capture_output=True, text=True, timeout=5)
+            if r.returncode == 0:
+                lines = r.stdout.strip().splitlines()
+                diag.append(f"[MDPI][DIAG] xdpyinfo    : OK — {lines[0] if lines else 'connected'}")
+            else:
+                diag.append(f"[MDPI][DIAG] xdpyinfo    : FAILED (rc={r.returncode}) — "
+                             f"{r.stderr.strip()[:120]}")
+                diag.append("[MDPI][DIAG] *** Chrome WILL FAIL — X server not reachable ***")
+                diag.append("[MDPI][DIAG] Fix: run  xhost +local:  on the GNOME3 desktop, OR")
+                diag.append("[MDPI][DIAG]      copy XAUTHORITY from the logged-in user session")
+        except FileNotFoundError:
+            diag.append("[MDPI][DIAG] xdpyinfo    : not installed (apt install x11-utils)")
+        except Exception as e:
+            diag.append(f"[MDPI][DIAG] xdpyinfo    : error ({e})")
+
+        # ── Chrome binary ─────────────────────────────────────────────────────
+        chrome_candidates = [
+            '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable',
+            '/usr/bin/chromium-browser', '/usr/bin/chromium', '/snap/bin/chromium',
+        ]
+        chrome_found = None
+        for p in chrome_candidates:
+            if os.path.isfile(p):
+                chrome_found = p
+                break
+        if not chrome_found:
+            chrome_found = shutil.which('google-chrome') or shutil.which('chromium-browser')
+        diag.append(f"[MDPI][DIAG] Chrome bin  : {chrome_found or 'NOT FOUND'}")
+        if chrome_found:
+            try:
+                rv = subprocess.run([chrome_found, '--version'],
+                                    capture_output=True, text=True, timeout=10)
+                diag.append(f"[MDPI][DIAG] Chrome ver  : {rv.stdout.strip()}")
+            except Exception as e:
+                diag.append(f"[MDPI][DIAG] Chrome ver  : error ({e})")
+
+        # ── chromedriver ─────────────────────────────────────────────────────
+        cd = shutil.which('chromedriver')
+        diag.append(f"[MDPI][DIAG] chromedriver: {cd or 'not in PATH'}")
+        if cd:
+            try:
+                rv = subprocess.run([cd, '--version'],
+                                    capture_output=True, text=True, timeout=10)
+                diag.append(f"[MDPI][DIAG] cdvr version: {rv.stdout.strip()}")
+            except Exception as e:
+                diag.append(f"[MDPI][DIAG] cdvr version: error ({e})")
+
+        # ── /dev/shm ─────────────────────────────────────────────────────────
+        try:
+            st = os.statvfs('/dev/shm')
+            mb = st.f_frsize * st.f_bavail // (1024 * 1024)
+            diag.append(f"[MDPI][DIAG] /dev/shm    : {mb} MB free")
+        except Exception:
+            diag.append("[MDPI][DIAG] /dev/shm    : not available")
+
+        # ── undetected_chromedriver version ──────────────────────────────────
+        try:
+            import undetected_chromedriver as _uc
+            diag.append(f"[MDPI][DIAG] uc version  : {getattr(_uc, '__version__', 'unknown')}")
+        except Exception:
+            diag.append("[MDPI][DIAG] uc version  : import failed")
+
+        # ── Log everything in one shot ────────────────────────────────────────
+        diag.append("[MDPI][DIAG] ══════════════════════════════════════")
+        for line in diag:
+            logger.info(line)
+            print(line)
+
     def _launch_chrome(self) -> None:
         """
         Launch undetected Chrome — NO headless.
@@ -118,16 +270,58 @@ class MDPIScraper:
         auth.mdpi.com is protected by Akamai Bot Manager which fingerprints
         headless Chrome at the TLS level. Visible mode is the only option.
 
-        On EC2/Ubuntu with GNOME3: Chrome needs DISPLAY set.
-        We set DISPLAY=:0 in the environment if not already set so the
-        billiard subprocess (which may not inherit the parent's DISPLAY)
-        can open a visible window on the GNOME3 desktop.
-        """
-        import platform
-        if platform.system() != 'Windows' and not os.environ.get('DISPLAY'):
-            os.environ['DISPLAY'] = ':0'
-            logger.info("[MDPI] DISPLAY not set — defaulting to :0 for Chrome")
+        On EC2/Ubuntu with GNOME3: Chrome needs both DISPLAY and XAUTHORITY.
+        DISPLAY=:0 is the GNOME3 display; XAUTHORITY is the MIT-MAGIC-COOKIE
+        file that grants access to that display.  Celery workers running as
+        a different UID often have DISPLAY but NOT XAUTHORITY — causing the
+        'session not created: cannot connect to chrome' error.
 
+        We auto-detect and set XAUTHORITY before launching Chrome.
+        """
+        import platform, subprocess, shutil
+
+        logger.info("[MDPI] ── _launch_chrome START ──")
+
+        # ── Run full environment diagnostic before attempting Chrome ─────────
+        self._diagnose_environment()
+
+        # ── Ensure DISPLAY is set ────────────────────────────────────────────
+        if platform.system() != 'Windows':
+            if not os.environ.get('DISPLAY'):
+                os.environ['DISPLAY'] = ':0'
+                logger.info("[MDPI] DISPLAY not set — forcing :0")
+            else:
+                logger.info("[MDPI] DISPLAY=%s (already set)", os.environ['DISPLAY'])
+
+            # ── GNOME3 XAUTHORITY fix ────────────────────────────────────────
+            # If XAUTHORITY is already set and readable, use it.
+            # Otherwise probe known GNOME3/GDM locations and set it.
+            xauth = os.environ.get('XAUTHORITY', '')
+            if not xauth or not os.path.exists(xauth):
+                uid_str = str(os.getuid()) if hasattr(os, 'getuid') else '1000'
+                for candidate in [
+                    f"/run/user/{uid_str}/gdm/Xauthority",
+                    os.path.expanduser("~/.Xauthority"),
+                    "/home/ubuntu/.Xauthority",
+                    "/root/.Xauthority",
+                ]:
+                    if os.path.exists(candidate) and os.access(candidate, os.R_OK):
+                        os.environ['XAUTHORITY'] = candidate
+                        logger.info("[MDPI] XAUTHORITY set → %s", candidate)
+                        break
+                else:
+                    logger.warning(
+                        "[MDPI] XAUTHORITY not found in any standard location. "
+                        "Chrome may fail with 'session not created'. "
+                        "Fix: run  xhost +local:  on the GNOME3 desktop, OR "
+                        "set XAUTHORITY=/home/<user>/.Xauthority in the "
+                        "Celery worker's systemd/supervisor environment."
+                    )
+            else:
+                logger.info("[MDPI] XAUTHORITY=%s (already set, file exists)", xauth)
+
+        # ── Build Chrome options ─────────────────────────────────────────────
+        logger.info("[MDPI] Building Chrome options…")
         opts = uc.ChromeOptions()
         prefs = {
             "download.default_directory":        self.output_dir,
@@ -137,39 +331,78 @@ class MDPIScraper:
             "plugins.always_open_pdf_externally": True,
         }
         opts.add_experimental_option("prefs", prefs)
+        logger.info("[MDPI] Download dir prefs → %s", self.output_dir)
+
         # ── NO --headless flag ─────────────────────────────────────────────
-        opts.add_argument("--disable-lazy-loading")
-        opts.add_argument("--remote-allow-origins=*")
-        opts.add_argument("--disable-print-preview")
-        opts.add_argument("--disable-stack-profiler")
-        opts.add_argument("--disable-background-networking")
-        opts.add_argument("--no-sandbox")
-        opts.add_argument("--disable-infobars")
-        opts.add_argument("--disable-browser-side-navigation")
-        opts.add_argument("--disable-notifications")
-        opts.add_argument("--disable-blink-features=AutomationControlled")
-        opts.add_argument("--disable-popup-blocking")
-        opts.add_argument("--disable-gpu")
-        opts.add_argument("--disable-dev-shm-usage")
-        opts.add_argument("--window-size=1400,900")
-        opts.add_argument("--start-maximized")
+        # Akamai Bot Manager blocks headless at TLS fingerprint level.
+        chrome_args = [
+            "--disable-lazy-loading",
+            "--remote-allow-origins=*",
+            "--disable-print-preview",
+            "--disable-stack-profiler",
+            "--disable-background-networking",
+            "--no-sandbox",
+            "--disable-infobars",
+            "--disable-browser-side-navigation",
+            "--disable-notifications",
+            "--disable-blink-features=AutomationControlled",
+            "--disable-popup-blocking",
+            "--disable-gpu",
+            "--disable-dev-shm-usage",
+            "--window-size=1400,900",
+            "--start-maximized",
+        ]
+        for arg in chrome_args:
+            opts.add_argument(arg)
+        logger.info("[MDPI] Chrome args: %s", chrome_args)
 
         kwargs: dict = dict(options=opts)
         if self.driver_path:
             kwargs['driver_executable_path'] = self.driver_path
+            logger.info("[MDPI] Using driver_path=%s", self.driver_path)
+        else:
+            logger.info("[MDPI] driver_path not set — uc will auto-locate chromedriver")
 
-        self._driver = uc.Chrome(**kwargs)
-        # maximize_window() can close the initial tab on Windows with UC Chrome 146
-        # Use --start-maximized flag above instead, and wait for window to be ready
+        # ── Launch Chrome ────────────────────────────────────────────────────
+        logger.info("[MDPI] Calling uc.Chrome(**kwargs) …  "
+                    "DISPLAY=%s  XAUTHORITY=%s",
+                    os.environ.get('DISPLAY', '<unset>'),
+                    os.environ.get('XAUTHORITY', '<unset>'))
+        try:
+            self._driver = uc.Chrome(**kwargs)
+            logger.info("[MDPI] uc.Chrome() returned successfully")
+        except Exception as exc:
+            logger.error(
+                "[MDPI] Chrome launch FAILED: %s\n"
+                "  DISPLAY=%s  XAUTHORITY=%s\n"
+                "  Hint: check that DISPLAY and XAUTHORITY are correct in\n"
+                "  the Celery worker systemd unit, e.g.:\n"
+                "    Environment=DISPLAY=:0\n"
+                "    Environment=XAUTHORITY=/home/ubuntu/.Xauthority\n"
+                "  Also verify xhost +local: has been run on the GNOME3 desktop.",
+                exc,
+                os.environ.get('DISPLAY', '<unset>'),
+                os.environ.get('XAUTHORITY', '<unset>'),
+            )
+            self._save_chrome_log()
+            raise
+
+        # ── Wait for Chrome window to be ready ───────────────────────────────
         deadline = time.time() + 15
         while time.time() < deadline:
             try:
                 if self._driver.window_handles:
                     self._driver.switch_to.window(self._driver.window_handles[0])
+                    logger.info("[MDPI] Chrome window ready — handle=%s",
+                                self._driver.window_handles[0])
                     break
             except Exception:
                 pass
             time.sleep(0.5)
+        else:
+            logger.warning("[MDPI] Chrome window did not become ready within 15 s")
+
+        logger.info("[MDPI] ── _launch_chrome DONE ──")
 
     def _quit_chrome(self) -> None:
         if self._driver is None:
@@ -181,6 +414,47 @@ class MDPIScraper:
             logger.warning("[MDPI] Error closing Chrome: %s", exc)
         finally:
             self._driver = None
+
+    def _save_chrome_log(self) -> None:
+        """
+        Dump Chrome/chromedriver log files to output_dir/debug/ when
+        Chrome fails to start — helps diagnose 'session not created' errors
+        without SSH access.
+        """
+        import subprocess, shutil
+        debug_dir = os.path.join(self.output_dir, 'debug')
+        os.makedirs(debug_dir, exist_ok=True)
+
+        # ── dmesg for OOM / permission errors ───────────────────────────────
+        try:
+            r = subprocess.run(['dmesg', '-T', '--level=err,warn'],
+                               capture_output=True, text=True, timeout=10)
+            with open(os.path.join(debug_dir, 'dmesg.txt'), 'w') as f:
+                f.write(r.stdout[-8000:])   # last 8 KB
+            logger.info("[MDPI][DEBUG] dmesg saved → %s/dmesg.txt", debug_dir)
+        except Exception as e:
+            logger.debug("[MDPI][DEBUG] dmesg failed: %s", e)
+
+        # ── running Chrome/chromedriver processes ────────────────────────────
+        try:
+            r = subprocess.run(['ps', 'aux', '--no-headers'],
+                               capture_output=True, text=True, timeout=5)
+            chrome_procs = [l for l in r.stdout.splitlines()
+                            if 'chrome' in l.lower() or 'chromium' in l.lower()]
+            with open(os.path.join(debug_dir, 'chrome_procs.txt'), 'w') as f:
+                f.write('\n'.join(chrome_procs) or '(none found)')
+            logger.info("[MDPI][DEBUG] chrome procs: %d found", len(chrome_procs))
+        except Exception as e:
+            logger.debug("[MDPI][DEBUG] ps failed: %s", e)
+
+        # ── env vars snapshot ────────────────────────────────────────────────
+        env_keys = ['DISPLAY', 'XAUTHORITY', 'DBUS_SESSION_BUS_ADDRESS',
+                    'HOME', 'USER', 'PATH', 'XDG_RUNTIME_DIR']
+        env_dump = {k: os.environ.get(k, '<not set>') for k in env_keys}
+        with open(os.path.join(debug_dir, 'env_snapshot.txt'), 'w') as f:
+            for k, v in env_dump.items():
+                f.write(f"{k}={v}\n")
+        logger.info("[MDPI][DEBUG] env snapshot → %s/env_snapshot.txt", debug_dir)
 
     # ── Cookie consent ───────────────────────────────────────────
 
@@ -854,6 +1128,14 @@ class MDPIScraper:
         finally:
             self._progress(99, "Closing Chrome session…")
             self._quit_chrome()
+            # Flush and close the per-job file log handler
+            try:
+                if self._file_handler:
+                    self._file_handler.flush()
+                    self._file_handler.close()
+                    logger.info("[MDPI] Debug log written → %s", self._log_path)
+            except Exception:
+                pass
 
 
 # ── Standalone runner ────────────────────────────────────────────
