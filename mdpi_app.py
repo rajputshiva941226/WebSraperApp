@@ -1,696 +1,881 @@
-# from selenium  import webdriver
-# import pandas as pd
-# import selenium.webdriver.support.expected_conditions as EC
-# 
-# 
-# 
-# import undetected_chromedriver as uc
-# import os, time, subprocess, random
+"""
+MDPIScraper — Flask-webapp-compatible MDPI scraper.
 
-# ### Function to use Express VPN for changing IP address to avoid bot detection ####
-# ### I've commented this function call below as some users may not use Express VPN
-# def ChangeVPN():
-#     countries = ["Georgia","Serbia","Moldova",'"North Macedonia"',"Jersey","Monaco","Slovakia",'Lebanon','Argentina',
-#                     "Slovenia","Croatia","Albania","Cyprus","Liechtenstein","Malta","Ukraine",'Ghana','Chile','Colombia',
-#                     "Belarus","Bulgaria","Hungary","Luxembourg","Montenegro","Andorra",'Morocco','Honduras','Guatemala',
-#                     '"Czech Republic"',"Estonia","Latvia","Lithuania","Poland","Armenia","Austria",'Cuba','Panama',
-#                     "Portugal","Greece","Finland","Belgium","Denmark","Norway","Iceland","Ireland",'Bermuda','Mexico',
-#                     "Spain","Romania","Italy","Sweden","Turkey","Singapore",'Kenya','Israel','"South Africa"','Canada',
-#                     "Australia",'"South Korea - 2"',"Malaysia","Pakistan",'"Sri Lanka"',"Kazakhstan",'Bahamas','Brazil',
-#                     "Thailand","Indonesia",'"New Zealand"',"Cambodia","Vietnam","Macau",'Jamaica',
-#                     "Mongolia","Laos","Bangladesh","Uzbekistan","Myanmar","Nepal","Brunei","Bhutan",'Venezuela',
-#                     '"United Kingdom"', '"United States"',"Japan", "Germay", '"Hong Kong"', "Netherlands",'Bolivia',
-#                     "Switzerland","Algeria","France","Egypt"] 
-#     choice = random.choice(countries)
-#     print(f"Selected Country is {choice}")
-#     os.environ["ExpressVPN"] = os.pathsep + r"C:\Program Files (x86)\ExpressVPN\services"
-    
-#     process = subprocess.Popen(["powershell","ExpressVPN.CLI.exe", "disconnect"], shell=True)
-#     result = process.communicate()[0]
-#     print(result)
-#     process = subprocess.Popen(["powershell","ExpressVPN.CLI.exe", "connect",
-#                         f"{str(choice)}"],shell=True)
-#     result = process.communicate()[0]
-#     print(result)    
+Flow:
+  1. Launch Chrome (visible, NOT headless — Akamai/auth.mdpi.com blocks headless)
+  2. Login to mdpi.com
+  3. Detect total result pages for the query
+  4. For each page, click "Export → Tab-delimited" and save the .txt download
+  5. Combine all .txt files → parse authors + emails → write CSV
+  6. Quit Chrome (always, in finally block)
 
-# class MdpiScrape(uc.Chrome):
-    
-#     def __init__(self,
-#                 keep_alive=True, keyword = ''):
-        
-#         data_dir = keyword.replace(' ','_')
-        
-#         if not os.path.exists(os.getcwd()+'\\' +data_dir):
-             
-#             os.mkdir(data_dir)
-#         chrome_options = uc.ChromeOptions()
-#         prefs = {"download.default_directory" : os.getcwd()+'\\' +data_dir}
-#         chrome_options.add_experimental_option("prefs",prefs)
-#         chrome_options.add_argument("--disable-lazy-loading")
-#         chrome_options.add_argument("--remote-allow-origins=*")
-#         chrome_options.add_argument("--disable-print-preview")
-        
-#         chrome_options.add_argument("--disable-stack-profiler")
-#         chrome_options.add_argument("--disable-background-networking")
-        
-#         chrome_options.add_argument("--no-sandbox")
-#         chrome_options.add_argument("excludeSwitches=enable-automation")
-#         chrome_options.add_argument("--disable-infobars")
-#         chrome_options.add_argument("--disable-browser-side-navigation")
-#         chrome_options.add_argument("--disable-notifications")
-#         chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-#         chrome_options.add_argument("--disable-popup-blocking")
-        
-#         script_dir = os.path.dirname(os.path.abspath(__file__))
-#         print(f"Current Working Dir: {script_dir}")
-#         #chromeProfile = "\Includes\Data_files\data\Chrome_profile"
-#         ## Add your chrome executable location as browser_path ##
-#         #browser_path = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
-#         #print(f"Browser Executable Path is : {os.path.join(script_dir,browser_path)}")
-#         super(MdpiScrape, self).__init__(options=chrome_options)
-#                                             #browser_executable_path=browser_path,
-#                                             #suppress_welcome=True,debug=True,keep_alive=True,
-#                                             #user_multi_procs=False)#user_data_dir= os.getcwd()+chromeProfile), version_main=121, 
-#         self.keep_alive = keep_alive
-        
-#         self.maximize_window()
-        
-        
-#     def __exit__(self,exc_type , exc_val, exc_to):
-#         if not self.keep_alive:
-#             print(f" Check for processes still running ? {self.service.assert_process_still_running()}")
-#             print(f"Service.process.pid for chrome bot is : {self.service.process.pid}")
-#             self.stop_client()
-#             self.service._terminate_process()
-#             #subprocess.run(['kill',f'{self.service.process.pid}'],shell=True)
-            
-#             self.quit()
-        
-#     def land_first_page(self):
-#         #self.execute_script("window.open('');")
-#         #self.switch_to.window(self.window_handles[0])
-#         self.get('https://www.mdpi.com/user/login/') 
-        
-#         username = self.find_element(By.ID, 'username')
-#         username.send_keys("pritham.pgc@gmail.com")
-#         password = self.find_element(By.ID, 'password')
-#         password.send_keys('PgC@500072')
-        
-#         submit = self.find_element(By.XPATH, '//input[@class="button submit-btn"]')
-#         submit.click()
-        
-        
-#     ## Function to get total number of result pages for your serch query ##   
-#     def extractPages(self, st_yr, end_yr,keyword):
-                  
-#         self.get(f'https://www.mdpi.com/search?sort=pubdate&page_count=200&year_from={st_yr}&year_to={end_yr}&q={keyword}&view=compact') 
-#         #WebDriverWait(self, 20).until(EC.element_to_be_clickable((By.ID,'CybotCookiebotDialogBodyLevelButtonLevelOptinAllowallSelection'))).click()
-#         # accept_button = WebDriverWait(self, 10).until(EC.element_to_be_clickable((By.ID, "accept")))
-#         # accept_button.click()
-#         pages = self.find_element(By.XPATH, '//div[@class="columns large-6 medium-6 small-12"]')
-#         print(pages.text)
-#         total_pages = int(pages.text.split('of')[1].replace('.','').strip())
-        
-#         print(f'total pages ==> {total_pages}')
-#         return total_pages
-    
-#     ## Function to download data in tabular format from links of articles ##
-#     def extractEmails(self, page_no,start_yr, end_yr, keyword):
-        
-#             try:   
-#                 self.get(f'https://www.mdpi.com/search?sort=pubdate&page_no={str(page_no+1)}&page_count=200&year_from={start_yr}&year_to={end_yr}&q={keyword}&view=compact')
-#                 WebDriverWait(self, 60).until(EC.element_to_be_clickable((By.XPATH, '//a[@class="export-options-show export-element export-expanded"]'))).click()
-#                 time.sleep(5)
-#                 print('@'*10)
-#                 #print(show_export.text)
-#                 #show_export.click()
-#                 checkbox = self.find_element(By.ID, 'selectUnselectAll')
-#                 checkbox.click()
-#                 self.find_element(By.XPATH, '//div[@class="listing-export"]').click()
-#                 self.find_element(By.XPATH, '//div[@class="chosen-drop"]/ul/li[contains(text(), "Tab-delimited")]').click()
-#                 time.sleep(5)
-#                 self.find_element(By.ID, 'articleBrowserExport_top').click()
-#             except Exception as e:
-#                 print(f'Exception occurred while downloading file: ==> {str(e)}')
-#                 ## ChangeVPN()
-#                 ## uncomment above line if you use Express VPN
-#                 curr_page = page_no
-                    
-#                 time.sleep(10)
-                    
-#                 self.refresh()
-#                 pass
-                    
-                   
-# ##########################################################################
+On any Selenium error a screenshot is saved to output_dir/screenshots/
+for post-run debugging.
+"""
 
-# if __name__ == '__main__':
-#     keyword_input = input('Enter any Keyword: ')
-#     start_year = input('Enter Start Year (e.g., 2017): ')
-#     end_year = input('Enter End Year (e.g., 2024): ')
+from __future__ import annotations
 
-#     #ChangeVPN()
-#     with MdpiScrape(keyword=keyword_input) as bot:
-#         bot.land_first_page()
-#         pages_number = bot.extractPages(st_yr=start_year,end_yr=end_year,keyword=keyword_input)
-#         for i in range(pages_number):
-#             print(i)
-#             bot.extractEmails(page_no=i,start_yr=start_year,end_yr=end_year,keyword=keyword_input)
-#         time.sleep(10)
-#         os.system(r'.\\kill.bat ' + str(bot.browser_pid))
-                    
-#         ########################################
-#         ######## Parse downloaded files ########
-#         ########################################
-#     files_in_cwd = os.listdir(os.getcwd()+ '\\'+ keyword_input.replace(' ','_'))
-#     txt_files = [keyword_input.replace(' ','_')+'\\'+file for file in files_in_cwd if '.txt' in file]
-#     print('&&&&&&&&&&&&&')
-#     print(txt_files)
-#     input_files = keyword_input.replace(" ","_")+"\\" + '*.txt'
-#     out_file = keyword_input.replace(" ","_")+"\\" + keyword_input.replace(" ","_")+"_results.txt"
-#     copy_process = subprocess.Popen(['powershell', 'Get-Content', input_files, '| Set-Content', out_file], shell=True)
-#     result = copy_process.communicate()[0]
-#     print(result)
-#     df = pd.read_csv(out_file, sep = '\t',skip_blank_lines=True, skipinitialspace=True)
-#     df.rename(columns = {'AUTHOR':'names', 'EMAIL ':'emails'}, inplace = True)
-#     print(df)
-#     df2 = df[['names', 'emails']].copy(deep=True)
-    
-#     del df
-#     df2['names'].mask(df2['names'].str.contains(';') == True, other = df2['names'].str.split(';'), inplace = True)
-#     df2['emails'].mask(df2['emails'].str.contains(';') == True, other = df2['emails'].str.split(';'), inplace = True)
+import glob
+import json
+import logging
+import os
+import time
+from datetime import datetime
+from typing import Callable, Optional
 
-#     #df2=df2.set_index(['names', 'emails']).apply(pd.Series.explode).reset_index()
-#     df2['len_names'] = df2['names'].str.len()
-#     df2['len_mails'] = df2['emails'].str.len()
-#     df3 = df2[df2['len_names'] == df2['len_mails']].copy(deep=True)
-#     df3 = df3.explode(['names','emails'])
-#     df3.reset_index(drop = True)
-#     df3['names']=df3['names'].str.strip()
-#     df3['emails']=df3['emails'].str.strip()
-#     df3[['Last_Name','First_Name']] = df3['names'].str.split(',',n=1, expand = True)
-
-#     df3['First_Name'] = df3['First_Name'].str.strip()
-#     df3['Last_Name'] = df3['Last_Name'].str.strip()
-#     df3['Names'] = df3['First_Name'] + " " + df3['Last_Name']
-    
-#     #for file in txt_files:
-#     df4 = df3.loc[:,['emails', 'Names']].copy(deep=True)
-#     df5 = df4[df4['emails'] != ''].copy(deep=True)
-#     df6 = df5.drop_duplicates('emails')
-#     df6.to_csv(out_file.replace('.txt', '')+'.csv', encoding = 'utf-8', index = False)
-#     del df3, df2, df4, df5 , df6 
-    
-#     print('Results are successfully Saved....')
-       
-
-##########################################################################################
-### New Version with Python 3.15 on date 9 Nov 2025
-###########################################################################################
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-import selenium.webdriver.support.expected_conditions as EC
 import pandas as pd
-
+import selenium.webdriver.support.expected_conditions as EC
 import undetected_chromedriver as uc
-import os, time, subprocess, random
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support.wait import WebDriverWait
 
-### Function to use Express VPN for changing IP address to avoid bot detection ####
-### I've commented this function call below as some users may not use Express VPN
-def ChangeVPN():
-    countries = ["Georgia","Serbia","Moldova",'"North Macedonia"',"Jersey","Monaco","Slovakia",'Lebanon','Argentina',
-                    "Slovenia","Croatia","Albania","Cyprus","Liechtenstein","Malta","Ukraine",'Ghana','Chile','Colombia',
-                    "Belarus","Bulgaria","Hungary","Luxembourg","Montenegro","Andorra",'Morocco','Honduras','Guatemala',
-                    '"Czech Republic"',"Estonia","Latvia","Lithuania","Poland","Armenia","Austria",'Cuba','Panama',
-                    "Portugal","Greece","Finland","Belgium","Denmark","Norway","Iceland","Ireland",'Bermuda','Mexico',
-                    "Spain","Romania","Italy","Sweden","Turkey","Singapore",'Kenya','Israel','"South Africa"','Canada',
-                    "Australia",'"South Korea - 2"',"Malaysia","Pakistan",'"Sri Lanka"',"Kazakhstan",'Bahamas','Brazil',
-                    "Thailand","Indonesia",'"New Zealand"',"Cambodia","Vietnam","Macau",'Jamaica',
-                    "Mongolia","Laos","Bangladesh","Uzbekistan","Myanmar","Nepal","Brunei","Bhutan",'Venezuela',
-                    '"United Kingdom"', '"United States"',"Japan", "Germay", '"Hong Kong"', "Netherlands",'Bolivia',
-                    "Switzerland","Algeria","France","Egypt"] 
-    choice = random.choice(countries)
-    print(f"Selected Country is {choice}")
-    os.environ["ExpressVPN"] = os.pathsep + r"C:\Program Files (x86)\ExpressVPN\services"
-    
-    process = subprocess.Popen(["powershell","ExpressVPN.CLI.exe", "disconnect"], shell=True)
-    result = process.communicate()[0]
-    print(result)
-    process = subprocess.Popen(["powershell","ExpressVPN.CLI.exe", "connect",
-                        f"{str(choice)}"],shell=True)
-    result = process.communicate()[0]
-    print(result)    
+logger = logging.getLogger(__name__)
 
-class MdpiScrape(uc.Chrome):
-    
-    def __init__(self,
-                keep_alive=True, keyword = ''):
-        
-        data_dir = keyword.replace(' ','_')
-        
-        if not os.path.exists(os.path.join(os.getcwd(), data_dir)):
-            os.makedirs(data_dir, exist_ok=True)
-        
-        chrome_options = uc.ChromeOptions()
-        prefs = {
-            "download.default_directory": os.path.join(os.getcwd(), data_dir),
-            "download.prompt_for_download": False,
-            "download.directory_upgrade": True,
-            "safebrowsing.enabled": False,
-            "plugins.always_open_pdf_externally": True
-        }
-        chrome_options.add_experimental_option("prefs", prefs)
-        chrome_options.add_argument("--disable-lazy-loading")
-        chrome_options.add_argument("--remote-allow-origins=*")
-        chrome_options.add_argument("--disable-print-preview")
-        chrome_options.add_argument("--disable-stack-profiler")
-        chrome_options.add_argument("--disable-background-networking")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("excludeSwitches=enable-automation")
-        chrome_options.add_argument("--disable-infobars")
-        chrome_options.add_argument("--disable-browser-side-navigation")
-        chrome_options.add_argument("--disable-notifications")
-        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-        chrome_options.add_argument("--disable-popup-blocking")
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        
-        # Run in headless mode for server environments
-        chrome_options.add_argument("--headless=new")
-        
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        print(f"Current Working Dir: {script_dir}")
-        
-        # Force undetected_chromedriver to detect Chrome version instead of using cached driver
-        try:
-            super(MdpiScrape, self).__init__(
-                options=chrome_options, 
-                version_main=None,  # Auto-detect installed Chrome version
-                use_subprocess=False,
-                driver_executable_path=None  # Don't use cached path, force detection
-            )
-        except Exception as e:
-            print(f"Error initializing Chrome with auto-detection: {e}")
-            # Fallback: create fresh ChromeOptions to avoid reuse error
-            fallback_options = uc.ChromeOptions()
-            fallback_prefs = {
-                "download.default_directory": os.path.join(os.getcwd(), data_dir),
-                "download.prompt_for_download": False,
-                "download.directory_upgrade": True,
-                "safebrowsing.enabled": False,
-                "plugins.always_open_pdf_externally": True
-            }
-            fallback_options.add_experimental_option("prefs", fallback_prefs)
-            fallback_options.add_argument("--disable-lazy-loading")
-            fallback_options.add_argument("--remote-allow-origins=*")
-            fallback_options.add_argument("--no-sandbox")
-            fallback_options.add_argument("--disable-gpu")
-            fallback_options.add_argument("--disable-dev-shm-usage")
-            super(MdpiScrape, self).__init__(options=fallback_options, use_subprocess=False)
-        
-        self.keep_alive = keep_alive
-        self.maximize_window()
-        
-    def __exit__(self, exc_type, exc_val, exc_to):
-        if not self.keep_alive:
-            print(f"Check for processes still running ? {self.service.assert_process_still_running()}")
-            print(f"Service.process.pid for chrome bot is : {self.service.process.pid}")
-            self.stop_client()
-            self.service._terminate_process()
-            self.quit()
-    
-    def handle_cookie_consent(self):
-        """Handle cookie consent dialog if it appears"""
-        try:
-            # First check if the dialog container exists
-            dialog = WebDriverWait(self, 5).until(
-                EC.presence_of_element_located((By.ID, "usercentrics-cmp-ui"))
-            )
-            print("Cookie consent dialog detected")
-            
-            # Try to click Accept All button using JavaScript directly
-            accept_clicked = self.execute_script("""
-                try {
-                    // Try to find and click the accept button
-                    var acceptBtn = document.querySelector('button[data-action="consent"][data-action-type="accept"]') ||
-                                   document.querySelector('button.uc-accept-button') ||
-                                   document.getElementById('accept') ||
-                                   document.querySelector('button[id="accept"]');
-                    
-                    if (acceptBtn) {
-                        acceptBtn.click();
-                        return true;
-                    }
-                    return false;
-                } catch(e) {
-                    return false;
-                }
-            """)
 
-            if accept_clicked:
-                print("Cookie consent accepted via JavaScript")
-                time.sleep(3)
-                return True
-            else:
-                print("Could not find accept button, removing dialog")
-                # Remove the dialog entirely
-                self.execute_script("""
-                    var dialog = document.getElementById('usercentrics-cmp-ui');
-                    if (dialog) {
-                        dialog.style.display = 'none';
-                        dialog.remove();
-                    }
-                    var overlay = document.querySelector('[data-nosnippet]');
-                    if (overlay) {
-                        overlay.style.display = 'none';
-                        overlay.remove();
-                    }
-                """)
-                time.sleep(2)
-                return True
-            
-        except Exception as e:
-            # No dialog present - this is fine
-            return False
-    
-    def land_first_page(self):
-        self.get('https://www.mdpi.com/user/login/') 
-        
-        # Handle cookie consent first
-        self.handle_cookie_consent()
-        
-        username = self.find_element(By.ID, 'username')
-        username.send_keys("pritham.pgc@gmail.com")
-        password = self.find_element(By.ID, 'password')
-        password.send_keys('PgC@500072')
-        
-        submit = self.find_element(By.XPATH, '//input[@class="button submit-btn"]')
-        submit.click()
-        time.sleep(3)
-        
-    ## Function to get total number of result pages for your search query ##   
-    def extractPages(self, st_yr, end_yr, keyword):
-        self.get(f'https://www.mdpi.com/search?sort=pubdate&page_count=200&year_from={st_yr}&year_to={end_yr}&q={keyword}&view=compact') 
-        
-        # Handle cookie consent if it appears on search page
-        self.handle_cookie_consent()
-        
-        # Wait for the page to load
-        pages = WebDriverWait(self, 20).until(
-            EC.presence_of_element_located((By.XPATH, '//div[@class="columns large-6 medium-6 small-12"]'))
+# ── Credentials (override via env vars for production) ───────────
+MDPI_USERNAME = os.environ.get("MDPI_USERNAME", "pritham.pgc@gmail.com")
+MDPI_PASSWORD = os.environ.get("MDPI_PASSWORD", "PgC@500072")
+
+# ── Timing constants ─────────────────────────────────────────────
+_PAGE_LOAD_WAIT   = 20   # seconds — WebDriverWait for slow page elements
+_AFTER_CLICK_WAIT =  3   # seconds — settle time after each UI click
+_DOWNLOAD_WAIT    =  8   # seconds — wait for .txt download to land on disk
+
+
+class MDPIScraper:
+    """
+    MDPI author/email scraper compatible with the Flask webapp ScraperAdapter.
+    """
+
+    def __init__(
+        self,
+        keyword:           str,
+        start_year:        str,
+        end_year:          str,
+        output_dir:        Optional[str]      = None,
+        progress_callback: Optional[Callable] = None,
+        driver_path:       Optional[str]      = None,
+    ):
+        self.keyword     = keyword
+        self.start_year  = str(start_year)
+        self.end_year    = str(end_year)
+        self.driver_path = driver_path
+
+        ts   = datetime.now().strftime('%Y%m%d_%H%M%S')
+        slug = keyword.replace(' ', '_')
+        self.output_dir = output_dir or os.path.join(
+            os.getcwd(), f"mdpi_{slug}_{ts}"
         )
-        print(pages.text)
-        total_pages = int(pages.text.split('of')[1].replace('.','').strip())
-        
-        print(f'total pages ==> {total_pages}')
-        return total_pages
-    
-    ## Function to download data in tabular format from links of articles ##
-    def extractEmails(self, page_no, start_yr, end_yr, keyword):
-        max_retries = 3
-        retry_count = 0
-        
-        while retry_count < max_retries:
-            try:   
-                print(f"\nAttempt {retry_count + 1} for page {page_no + 1}")
-                self.get(f'https://www.mdpi.com/search?sort=pubdate&page_no={str(page_no+1)}&page_count=200&year_from={start_yr}&year_to={end_yr}&q={keyword}&view=compact')
-                
-                # Handle cookie consent if it appears - CRITICAL for this page
-                self.handle_cookie_consent()
-                
-                # Wait for page to fully load
-                time.sleep(3)
-                
-                # Check if "Show export options" is visible and click it
-                try:
-                    show_export = WebDriverWait(self, 10).until(
-                        EC.element_to_be_clickable((By.XPATH, '//a[contains(@class, "export-options-show")]'))
-                    )
-                    print("Found 'Show export options' button")
-                    show_export.click()
-                    print("Clicked 'Show export options'")
-                    time.sleep(2)
-                except Exception as e:
-                    print(f"Could not find/click 'Show export options': {str(e)}")
-                
-                print('@'*10)
-                
-                # Select all checkbox - use regular click
-                print("Looking for 'Select all' checkbox...")
-                checkbox = WebDriverWait(self, 10).until(
-                    EC.element_to_be_clickable((By.ID, 'selectUnselectAll'))
-                )
-                print("Found checkbox, clicking...")
-                checkbox.click()
-                print("Checkbox clicked")
-                time.sleep(2)
-                
-                # Click listing export dropdown - use regular click like before
-                print("Looking for format dropdown...")
-                listing_export = WebDriverWait(self, 10).until(
-                    EC.element_to_be_clickable((By.XPATH, '//div[@class="listing-export"]'))
-                )
-                print("Found dropdown, clicking...")
-                listing_export.click()
-                print("Dropdown clicked")
-                time.sleep(3)
-                
-                # Select Tab-delimited format - use regular click
-                print("Looking for 'Tab-delimited' option...")
-                tab_delimited = WebDriverWait(self, 10).until(
-                    EC.element_to_be_clickable((By.XPATH, '//div[@class="chosen-drop"]/ul/li[contains(text(), "Tab-delimited")]'))
-                )
-                print("Found 'Tab-delimited' option, clicking...")
-                tab_delimited.click()
-                print("Tab-delimited selected")
-                time.sleep(3)
-                
-                # Click final export button - use regular click
-                print("Looking for final Export button...")
-                final_export = WebDriverWait(self, 10).until(
-                    EC.element_to_be_clickable((By.ID, 'articleBrowserExport_top'))
-                )
-                print("Found Export button, clicking...")
-                final_export.click()
-                print("Export button clicked")
-                
-                # Wait for download to complete
-                print("Waiting for download...")
-                time.sleep(6)
-                print(f"✓ Page {page_no+1} downloaded successfully")
-                return  # Success, exit the retry loop
-                
-            except Exception as e:
-                retry_count += 1
-                print(f'✗ Exception on page {page_no+1}, attempt {retry_count}: {str(e)}')
-                
-                if retry_count < max_retries:
-                    print(f"Retrying in 5 seconds...")
-                    time.sleep(5)
-                    self.refresh()
-                else:
-                    print(f"Failed to download page {page_no+1} after {max_retries} attempts")
-                    ## ChangeVPN()
-                    ## uncomment above line if you use Express VPN
-                   
-##########################################################################
+        os.makedirs(self.output_dir, exist_ok=True)
 
-if __name__ == '__main__':
-    keyword_input = input('Enter any Keyword: ')
-    start_year = input('Enter Start Year (e.g., 2017): ')
-    end_year = input('Enter End Year (e.g., 2024): ')
+        self.screenshot_dir = os.path.join(self.output_dir, 'screenshots')
+        os.makedirs(self.screenshot_dir, exist_ok=True)
 
-    #ChangeVPN()
-    with MdpiScrape(keyword=keyword_input) as bot:
-        bot.land_first_page()
-        pages_number = bot.extractPages(st_yr=start_year, end_yr=end_year, keyword=keyword_input)
-        
-        for i in range(pages_number):
-            print(f"Processing page {i+1} of {pages_number}")
-            bot.extractEmails(page_no=i, start_yr=start_year, end_yr=end_year, keyword=keyword_input)
-            
-        time.sleep(10)
-        os.system(r'.\\kill.bat ' + str(bot.browser_pid))
-                    
-        ########################################
-        ######## Parse downloaded files ########
-        ########################################
-    print("\n" + "="*50)
-    print("Processing downloaded files...")
-    print("="*50 + "\n")
-    
-    data_dir = keyword_input.replace(' ', '_')
-    data_dir_path = os.path.join(os.getcwd(), data_dir)
-    files_in_cwd = os.listdir(data_dir_path)
-    txt_files = [os.path.join(data_dir_path, f) for f in files_in_cwd if f.endswith('.txt')]
-    
-    if not txt_files:
-        print("No text files found to process")
-        exit()
-    
-    out_file = os.path.join(data_dir_path, data_dir + "_results.txt")
-    
-    # Combine all text files using Python (cross-platform)
-    with open(out_file, 'w', encoding='utf-8') as outf:
-        for txt_file in txt_files:
+        self._cb     = progress_callback
+        self._driver: Optional[uc.Chrome] = None
+
+        logger.info(
+            "[MDPI] Initialised — keyword=%r  years=%s-%s  out=%s",
+            keyword, start_year, end_year, self.output_dir,
+        )
+
+    # ── Progress helper ──────────────────────────────────────────
+
+    def _progress(self, pct: int, msg: str,
+                  authors: int = 0, emails: int = 0, current_url: str = '') -> None:
+        logger.info("[MDPI][%d%%] %s", pct, msg)
+        print(f"  [{pct:3d}%] {msg}  ")
+        if self._cb:
             try:
-                with open(txt_file, 'r', encoding='utf-8', errors='replace') as inf:
-                    outf.write(inf.read())
+                self._cb(pct, msg, current_url=current_url,
+                         authors_count=authors, emails_count=emails)
             except Exception:
                 pass
-            
-    # Process the combined file
-    df = pd.read_csv(out_file, sep='\t', skip_blank_lines=True, skipinitialspace=True)
-    df.rename(columns={'AUTHOR':'names', 'EMAIL ':'emails'}, inplace=True)
-    
-    df2 = df[['names', 'emails']].copy(deep=True)
-    del df
-    
-    # Split multiple authors/emails
-    df2['names'].mask(df2['names'].str.contains(';') == True, other=df2['names'].str.split(';'), inplace=True)
-    df2['emails'].mask(df2['emails'].str.contains(';') == True, other=df2['emails'].str.split(';'), inplace=True)
 
-    # Check length matching
-    df2['len_names'] = df2['names'].str.len()
-    df2['len_mails'] = df2['emails'].str.len()
-    df3 = df2[df2['len_names'] == df2['len_mails']].copy(deep=True)
-    df3 = df3.explode(['names','emails'])
-    df3.reset_index(drop=True, inplace=True)
-    
-    # Clean and format names
-    df3['names'] = df3['names'].str.strip()
-    df3['emails'] = df3['emails'].str.strip()
-    df3[['Last_Name','First_Name']] = df3['names'].str.split(',', n=1, expand=True)
+    # ── Screenshot helper ────────────────────────────────────────
 
-    df3['First_Name'] = df3['First_Name'].str.strip()
-    df3['Last_Name'] = df3['Last_Name'].str.strip()
-    df3['Names'] = df3['First_Name'] + " " + df3['Last_Name']
-    
-    # Final cleanup
-    df4 = df3.loc[:,['emails', 'Names']].copy(deep=True)
-    df5 = df4[df4['emails'] != ''].copy(deep=True)
-    df6 = df5.drop_duplicates('emails')
-    
-    output_csv = out_file.replace('.txt', '') + '.csv'
-    df6.to_csv(output_csv, encoding='utf-8', index=False)
-    
-    del df3, df2, df4, df5, df6
-    
-    print(f"\n{'='*50}")
-    print(f"Results successfully saved to: {output_csv}")
-    
-    print(f"{'='*50}\n")
-
-
-##########################################################################################
-### Wrapper class for integration with scraper_adapter
-##########################################################################################
-
-class MdpiScraperAdapter:
-    """Adapter class to make MdpiScrape compatible with the unified scraper interface"""
-    
-    def __init__(self, keyword, start_year, end_year, driver_path=None):
-        """
-        Initialize MDPI scraper with standard interface
-        
-        Args:
-            keyword: Search keyword
-            start_year: Start year in MM/DD/YYYY format
-            end_year: End year in MM/DD/YYYY format
-            driver_path: Not used for MDPI (uses undetected_chromedriver)
-        """
-        self.keyword = keyword
-        # Extract year from date format MM/DD/YYYY
-        self.start_year = start_year.split('/')[-1] if '/' in start_year else start_year
-        self.end_year = end_year.split('/')[-1] if '/' in end_year else end_year
-        self.driver_path = driver_path
-        self.output_file = None
-        
-    def run(self):
-        """Run the MDPI scraper and return output file path"""
+    def _save_screenshot(self, label: str) -> Optional[str]:
+        if not self._driver:
+            return None
         try:
-            with MdpiScrape(keyword=self.keyword) as bot:
-                bot.land_first_page()
-                pages_number = bot.extractPages(
-                    st_yr=self.start_year, 
-                    end_yr=self.end_year, 
-                    keyword=self.keyword
-                )
-                
-                for i in range(pages_number):
-                    print(f"Processing page {i+1} of {pages_number}")
-                    bot.extractEmails(
-                        page_no=i, 
-                        start_yr=self.start_year, 
-                        end_yr=self.end_year, 
-                        keyword=self.keyword
+            ts   = datetime.now().strftime('%H%M%S')
+            path = os.path.join(self.screenshot_dir, f"{label}_{ts}.png")
+            self._driver.save_screenshot(path)
+            logger.info("[MDPI] Screenshot saved → %s", path)
+            return path
+        except Exception as exc:
+            logger.warning("[MDPI] Could not save screenshot: %s", exc)
+            return None
+
+    # ── Chrome lifecycle ─────────────────────────────────────────
+
+    def _launch_chrome(self) -> None:
+        """
+        Launch undetected Chrome — NO headless.
+
+        auth.mdpi.com is protected by Akamai Bot Manager which fingerprints
+        headless Chrome at the TLS level. Visible mode is the only option.
+
+        On EC2/Ubuntu with GNOME3: Chrome needs DISPLAY set.
+        We set DISPLAY=:0 in the environment if not already set so the
+        billiard subprocess (which may not inherit the parent's DISPLAY)
+        can open a visible window on the GNOME3 desktop.
+        """
+        import platform
+        if platform.system() != 'Windows' and not os.environ.get('DISPLAY'):
+            os.environ['DISPLAY'] = ':0'
+            logger.info("[MDPI] DISPLAY not set — defaulting to :0 for Chrome")
+
+        opts = uc.ChromeOptions()
+        prefs = {
+            "download.default_directory":        self.output_dir,
+            "download.prompt_for_download":       False,
+            "download.directory_upgrade":         True,
+            "safebrowsing.enabled":               False,
+            "plugins.always_open_pdf_externally": True,
+        }
+        opts.add_experimental_option("prefs", prefs)
+        # ── NO --headless flag ─────────────────────────────────────────────
+        opts.add_argument("--disable-lazy-loading")
+        opts.add_argument("--remote-allow-origins=*")
+        opts.add_argument("--disable-print-preview")
+        opts.add_argument("--disable-stack-profiler")
+        opts.add_argument("--disable-background-networking")
+        opts.add_argument("--no-sandbox")
+        opts.add_argument("--disable-infobars")
+        opts.add_argument("--disable-browser-side-navigation")
+        opts.add_argument("--disable-notifications")
+        opts.add_argument("--disable-blink-features=AutomationControlled")
+        opts.add_argument("--disable-popup-blocking")
+        opts.add_argument("--disable-gpu")
+        opts.add_argument("--disable-dev-shm-usage")
+        opts.add_argument("--window-size=1400,900")
+        opts.add_argument("--start-maximized")
+
+        kwargs: dict = dict(options=opts)
+        if self.driver_path:
+            kwargs['driver_executable_path'] = self.driver_path
+
+        self._driver = uc.Chrome(**kwargs)
+        # maximize_window() can close the initial tab on Windows with UC Chrome 146
+        # Use --start-maximized flag above instead, and wait for window to be ready
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            try:
+                if self._driver.window_handles:
+                    self._driver.switch_to.window(self._driver.window_handles[0])
+                    break
+            except Exception:
+                pass
+            time.sleep(0.5)
+
+    def _quit_chrome(self) -> None:
+        if self._driver is None:
+            return
+        try:
+            self._driver.quit()
+            logger.info("[MDPI] Chrome session closed.")
+        except Exception as exc:
+            logger.warning("[MDPI] Error closing Chrome: %s", exc)
+        finally:
+            self._driver = None
+
+    # ── Cookie consent ───────────────────────────────────────────
+
+    def _dismiss_cookie_consent(self) -> None:
+        d = self._driver
+        try:
+            WebDriverWait(d, 5).until(
+                EC.presence_of_element_located((By.ID, "usercentrics-cmp-ui"))
+            )
+            logger.info("[MDPI] Cookie consent dialog detected.")
+        except Exception:
+            pass  # No banner — fine
+        # Always nuke any consent overlay via JS regardless of whether
+        # the wait succeeded — belt-and-suspenders so it never blocks clicks.
+        d.execute_script("""
+            // Try clicking accept button first
+            var btn = document.querySelector(
+                'button[data-action="consent"][data-action-type="accept"]') ||
+                document.querySelector('button.uc-accept-button') ||
+                document.getElementById('accept') ||
+                document.querySelector('button[aria-label*="Accept"]') ||
+                document.querySelector('button[class*="accept"]');
+            if (btn) { btn.click(); }
+            // Then forcibly remove the overlay elements so they can't intercept clicks
+            var ids = ['usercentrics-cmp-ui', 'uc-overlay', 'uc-backdrop'];
+            ids.forEach(function(id) {
+                var el = document.getElementById(id);
+                if (el) el.remove();
+            });
+            // Remove any fixed/absolute overlays from Usercentrics
+            document.querySelectorAll('[data-nosnippet], [class*="uc-"], [id*="uc-"]')
+                .forEach(function(el) {
+                    var s = window.getComputedStyle(el);
+                    if (s.position === 'fixed' || s.position === 'absolute') el.remove();
+                });
+            // Re-enable scrolling that consent dialogs often lock
+            document.body.style.overflow = '';
+            document.documentElement.style.overflow = '';
+        """)
+        time.sleep(1)
+
+    # ── JS click helper ──────────────────────────────────────────
+
+    def _js_click(self, element) -> None:
+        self._driver.execute_script(
+            "arguments[0].scrollIntoView({block:'center'}); arguments[0].click();",
+            element,
+        )
+
+    # ── Cookie persistence ───────────────────────────────────────
+
+    _COOKIE_FILE = os.path.join(
+        os.path.expanduser('~'), '.mdpi_scraper_cookies.json'
+    )
+
+    def _save_cookies(self) -> None:
+        try:
+            cookies = self._driver.get_cookies()
+            with open(self._COOKIE_FILE, 'w') as f:
+                json.dump(cookies, f)
+            logger.info("[MDPI] Cookies saved (%d) → %s", len(cookies), self._COOKIE_FILE)
+        except Exception as exc:
+            logger.warning("[MDPI] Could not save cookies: %s", exc)
+
+    def _load_cookies(self) -> bool:
+        if not os.path.exists(self._COOKIE_FILE):
+            return False
+        try:
+            with open(self._COOKIE_FILE) as f:
+                cookies = json.load(f)
+            for cookie in cookies:
+                cookie.pop('sameSite', None)
+                try:
+                    self._driver.add_cookie(cookie)
+                except Exception:
+                    pass
+            logger.info("[MDPI] Loaded %d cookies from %s", len(cookies), self._COOKIE_FILE)
+            return True
+        except Exception as exc:
+            logger.warning("[MDPI] Could not load cookies: %s", exc)
+            return False
+
+    def _is_logged_in(self) -> bool:
+        try:
+            cur = self._driver.current_url.lower()
+            if 'auth.mdpi.com' in cur or 'login.mdpi.com' in cur:
+                return False
+            els = self._driver.find_elements(
+                By.XPATH, '//a[contains(@href,"logout") or contains(@href,"signout")]'
+            )
+            return len(els) > 0
+        except Exception:
+            return False
+
+    # ── Login ────────────────────────────────────────────────────
+
+    def _login(self) -> None:
+        """
+        Log in to mdpi.com.
+
+        Strategy:
+          1. Inject saved cookies → refresh → if session still valid, done.
+          2. If stale/missing: fill SSO form, submit, save cookies on success.
+
+        Cookies are stored at ~/.mdpi_scraper_cookies.json and reused across
+        runs so MDPI's rate-limiter never sees repeated form submissions.
+        Delete that file to force a fresh login.
+        """
+        d = self._driver
+        try:
+            self._progress(2, "Logging in to MDPI…")
+            time.sleep(3)
+
+            # ── Step 1: Try cookie-based login ───────────────────────────
+            logger.info("[MDPI] Trying cookie-based login…")
+            d.get('https://www.mdpi.com/')
+            self._dismiss_cookie_consent()
+            time.sleep(2)
+
+            if self._load_cookies():
+                d.refresh()
+                time.sleep(4)
+                self._dismiss_cookie_consent()
+                if self._is_logged_in():
+                    logger.info("[MDPI] Cookie login successful → %s", d.current_url)
+                    self._progress(5, "Login successful (cookies).")
+                    return
+                logger.info("[MDPI] Saved cookies invalid — doing fresh form login")
+                # Delete stale cookie file
+                try:
+                    os.remove(self._COOKIE_FILE)
+                except Exception:
+                    pass
+
+            # ── Step 2: Full form login ──────────────────────────────────
+            d.get('https://www.mdpi.com/user/login/')
+            self._dismiss_cookie_consent()
+            WebDriverWait(d, _PAGE_LOAD_WAIT).until(
+                EC.presence_of_element_located((By.XPATH, '//input'))
+            )
+            time.sleep(2)
+
+            current_url = d.current_url
+            logger.info("[MDPI] Login page URL: %s", current_url)
+            self._save_screenshot('login_page_loaded')
+
+            on_new_sso = any(h in current_url.lower()
+                             for h in ('auth.mdpi.com', 'login.mdpi.com'))
+
+            if not on_new_sso:
+                logger.info("[MDPI] Old login UI (www.mdpi.com)")
+                d.find_element(By.ID, 'username').send_keys(MDPI_USERNAME)
+                d.find_element(By.ID, 'password').send_keys(MDPI_PASSWORD)
+                d.find_element(By.XPATH, '//input[@class="button submit-btn"]').click()
+            else:
+                logger.info("[MDPI] New SSO single-step login (%s)", current_url)
+                actions = ActionChains(d)
+
+                email_el = WebDriverWait(d, 10).until(
+                    EC.element_to_be_clickable(
+                        (By.XPATH, '//input[@type="email" or '
+                         'contains(translate(@placeholder,'
+                         '"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz"),"mail")]')
                     )
-                
-                time.sleep(5)
-            
-            # Process downloaded files
-            data_dir = self.keyword.replace(' ', '_')
-            data_dir_path = os.path.join(os.getcwd(), data_dir)
-            files_in_cwd = os.listdir(data_dir_path)
-            txt_files = [os.path.join(data_dir_path, f) for f in files_in_cwd if f.endswith('.txt')]
-            
-            if not txt_files:
-                print("No text files found to process")
-                return None
-            
-            out_file = os.path.join(data_dir_path, data_dir + "_results.txt")
-            
-            # Combine all text files using Python (cross-platform)
-            with open(out_file, 'w', encoding='utf-8') as outf:
-                for txt_file in txt_files:
+                )
+                actions.move_to_element(email_el).click().click().click().perform()
+                time.sleep(0.3)
+                email_el.send_keys(Keys.CONTROL + 'a')
+                email_el.send_keys(MDPI_USERNAME)
+                time.sleep(0.5)
+
+                pass_el = WebDriverWait(d, 10).until(
+                    EC.element_to_be_clickable((By.XPATH, '//input[@type="password"]'))
+                )
+                actions.move_to_element(pass_el).click().click().click().perform()
+                time.sleep(0.3)
+                pass_el.send_keys(Keys.CONTROL + 'a')
+                pass_el.send_keys(MDPI_PASSWORD)
+                time.sleep(0.5)
+
+                val_email = d.execute_script("return arguments[0].value;", email_el)
+                val_pass  = d.execute_script("return arguments[0].value;", pass_el)
+                logger.info("[MDPI] Pre-submit — email=%d chars, password=%d chars",
+                            len(val_email), len(val_pass))
+                self._save_screenshot('pre_submit')
+
+                if len(val_email) == 0 or len(val_pass) == 0:
+                    raise RuntimeError(
+                        f"Login fields empty — email={len(val_email)}, "
+                        f"password={len(val_pass)} chars"
+                    )
+                # Press Enter — most natural submission, avoids button-click bot detection
+                pass_el.send_keys(Keys.RETURN)
+
+            # Poll for redirect away from SSO domains (up to 40s)
+            logger.info("[MDPI] Waiting for SSO redirect…")
+            for i in range(40):
+                time.sleep(1)
+                cur = d.current_url.lower()
+                if 'auth.mdpi.com' not in cur and 'login.mdpi.com' not in cur:
+                    logger.info("[MDPI] SSO redirect done after %ds → %s", i+1, d.current_url)
+                    break
+            else:
+                self._save_screenshot('login_failed')
+                raise RuntimeError(
+                    f"MDPI login failed after 40s — still on: {d.current_url}\n"
+                    "MDPI may be rate-limiting. Wait a few minutes and retry,\n"
+                    "or delete ~/.mdpi_scraper_cookies.json and try again."
+                )
+
+            time.sleep(2)
+            self._save_cookies()   # persist for next run
+            logger.info("[MDPI] Login successful → %s", d.current_url)
+            self._progress(5, "Login successful.")
+
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            self._save_screenshot('login_error')
+            raise RuntimeError(f"MDPI login error: {exc}") from exc
+
+    # ── Page count detection ─────────────────────────────────────
+
+    def _get_total_pages(self) -> int:
+        d   = self._driver
+        url = (
+            f"https://www.mdpi.com/search"
+            f"?sort=pubdate&page_count=200"
+            f"&year_from={self.start_year}&year_to={self.end_year}"
+            f"&q={self.keyword}&view=compact"
+        )
+        self._progress(7, "Detecting total result pages…", current_url=url)
+        d.get(url)
+        self._dismiss_cookie_consent()
+
+        try:
+            header = WebDriverWait(d, _PAGE_LOAD_WAIT).until(
+                EC.presence_of_element_located(
+                    (By.XPATH, '//div[@class="columns large-6 medium-6 small-12"]')
+                )
+            )
+            text = header.text.strip()
+            logger.info("[MDPI] Page-count header text: %r", text)
+
+            parts   = text.split('of')
+            last_of = parts[-1].replace(',', '').replace('.', '').split()[0].strip()
+            if last_of.isdigit() and int(last_of) <= 5_000:
+                pages_from_last = int(last_of)
+                if len(parts) >= 2:
+                    mid = parts[1].replace(',', '').replace('.', '').split()
+                    if mid and mid[0].isdigit():
+                        result_count = int(mid[0])
+                        if result_count > 200:
+                            pages_computed = max(1, -(-result_count // 200))
+                            pages = max(pages_from_last, pages_computed)
+                            logger.info(
+                                "[MDPI] Result count %d → %d pages; header says %d → using %d",
+                                result_count, pages_computed, pages_from_last, pages,
+                            )
+                            return pages
+                logger.info("[MDPI] Parsed page count directly: %d", pages_from_last)
+                return max(1, pages_from_last)
+
+            first_of = parts[1].replace(',', '').replace('.', '').split()[0].strip()
+            if first_of.isdigit():
+                result_count = int(first_of)
+                pages = max(1, -(-result_count // 200))
+                logger.info("[MDPI] Result count %d → %d page(s)", result_count, pages)
+                return pages
+
+        except Exception as exc:
+            logger.warning("[MDPI] Primary page-count parse failed: %s", exc)
+
+        try:
+            pager = d.find_elements(
+                By.XPATH, '//ul[contains(@class,"pagination")]//a[@class="page-link"]'
+            )
+            nums = [int(a.text.strip()) for a in pager if a.text.strip().isdigit()]
+            if nums:
+                pages = max(nums)
+                logger.info("[MDPI] Pagination widget: %d page(s)", pages)
+                return pages
+        except Exception:
+            pass
+
+        self._save_screenshot('page_count_error')
+        logger.warning("[MDPI] Could not determine page count — defaulting to 1")
+        return 1
+
+    # ── Single-page download ─────────────────────────────────────
+
+    def _download_page(self, page_no: int, total_pages: int) -> bool:
+        """
+        Direct port of the working extractEmails() from the original script.
+
+        CRITICAL: ALL clicks use plain .click() — NOT JS click.
+        Chosen.js dropdown relies on native browser mousedown/mouseup events.
+        JS click fires only the click event, which leaves the dropdown open
+        but then immediately closes it before the li item can be selected.
+        Plain .click() is the only approach that works with Chosen.js.
+        """
+        d           = self._driver
+        max_retries = 3
+
+        for attempt in range(1, max_retries + 1):
+            url = (
+                f"https://www.mdpi.com/search"
+                f"?sort=pubdate&page_no={page_no + 1}&page_count=200"
+                f"&year_from={self.start_year}&year_to={self.end_year}"
+                f"&q={self.keyword}&view=compact"
+            )
+            logger.info("[MDPI] Page %d (attempt %d)", page_no + 1, attempt)
+            try:
+                d.get(url)
+                self._dismiss_cookie_consent()
+                time.sleep(3)   # let page fully settle — same as working script
+
+                # All UI interactions use JS clicks — window does NOT need focus.
+                # Plain .click() fails when Chrome is in the background because
+                # overlays (cookie banners, etc.) intercept the events.
+                # JS scrollIntoView+click bypasses all overlay interception.
+
+                # ① Show export panel
+                el = WebDriverWait(d, 10).until(
+                    EC.presence_of_element_located(
+                        (By.XPATH, '//a[contains(@class,"export-options-show")]')
+                    )
+                )
+                d.execute_script("arguments[0].scrollIntoView({block:'center'}); arguments[0].click();", el)
+                time.sleep(2)
+
+                # ② Select all
+                el = WebDriverWait(d, 10).until(
+                    EC.presence_of_element_located((By.ID, 'selectUnselectAll'))
+                )
+                d.execute_script("arguments[0].scrollIntoView({block:'center'}); arguments[0].click();", el)
+                time.sleep(2)
+
+                # ③+④ Set Tab-delimited on native <select> — bypasses Chosen.js entirely
+                selected = d.execute_script("""
+                    var selects = document.querySelectorAll('select');
+                    for (var i = 0; i < selects.length; i++) {
+                        var sel = selects[i];
+                        for (var j = 0; j < sel.options.length; j++) {
+                            if (sel.options[j].text.indexOf('Tab-delimited') !== -1) {
+                                sel.value = sel.options[j].value;
+                                sel.dispatchEvent(new Event('change', {bubbles: true}));
+                                return sel.options[j].value;
+                            }
+                        }
+                    }
+                    return null;
+                """)
+                if not selected:
+                    raise RuntimeError("Tab-delimited option not found in any <select> on page")
+                logger.info("[MDPI] Tab-delimited selected via JS (value=%s)", selected)
+                time.sleep(1)
+
+                # ⑤ Click Export button
+                el = WebDriverWait(d, 10).until(
+                    EC.presence_of_element_located((By.ID, 'articleBrowserExport_top'))
+                )
+                d.execute_script("arguments[0].scrollIntoView({block:'center'}); arguments[0].click();", el)
+
+                time.sleep(_DOWNLOAD_WAIT)
+                logger.info("[MDPI] Page %d downloaded successfully.", page_no + 1)
+                return True
+
+            except Exception as exc:
+                logger.warning(
+                    "[MDPI] Page %d attempt %d error: %s", page_no + 1, attempt, exc
+                )
+                self._save_screenshot(f'page{page_no + 1}_attempt{attempt}_error')
+                if attempt < max_retries:
+                    logger.info("[MDPI] Retrying in 5 seconds…")
+                    time.sleep(5)
                     try:
-                        with open(txt_file, 'r', encoding='utf-8', errors='replace') as inf:
-                            outf.write(inf.read())
+                        d.refresh()
+                        time.sleep(3)
                     except Exception:
                         pass
-            
-            # Process the combined file
-            df = pd.read_csv(out_file, sep='\t', skip_blank_lines=True, skipinitialspace=True)
-            df.rename(columns={'AUTHOR':'names', 'EMAIL ':'emails'}, inplace=True)
-            
-            df2 = df[['names', 'emails']].copy(deep=True)
-            del df
-            
-            # Split multiple authors/emails
-            df2['names'].mask(df2['names'].str.contains(';') == True, other=df2['names'].str.split(';'), inplace=True)
-            df2['emails'].mask(df2['emails'].str.contains(';') == True, other=df2['emails'].str.split(';'), inplace=True)
-            
-            # Check length matching
-            df2['len_names'] = df2['names'].str.len()
-            df2['len_mails'] = df2['emails'].str.len()
-            df3 = df2[df2['len_names'] == df2['len_mails']].copy(deep=True)
-            df3 = df3.explode(['names','emails'])
-            df3.reset_index(drop=True, inplace=True)
-            
-            # Clean and format names
-            df3['names'] = df3['names'].str.strip()
-            df3['emails'] = df3['emails'].str.strip()
-            df3[['Last_Name','First_Name']] = df3['names'].str.split(',', n=1, expand=True)
-            
-            df3['First_Name'] = df3['First_Name'].str.strip()
-            df3['Last_Name'] = df3['Last_Name'].str.strip()
-            df3['Names'] = df3['First_Name'] + " " + df3['Last_Name']
-            
-            # Final cleanup
-            df4 = df3.loc[:,['emails', 'Names']].copy(deep=True)
-            df5 = df4[df4['emails'] != ''].copy(deep=True)
-            df6 = df5.drop_duplicates('emails')
-            
-            output_csv = out_file.replace('.txt', '') + '.csv'
-            df6.to_csv(output_csv, encoding='utf-8', index=False)
-            
-            del df3, df2, df4, df5, df6
-            
-            self.output_file = output_csv
-            print(f"Results saved to: {output_csv}")
-            return output_csv
-            
-        except Exception as e:
-            print(f"Error in MDPI scraper: {str(e)}")
+
+        logger.error("[MDPI] Page %d failed after %d attempts", page_no + 1, max_retries)
+        return False
+
+    # ── Parse downloaded .txt files → CSV ────────────────────────
+
+    def _build_csv(self) -> Optional[str]:
+        """
+        Merge all MDPI tab-delimited .txt downloads into a rich CSV matching
+        the PubMed scraper column layout, plus MDPI-specific extras.
+
+        MDPI tab-delimited export columns (actual):
+          AUTHOR, TITLE, JOURNAL, LANGUANGE (sic), DOCTYPE, KEYWORDS,
+          ABSTRACT, AFFILIATION, EMAIL, DOI, PUBYEAR, PUBVOL, PUBISSUE,
+          FPAGE, LPAGE, ARTNUMBER, PAGENUM
+
+        Output CSV columns (one row per unique email):
+          email, first_name, last_name, full_name,        ← same as PubMed
+          title, doi, pub_url, pub_date,                  ← same as PubMed
+          journal, volume, issue, pages,                  ← same as PubMed
+          affiliation, keywords,                          ← same as PubMed
+          abstract, language, doc_type                    ← MDPI extras
+
+        pages is built from FPAGE-LPAGE when both are present and non-empty,
+        then ARTNUMBER, then PAGENUM, in that order.
+        """
+        txt_files = glob.glob(os.path.join(self.output_dir, '*.txt'))
+        if not txt_files:
+            logger.warning("[MDPI] No .txt files found in %s", self.output_dir)
+            return None
+
+        slug     = self.keyword.replace(' ', '_')
+        ts       = datetime.now().strftime('%Y%m%d_%H%M%S')
+        combined = os.path.join(self.output_dir, f"mdpi_{slug}_combined_{ts}.txt")
+
+        with open(combined, 'w', encoding='utf-8') as out_f:
+            for i, fp in enumerate(sorted(txt_files)):
+                with open(fp, encoding='utf-8', errors='replace') as in_f:
+                    lines = in_f.readlines()
+                    if i > 0 and lines:
+                        lines = lines[1:]
+                    out_f.writelines(lines)
+
+        try:
+            df = pd.read_csv(combined, sep='\t', skip_blank_lines=True,
+                             skipinitialspace=True, dtype=str)
+        except Exception as exc:
+            logger.error("[MDPI] Could not read combined txt: %s", exc)
+            return None
+
+        # Normalise column names — strip whitespace, uppercase for matching
+        df.columns = df.columns.str.strip()
+        cu = {c: c.upper().strip() for c in df.columns}  # original → upper map
+
+        def _find_col(*candidates):
+            """Return the first df column whose upper name matches any candidate."""
+            for cand in candidates:
+                for orig, up in cu.items():
+                    if up == cand or up.startswith(cand):
+                        return orig
+            return None
+
+        col_author    = _find_col('AUTHOR')
+        col_email     = _find_col('EMAIL')
+        col_title     = _find_col('TITLE')
+        col_doi       = _find_col('DOI')
+        col_url       = _find_col('URL', 'LINK', 'PUB_URL')
+        # MDPI exports PUBYEAR (not YEAR); support both
+        col_year      = _find_col('PUBYEAR', 'YEAR', 'PUB YEAR', 'PUBLICATION YEAR')
+        col_journal   = _find_col('JOURNAL', 'SOURCE')
+        col_volume    = _find_col('PUBVOL', 'VOLUME')
+        col_issue     = _find_col('PUBISSUE', 'ISSUE', 'NUMBER')
+        # MDPI exports FPAGE, LPAGE, ARTNUMBER — we build pages from these
+        col_fpage     = _find_col('FPAGE')
+        col_lpage     = _find_col('LPAGE')
+        col_artnumber = _find_col('ARTNUMBER', 'ARTICLENUM')
+        col_pages_raw = _find_col('PAGES', 'PAGE', 'PAGENUM')
+        col_affil     = _find_col('AFFILIATION', 'INSTITUTION')
+        col_kw        = _find_col('KEYWORDS', 'KEYWORD')
+        # MDPI-specific extra columns (not in PubMed output)
+        col_abstract  = _find_col('ABSTRACT')
+        col_language  = _find_col('LANGUANGE', 'LANGUAGE', 'LANG')  # MDPI has typo: LANGUANGE
+        col_doctype   = _find_col('DOCTYPE', 'DOCUMENT TYPE', 'TYPE')
+
+        logger.info("[MDPI] Detected columns: author=%s email=%s title=%s doi=%s "
+                    "url=%s year=%s journal=%s vol=%s issue=%s affil=%s "
+                    "abstract=%s lang=%s doctype=%s",
+                    col_author, col_email, col_title, col_doi,
+                    col_url, col_year, col_journal, col_volume, col_issue, col_affil,
+                    col_abstract, col_language, col_doctype)
+
+        if not col_author or not col_email:
+            logger.error("[MDPI] Required AUTHOR/EMAIL columns not found. "
+                         "Available: %s", list(df.columns))
+            return None
+
+        # ── Helper: get scalar column value safely ────────────────────────────
+        def _col(row, col, default='N/A'):
+            if col and col in row.index:
+                v = str(row[col]).strip()
+                return v if v and v.lower() not in ('nan', 'none', '') else default
+            return default
+
+        # ── Explode per-author semicolon-separated lists ──────────────────────
+        def _split_semi(val):
+            if pd.isna(val) or str(val).strip() in ('', 'nan'):
+                return []
+            return [x.strip() for x in str(val).split(';') if x.strip()]
+
+        rows_out = []
+        seen_emails = set()
+
+        for _, row in df.iterrows():
+            authors = _split_semi(row[col_author])
+            emails  = _split_semi(row[col_email])
+
+            if not emails:
+                continue
+
+            # Pair authors with emails by position.
+            # If counts differ, zip truncates to shorter — remaining emails
+            # are attached to the last author.
+            if len(authors) == len(emails):
+                pairs = list(zip(authors, emails))
+            elif len(authors) < len(emails):
+                # More emails than authors — pair what we can, rest to last author
+                pairs = list(zip(authors, emails[:len(authors)]))
+                for extra_email in emails[len(authors):]:
+                    pairs.append((authors[-1] if authors else 'N/A', extra_email))
+            else:
+                # More authors than emails — attach all emails to first author
+                pairs = [(authors[0], e) for e in emails]
+
+            # Article-level fields (same for all authors on this row)
+            title    = _col(row, col_title)
+            doi      = _col(row, col_doi)
+            pub_url  = _col(row, col_url)
+            year     = _col(row, col_year)
+            journal  = _col(row, col_journal)
+            volume   = _col(row, col_volume)
+            issue    = _col(row, col_issue)
+            affil    = _col(row, col_affil)
+            keywords = _col(row, col_kw)
+            abstract = _col(row, col_abstract)
+            language = _col(row, col_language)
+            doc_type = _col(row, col_doctype)
+
+            # Build pages from FPAGE-LPAGE or fall back to ARTNUMBER then PAGES
+            fpage = _col(row, col_fpage)
+            lpage = _col(row, col_lpage)
+            artn  = _col(row, col_artnumber)
+            pages_raw = _col(row, col_pages_raw)
+            if fpage != 'N/A' and fpage != '-' and lpage != 'N/A' and lpage != '-':
+                pages = f"{fpage}-{lpage}"
+            elif artn != 'N/A' and artn != '-':
+                pages = artn
+            elif pages_raw != 'N/A' and pages_raw != '-':
+                pages = pages_raw
+            else:
+                pages = 'N/A'
+
+            # Build DOI URL if url column missing but DOI exists
+            if pub_url == 'N/A' and doi != 'N/A':
+                pub_url = f"https://doi.org/{doi}"
+
+            for author_name, email in pairs:
+                email = email.rstrip('.')
+                if not email or '@' not in email:
+                    continue
+                email_lc = email.lower()
+                if email_lc in seen_emails:
+                    continue
+                seen_emails.add(email_lc)
+
+                # Split "Last, First" → first_name / last_name
+                if ',' in author_name:
+                    last, _, first = author_name.partition(',')
+                    last  = last.strip()
+                    first = first.strip()
+                else:
+                    parts = author_name.split()
+                    first = ' '.join(parts[:-1]) if len(parts) > 1 else ''
+                    last  = parts[-1] if parts else author_name
+                full_name = f"{first} {last}".strip() or author_name
+
+                rows_out.append({
+                    'email'      : email,
+                    'first_name' : first  or 'N/A',
+                    'last_name'  : last   or 'N/A',
+                    'full_name'  : full_name,
+                    'title'      : title,
+                    'doi'        : doi,
+                    'pub_url'    : pub_url,
+                    'pub_date'   : year,
+                    'journal'    : journal,
+                    'volume'     : volume,
+                    'issue'      : issue,
+                    'pages'      : pages,
+                    'affiliation': affil,
+                    'keywords'   : keywords,
+                    'abstract'   : abstract,
+                    'language'   : language,
+                    'doc_type'   : doc_type,
+                })
+
+        if not rows_out:
+            logger.error("[MDPI] No email rows extracted after processing")
+            return None
+
+        result = pd.DataFrame(rows_out, columns=[
+            'email', 'first_name', 'last_name', 'full_name',
+            'title', 'doi', 'pub_url', 'pub_date',
+            'journal', 'volume', 'issue', 'pages',
+            'affiliation', 'keywords',
+            'abstract', 'language', 'doc_type',
+        ])
+
+        csv_path = os.path.join(self.output_dir, f"mdpi_{slug}_authors_{ts}.csv")
+        result.to_csv(csv_path, index=False, encoding='utf-8')
+        logger.info("[MDPI] CSV written: %s  (%d unique emails, %d columns)",
+                    csv_path, len(result), len(result.columns))
+        return csv_path
+
+    # ── Main entry point ─────────────────────────────────────────
+
+    def run(self) -> tuple[Optional[str], dict]:
+        self._progress(1, f"Starting MDPI scraper for '{self.keyword}'…")
+        try:
+            self._launch_chrome()
+            self._progress(3, "Chrome launched")
+            time.sleep(4)   # let UC Chrome fully initialise before any navigation
+
+            self._login()
+
+            self._progress(5, "Detecting total result pages…")
+            total_pages = self._get_total_pages()
+            self._progress(7, f"Found {total_pages} page(s) to download")
+
+            downloaded = 0
+            failed     = 0
+            for i in range(total_pages):
+                pct = 10 + int(70 * i / total_pages)
+                self._progress(pct, f"Downloading page {i + 1}/{total_pages}…")
+                ok = self._download_page(i, total_pages)
+                if ok:
+                    downloaded += 1
+                else:
+                    failed += 1
+
+            self._progress(82, f"Pages downloaded: {downloaded}/{total_pages}"
+                           + (f"  ({failed} failed)" if failed else ""))
+
+            if downloaded == 0:
+                self._progress(85, "All page downloads failed — no data collected")
+                return None, {
+                    'status': 'failed',
+                    'message': 'All page downloads failed — no data collected',
+                    'pages': total_pages, 'downloaded': 0, 'failed': failed,
+                }
+
+            self._progress(88, "Parsing downloaded files…")
+            csv_path = self._build_csv()
+
+            if csv_path:
+                email_count = 0
+                try:
+                    email_count = len(pd.read_csv(csv_path))
+                except Exception:
+                    pass
+                self._progress(100, f"Done — {email_count} unique emails saved.",
+                               emails=email_count)
+                return csv_path, {
+                    'status': 'success', 'output_file': csv_path,
+                    'pages': total_pages, 'downloaded': downloaded,
+                    'failed': failed, 'emails': email_count,
+                }
+            else:
+                self._progress(95, "Downloaded files parsed but no emails extracted.")
+                return None, {
+                    'status': 'partial',
+                    'message': 'No emails extracted from downloaded files',
+                    'pages': total_pages, 'downloaded': downloaded,
+                }
+
+        except Exception as exc:
+            logger.error("[MDPI] Fatal error: %s", exc, exc_info=True)
+            self._save_screenshot('fatal_error')
             raise
+
+        finally:
+            self._progress(99, "Closing Chrome session…")
+            self._quit_chrome()
+
+
+# ── Standalone runner ────────────────────────────────────────────
+
+if __name__ == '__main__':
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(message)s',
+    )
+
+    keyword_input = input('Keyword:    ').strip()
+    start_year    = input('Start year: ').strip()
+    end_year      = input('End year:   ').strip()
+
+    scraper = MDPIScraper(
+        keyword=keyword_input,
+        start_year=start_year,
+        end_year=end_year,
+    )
+    output, summary = scraper.run()
+
+    print("\n" + "=" * 60)
+    print(f"Output : {output}")
+    print(f"Summary: {summary.get('message') or summary}")
+    print("=" * 60)
