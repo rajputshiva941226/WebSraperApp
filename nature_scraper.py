@@ -73,14 +73,28 @@ class NatureScraper:
 
     def _setup_logger(self):
         logger = logging.getLogger(f"Nature.{self.keyword[:20]}")
-        logger.setLevel(logging.INFO)
+        logger.setLevel(logging.DEBUG)
         if logger.hasHandlers():
             logger.handlers.clear()
         fmt = logging.Formatter('%(asctime)s  %(levelname)-8s %(message)s',
                                 datefmt='%H:%M:%S')
+
+        # 1. stdout
         sh = logging.StreamHandler(sys.stdout)
         sh.setFormatter(fmt)
         logger.addHandler(sh)
+
+        # 2. Fixed path — always writable, easy to tail on the server:
+        #    tail -f /tmp/nature_scraper_debug.log
+        fixed_log = '/tmp/nature_scraper_debug.log'
+        try:
+            fh_fixed = logging.FileHandler(fixed_log, encoding='utf-8')
+            fh_fixed.setFormatter(fmt)
+            logger.addHandler(fh_fixed)
+        except Exception as e:
+            print(f"[Nature] WARNING: could not open fixed log {fixed_log}: {e}", flush=True)
+
+        # 3. Output-dir log — alongside results (may fail if dir not ready yet)
         try:
             os.makedirs(self.output_dir, exist_ok=True)
             fh = logging.FileHandler(
@@ -89,6 +103,7 @@ class NatureScraper:
             logger.addHandler(fh)
         except Exception:
             pass
+
         return logger
 
     def _save_screenshot(self, label: str):
