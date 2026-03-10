@@ -221,6 +221,25 @@ class NatureScraper:
 
     # ── Page helpers ──────────────────────────────────────────────────────────
 
+    def create_output_directory(self, keyword=None, start_year=None, end_year=None):
+        """
+        Called by scraper_adapter before run().
+        Stores keyword/years and creates the output subdirectory.
+        """
+        if keyword:
+            self.keyword    = keyword
+        if start_year:
+            self.start_year = str(start_year)
+        if end_year:
+            self.end_year   = str(end_year)
+        subdir = os.path.join(
+            self.output_dir,
+            f"{self.keyword.replace(' ', '_')}_{self.start_year}-{self.end_year}")
+        os.makedirs(subdir, exist_ok=True)
+        self._work_dir = subdir
+        self.logger.info("[Nature] Working dir: %s", subdir)
+        return subdir
+
     def accept_cookies(self):
         if self.cookies_accepted:
             return
@@ -441,7 +460,8 @@ class NatureScraper:
             start_year = self.start_year
             end_year   = self.end_year
 
-            out_dir = os.path.join(
+            # Use pre-created dir if create_output_directory() was called by adapter
+            out_dir = getattr(self, '_work_dir', None) or os.path.join(
                 self.output_dir,
                 f"{keyword.replace(' ', '_')}_{start_year}-{end_year}")
             os.makedirs(out_dir, exist_ok=True)

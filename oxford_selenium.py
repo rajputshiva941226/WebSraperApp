@@ -293,30 +293,96 @@ class OxfordScraper:
         return WebDriverWait(self.driver, 20)
 
     def get_total_pages(self):
+        """
+        Oxford updated their DOM — try multiple selectors.
+        Falls back to counting visible article cards if all selectors fail.
+        """
+        # Selector candidates in priority order (Oxford has changed these before)
+        selectors = [
+            "div.sr-statistics.at-sr-statistics",      # old selector
+            "div.sr-statistics",                        # without at- class
+            "[data-test='results-count']",              # data-test variant
+            ".search-results-section-title",            # section title
+            ".number-of-search-results",                # another variant
+            "span.at-sr-statistics",                    # span variant
+            "#search-results-count",                    # id variant
+        ]
+
+        for sel in selectors:
+            try:
+                el    = WebDriverWait(self.driver, 6).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, sel)))
+                text  = el.text.strip()
+                # Extract the first integer-looking token (e.g. "1,234 results for...")
+                nums  = [t.replace(",", "").replace(".", "") for t in text.split()
+                         if t.replace(",", "").replace(".", "").isdigit()]
+                if nums:
+                    total = int(nums[0])
+                    pages = math.ceil(total / 20)
+                    self.logger.info("[Oxford] selector=%r  %d results -> %d pages",
+                                     sel, total, pages)
+                    return pages
+            except Exception:
+                continue
+
+        # Last resort: count article cards already rendered on the page
         try:
-            stats = self._get_wait().until(EC.presence_of_element_located(
-                (By.CSS_SELECTOR, "div.sr-statistics.at-sr-statistics")))
-            total = int(stats.text.split()[2].replace(",", ""))
-            pages = math.ceil(total / 20)
-            self.logger.info("[Oxford] %d results -> %d pages", total, pages)
-            return pages
-        except Exception as e:
-            self.logger.error("[Oxford] get_total_pages error: %s", e)
-            self._save_screenshot('get_total_pages_error')
-            return 0
+            cards = self.driver.find_elements(
+                By.CSS_SELECTOR,
+                "div.sr-list.al-article-box, article.search-result-item, "
+                ".search-result-item, [data-test='article-item']")
+            if cards:
+                self.logger.info(
+                    "[Oxford] Used card count fallback: %d cards visible", len(cards))
+                # Assume 1 page with whatever is rendered
+                return 1
+        except Exception:
+            pass
+
+        self.logger.error("[Oxford] get_total_pages: no matching selector found")
+        self._save_screenshot('get_total_pages_error')
+        return 0
 
     def extract_links(self):
         links = []
+        # Also try updated selectors for article cards
+        card_selectors = [
+            "div.sr-list.al-article-box.al-normal.clearfix",  # old
+            "div.sr-list.al-article-box",                     # without al-normal
+            "article.search-result-item",                     # new
+            "[data-test='article-item']",                     # data-test
+            ".search-result-item",                            # generic
+        ]
         try:
-            articles = self._get_wait().until(EC.presence_of_all_elements_located(
-                (By.CSS_SELECTOR, "div.sr-list.al-article-box.al-normal.clearfix")))
-            for article in articles:
+            articles = []
+            for sel in card_selectors:
                 try:
-                    el = article.find_element(
-                        By.CSS_SELECTOR, "a.article-link.at-sr-article-title-link")
-                    links.append(el.get_attribute("href"))
+                    articles = self._get_wait().until(
+                        EC.presence_of_all_elements_located((By.CSS_SELECTOR, sel)))
+                    if articles:
+                        self.logger.info("[Oxford] extract_links using selector: %r", sel)
+                        break
                 except Exception:
-                    pass
+                    continue
+
+            link_selectors = [
+                "a.article-link.at-sr-article-title-link",   # old
+                "a.article-link",                             # without at- class
+                "h3.sr-list-title a",                         # h3 title link
+                ".search-result-title a",                     # generic title
+                "a[data-test='article-title']",               # data-test
+                "h3 a",                                       # any h3 link
+            ]
+            for article in articles:
+                for lsel in link_selectors:
+                    try:
+                        el = article.find_element(By.CSS_SELECTOR, lsel)
+                        href = el.get_attribute("href")
+                        if href:
+                            links.append(href)
+                            break
+                    except Exception:
+                        continue
             self.logger.info("[Oxford] Extracted %d links", len(links))
         except Exception as e:
             self.logger.error("[Oxford] extract_links error: %s", e)
@@ -324,13 +390,29 @@ class OxfordScraper:
         return links
 
     def get_next_url(self):
-        try:
-            nxt    = self.driver.find_element(By.CSS_SELECTOR, "a.sr-nav-next.al-nav-next")
-            params = nxt.get_attribute("data-url")
-            base   = self.driver.current_url.split("?")[0]
-            return urljoin(base, "?" + params)
-        except Exception:
-            return None
+        """Try multiple selectors for Oxford's 'next page' button."""
+        next_selectors = [
+            "a.sr-nav-next.al-nav-next",    # old
+            "a.sr-nav-next",                # without al- class
+            "a[data-test='next-page']",     # data-test variant
+            ".pagination-next a",           # generic pagination
+            "a[aria-label='Next page']",    # aria-label variant
+            "a[rel='next']",                # rel=next
+        ]
+        for sel in next_selectors:
+            try:
+                nxt    = self.driver.find_element(By.CSS_SELECTOR, sel)
+                # Try data-url first, then href
+                params = nxt.get_attribute("data-url")
+                if params:
+                    base = self.driver.current_url.split("?")[0]
+                    return urljoin(base, "?" + params)
+                href = nxt.get_attribute("href")
+                if href and href != "#":
+                    return href
+            except Exception:
+                continue
+        return None
 
     def save_to_csv(self, data, directory, filename, header=None):
         try:
