@@ -6,6 +6,7 @@ Nature.com Article Scraper
 - Graceful Chrome + Xvfb cleanup
 - Compatible with SeleniumScraperWrapper: __init__ does NOT call run()
   run() launches Chrome, scrapes, cleans up; returns (csv_path, summary)
+- Cooperative stop: checks self._stop_requested() injected by wrapper
 """
 
 try:
@@ -27,11 +28,12 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import (
     TimeoutException, NoSuchElementException, ElementClickInterceptedException)
 
-import csv, time, os, sys, re, glob, platform, subprocess, logging, datetime
+import csv, time, os, sys, re, platform, subprocess, logging, datetime
 from webdriver_manager.chrome import ChromeDriverManager
 
 
 class NatureScraper:
+
     def __init__(self, keyword=None, start_year=None, end_year=None,
                  driver_path=None, output_dir=None, progress_callback=None):
         self.keyword     = keyword or 'bioinformatics'
@@ -60,7 +62,14 @@ class NatureScraper:
         ]
         # NOTE: __init__ does NOT call run() — SeleniumScraperWrapper calls run() directly
 
-    # ── Logging ──────────────────────────────────────────────────────────────
+    # ── Stop check ────────────────────────────────────────────────────────────
+
+    def _check_stop(self):
+        """Call at the top of every loop iteration. Raises KeyboardInterrupt if stop requested."""
+        if getattr(self, '_stop_requested', lambda: False)():
+            raise KeyboardInterrupt('Stop requested')
+
+    # ── Logging ───────────────────────────────────────────────────────────────
 
     def _setup_logger(self):
         logger = logging.getLogger(f"Nature.{self.keyword[:20]}")
@@ -103,7 +112,7 @@ class NatureScraper:
                 pass
         self.logger.info("[Nature] [%d%%] %s", pct, msg)
 
-    # ── Virtual display (Xvfb) ───────────────────────────────────────────────
+    # ── Virtual display (Xvfb) ────────────────────────────────────────────────
 
     def _start_virtual_display(self):
         try:
@@ -114,7 +123,7 @@ class NatureScraper:
             self.logger.info("[Nature] pyvirtualdisplay on %s", disp)
             return disp
         except ImportError:
-            self.logger.info("[Nature] pyvirtualdisplay not installed — using Xvfb directly")
+            self.logger.info("[Nature] pyvirtualdisplay not installed — using raw Xvfb")
             subprocess.run(['pkill', '-f', 'Xvfb :99'], capture_output=True)
             time.sleep(0.5)
             proc = subprocess.Popen(
@@ -139,7 +148,7 @@ class NatureScraper:
             self._vdisplay = None
         self.logger.info("[Nature] Virtual display stopped")
 
-    # ── Chrome setup ─────────────────────────────────────────────────────────
+    # ── Chrome setup / teardown ───────────────────────────────────────────────
 
     def _build_chrome_options(self):
         opts = Options()
@@ -169,7 +178,6 @@ class NatureScraper:
         self.logger.info("[Nature] Chrome launched OK")
 
     def setup_driver(self):
-        """Launch Chrome with Xvfb fallback. Called once at start of run()."""
         if platform.system() == 'Windows':
             self._try_launch_chrome()
             return
@@ -177,7 +185,7 @@ class NatureScraper:
         if not os.environ.get('DISPLAY'):
             os.environ['DISPLAY'] = ':0'
         uid_str = str(os.getuid()) if hasattr(os, 'getuid') else '1000'
-        xauth   = os.environ.get('XAUTHORITY', '')
+        xauth = os.environ.get('XAUTHORITY', '')
         if not xauth or not os.path.exists(xauth):
             for c in [f"/run/user/{uid_str}/gdm/Xauthority",
                       os.path.expanduser("~/.Xauthority"),
@@ -197,28 +205,21 @@ class NatureScraper:
         xvfb = self._start_virtual_display()
         os.environ['DISPLAY'] = xvfb
         os.environ.pop('XAUTHORITY', None)
-        try:
-            self._try_launch_chrome()
-            self.logger.info("[Nature] Chrome on Xvfb %s OK", xvfb)
-        except Exception as e2:
-            self.logger.error("[Nature] Chrome also failed on Xvfb: %s\n"
-                              "  Install: sudo apt install xvfb && pip install pyvirtualdisplay",
-                              e2)
-            raise
+        self._try_launch_chrome()
+        self.logger.info("[Nature] Chrome on Xvfb %s OK", xvfb)
 
     def cleanup(self):
-        """Close Chrome and stop Xvfb. Called in run() finally block."""
         if self.driver:
             try:
                 self.driver.quit()
-                self.logger.info("[Nature] Chrome session closed")
+                self.logger.info("[Nature] Chrome closed")
             except Exception:
                 pass
             finally:
                 self.driver = None
         self._stop_virtual_display()
 
-    # ── Cookie / navigation helpers ───────────────────────────────────────────
+    # ── Page helpers ──────────────────────────────────────────────────────────
 
     def accept_cookies(self):
         if self.cookies_accepted:
@@ -229,20 +230,17 @@ class NatureScraper:
                     (By.CSS_SELECTOR, 'button[data-cc-action="accept"]')))
             btn.click()
             self.logger.info("[Nature] Cookies accepted")
-            self.cookies_accepted = True
-            time.sleep(2)
-        except TimeoutException:
-            self.cookies_accepted = True
+            time.sleep(1)
         except Exception:
-            self.cookies_accepted = True
+            pass
+        self.cookies_accepted = True
 
     # ── Link scraping ─────────────────────────────────────────────────────────
 
     def get_total_results(self, url):
         try:
             self.driver.get(url)
-            if not self.cookies_accepted:
-                self.accept_cookies()
+            self.accept_cookies()
             time.sleep(2)
             el = WebDriverWait(self.driver, 10).until(
                 EC.presence_of_element_located(
@@ -252,6 +250,7 @@ class NatureScraper:
             return 0
 
     def scrape_links_from_url(self, base_url, links_file):
+        self._check_stop()
         total = self.get_total_results(base_url + "&page=1")
         if total == 0:
             return []
@@ -260,6 +259,7 @@ class NatureScraper:
         with open(links_file, 'a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             for page in range(1, total_pages + 1):
+                self._check_stop()
                 try:
                     self.driver.get(base_url + f"&page={page}")
                     time.sleep(1.5)
@@ -285,12 +285,11 @@ class NatureScraper:
     # ── Email extraction ──────────────────────────────────────────────────────
 
     def extract_author_emails(self, article_url):
+        self._check_stop()
         try:
             self.driver.get(article_url)
             time.sleep(2)
-            if not self.cookies_accepted:
-                self.accept_cookies()
-            time.sleep(0.5)
+            self.accept_cookies()
             authors_data = []
 
             try:
@@ -300,28 +299,22 @@ class NatureScraper:
             except TimeoutException:
                 return []
 
-            # Click "Show authors" if present
+            # Expand full author list if collapsed
             try:
                 show_btn = WebDriverWait(self.driver, 3).until(
                     EC.presence_of_element_located(
                         (By.CSS_SELECTOR, 'button.c-article-author-list__button')))
                 self.driver.execute_script(
                     "arguments[0].scrollIntoView({block: 'center'});", show_btn)
-                time.sleep(1)
-                for _ in range(3):
-                    try:
-                        WebDriverWait(self.driver, 2).until(
-                            EC.element_to_be_clickable(
-                                (By.CSS_SELECTOR, 'button.c-article-author-list__button')))
-                        show_btn.click()
-                        break
-                    except (ElementClickInterceptedException, TimeoutException):
-                        try:
-                            self.driver.execute_script("arguments[0].click();", show_btn)
-                            break
-                        except Exception:
-                            time.sleep(1)
-                time.sleep(2)
+                time.sleep(0.5)
+                try:
+                    WebDriverWait(self.driver, 2).until(
+                        EC.element_to_be_clickable(
+                            (By.CSS_SELECTOR, 'button.c-article-author-list__button')))
+                    show_btn.click()
+                except Exception:
+                    self.driver.execute_script("arguments[0].click();", show_btn)
+                time.sleep(1.5)
             except TimeoutException:
                 pass
 
@@ -330,7 +323,9 @@ class NatureScraper:
                 '[data-test="authors-list"] a[data-test="author-name"]')
 
             for idx in range(len(author_links)):
+                self._check_stop()
                 try:
+                    # Re-fetch to avoid stale element refs
                     author_links = self.driver.find_elements(
                         By.CSS_SELECTOR,
                         '[data-test="authors-list"] a[data-test="author-name"]')
@@ -352,7 +347,7 @@ class NatureScraper:
                     try:
                         self.driver.execute_script(
                             "arguments[0].scrollIntoView({block: 'center'});", author_link)
-                        time.sleep(0.5)
+                        time.sleep(0.3)
                         author_link.click()
                         time.sleep(1)
 
@@ -365,14 +360,15 @@ class NatureScraper:
                             try:
                                 WebDriverWait(self.driver, 3).until(
                                     EC.visibility_of_element_located(
-                                        (By.CSS_SELECTOR, ".app-researcher-popup")))
+                                        (By.CSS_SELECTOR, '.app-researcher-popup')))
                             except TimeoutException:
                                 self._save_screenshot(f'popup_timeout_{idx}')
 
                         try:
                             el = WebDriverWait(self.driver, 3).until(
                                 EC.visibility_of_element_located(
-                                    (By.CSS_SELECTOR, f"{popup_sel} a[href^='mailto:']")))
+                                    (By.CSS_SELECTOR,
+                                     f"{popup_sel} a[href^='mailto:']")))
                             email = el.get_attribute('href').replace('mailto:', '').strip()
                         except TimeoutException:
                             pass
@@ -396,14 +392,18 @@ class NatureScraper:
                         self.driver.execute_script("document.body.click();")
                         time.sleep(0.5)
 
+                except KeyboardInterrupt:
+                    raise   # propagate stop signal
                 except Exception:
                     continue
 
             return authors_data
 
+        except KeyboardInterrupt:
+            raise   # propagate stop signal
         except Exception as e:
-            self.logger.warning("[Nature] Page error on %s: %s", article_url, str(e)[:60])
-            self._save_screenshot('article_page_error')
+            self.logger.warning("[Nature] Page error %s: %s", article_url, str(e)[:80])
+            self._save_screenshot('article_error')
             return []
 
     def extract_emails_for_links(self, links, emails_file):
@@ -412,11 +412,12 @@ class NatureScraper:
         with open(emails_file, 'a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             for idx, url in enumerate(links, 1):
+                self._check_stop()
                 authors = self.extract_author_emails(url)
                 for author in authors:
                     writer.writerow([url, author['name'], author['email']])
                 f.flush()
-                time.sleep(2)
+                time.sleep(1.5)
 
     # ── Main run — called by SeleniumScraperWrapper ───────────────────────────
 
@@ -445,37 +446,42 @@ class NatureScraper:
                 f"{keyword.replace(' ', '_')}_{start_year}-{end_year}")
             os.makedirs(out_dir, exist_ok=True)
 
-            years = range(int(start_year), int(end_year) + 1)
+            years       = list(range(int(start_year), int(end_year) + 1))
             total_years = len(years)
 
             for yr_idx, year in enumerate(years):
+                self._check_stop()
                 yr_pct_base = 5 + int(90 * yr_idx / max(total_years, 1))
                 self._progress(yr_pct_base, f'Scraping year {year}...')
 
-                links_file  = os.path.join(out_dir,
-                                           f"{keyword.replace(' ', '_')}-{year}-links.csv")
-                emails_file = os.path.join(out_dir,
-                                           f"{keyword.replace(' ', '_')}-{year}-emails.csv")
+                links_file  = os.path.join(
+                    out_dir, f"{keyword.replace(' ', '_')}-{year}-links.csv")
+                emails_file = os.path.join(
+                    out_dir, f"{keyword.replace(' ', '_')}-{year}-emails.csv")
 
+                # Write CSV headers
                 with open(links_file, 'w', newline='', encoding='utf-8') as f:
                     csv.writer(f).writerow(['article_link'])
                 with open(emails_file, 'w', newline='', encoding='utf-8') as f:
                     csv.writer(f).writerow(['article_link', 'author_name', 'email'])
 
-                # No-filter search
+                # Broad search (no article_type/subject filter)
                 base_url = (f"https://www.nature.com/search?q={keyword}"
                             f"&date_range={year}-&order=relevance")
                 links = self.scrape_links_from_url(base_url, links_file)
                 if links:
                     self.extract_emails_for_links(links, emails_file)
 
-                # All article_type × subject combos
+                # Filtered combos
                 total_combos = len(self.article_types) * len(self.subjects)
                 for combo_idx, (atype, subject) in enumerate(
                         [(a, s) for a in self.article_types for s in self.subjects]):
+                    self._check_stop()
                     combo_pct = yr_pct_base + int(
                         (90 / max(total_years, 1)) * combo_idx / max(total_combos, 1))
-                    self._progress(combo_pct, f'Year {year}: {atype}/{subject[:20]}')
+                    self._progress(
+                        combo_pct,
+                        f'Year {year}: {atype}/{subject[:20]}')
                     base_url = (f"https://www.nature.com/search?q={keyword}"
                                 f"&article_type={atype}&subject={subject}"
                                 f"&date_range={year}-&order=relevance")
@@ -484,8 +490,8 @@ class NatureScraper:
                         self.extract_emails_for_links(links, emails_file)
                     time.sleep(0.5)
 
-                # Count results from this year's email file
-                csv_path = emails_file   # return last year's file; caller may merge
+                # Accumulate counts from this year's file
+                csv_path = emails_file
                 try:
                     with open(emails_file, encoding='utf-8') as f:
                         for row in csv.DictReader(f):
@@ -496,18 +502,27 @@ class NatureScraper:
                 except Exception:
                     pass
 
-            self._progress(100, f'Done — {len(authors_seen)} authors, {len(emails_seen)} emails')
+            self._progress(100,
+                f'Done — {len(authors_seen)} authors, {len(emails_seen)} emails')
+
+        except KeyboardInterrupt:
+            # Stop was requested — return whatever we collected so far
+            self.logger.info(
+                "[Nature] Stop requested — partial results: %d authors, %d emails",
+                len(authors_seen), len(emails_seen))
 
         except Exception as e:
             self.logger.error("[Nature] Fatal error: %s", e)
             self._save_screenshot('fatal_error')
             raise
+
         finally:
-            self.cleanup()
+            self.cleanup()   # Always runs — closes Chrome and Xvfb
 
         summary = {
             'unique_authors': len(authors_seen),
             'unique_emails':  len(emails_seen),
-            'message':        f'Found {len(authors_seen)} unique authors, {len(emails_seen)} unique emails',
+            'message': (f'Found {len(authors_seen)} unique authors, '
+                        f'{len(emails_seen)} unique emails'),
         }
         return csv_path, summary

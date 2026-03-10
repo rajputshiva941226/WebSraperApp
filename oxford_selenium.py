@@ -358,6 +358,8 @@ class OxfordScraper:
 
         total = len(urls)
         for i, url in enumerate(urls):
+            if getattr(self, '_stop_requested', lambda: False)():
+                raise KeyboardInterrupt('Stop requested')
             self._progress(
                 50 + int(50 * i / max(total, 1)),
                 f"Extracting emails {i+1}/{total}",
@@ -383,6 +385,8 @@ class OxfordScraper:
                 for link in self.driver.find_elements(
                         By.CSS_SELECTOR,
                         "span.al-author-name-more a.js-linked-name-trigger"):
+                    if getattr(self, '_stop_requested', lambda: False)():
+                        raise KeyboardInterrupt('Stop requested')
                     try:
                         author_name = link.text.strip()
                         author_names.append(author_name)
@@ -479,6 +483,8 @@ class OxfordScraper:
             all_links   = []
 
             for page_num in range(total_pages):
+                if getattr(self, '_stop_requested', lambda: False)():
+                    raise KeyboardInterrupt('Stop requested')
                 pct = 12 + int(38 * page_num / max(total_pages, 1))
                 self._progress(pct, f'Collecting links page {page_num+1}/{total_pages}',
                                self.driver.current_url)
@@ -520,6 +526,9 @@ class OxfordScraper:
             self._save_cookies()
             self._progress(100, f'Done — {len(authors_seen)} authors, {len(emails_seen)} emails')
 
+        except KeyboardInterrupt:
+            self.logger.info("[Oxford] Stop requested — returning partial results "
+                             "(%d authors, %d emails)", len(authors_seen), len(emails_seen))
         except Exception as e:
             self.logger.error("[Oxford] Fatal error: %s", e)
             self._save_screenshot('fatal_error')
@@ -530,6 +539,7 @@ class OxfordScraper:
         summary = {
             'unique_authors': len(authors_seen),
             'unique_emails':  len(emails_seen),
-            'message':        f'Found {len(authors_seen)} unique authors, {len(emails_seen)} unique emails',
+            'message':        (f'Found {len(authors_seen)} unique authors, '
+                               f'{len(emails_seen)} unique emails'),
         }
         return csv_path, summary
