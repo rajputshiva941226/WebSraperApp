@@ -224,7 +224,7 @@ class OxfordScraper:
         try:
             with open(_OXFORD_COOKIE_FILE) as f:
                 cookies = json.load(f)
-            self.driver.get("https://academic.oup.com/")
+            self._navigate("https://academic.oup.com/")
             time.sleep(2)
             for cookie in cookies:
                 cookie.pop('sameSite', None)
@@ -270,6 +270,52 @@ class OxfordScraper:
             self.logger.error(
                 "[Oxford] Captcha persists. Scraper continues but results may be limited.")
 
+    def _navigate(self, url):
+        """
+        Navigate to a URL and handle Oxford's human-verification interstitial.
+        Oxford sometimes shows "Verify you are a human" before the actual page —
+        we wait up to 15 seconds for it to resolve automatically, then continue.
+        """
+        self._navigate(url)
+
+        # Check for human-verification / Cloudflare / crawlprevention pages
+        verify_signals = [
+            'verify', 'human', 'cloudflare', 'challenge', 'crawlprevention',
+            'checking your browser', 'just a moment',
+        ]
+        time.sleep(2)
+        current = self.driver.current_url.lower()
+        title   = self.driver.title.lower()
+
+        is_blocked = (
+            any(s in current for s in verify_signals) or
+            any(s in title   for s in verify_signals)
+        )
+
+        if is_blocked:
+            self.logger.warning(
+                "[Oxford] Verification page detected (url=%s title=%r) — waiting 15s...",
+                self.driver.current_url, self.driver.title)
+            self._save_screenshot('verification_page')
+            self._progress(0, 'Oxford human-verification — waiting 15s...')
+
+            for i in range(15):
+                time.sleep(1)
+                current = self.driver.current_url.lower()
+                title   = self.driver.title.lower()
+                if not any(s in current for s in verify_signals) and \
+                   not any(s in title   for s in verify_signals):
+                    self.logger.info("[Oxford] Verification cleared after %ds", i + 1)
+                    self._save_screenshot('verification_cleared')
+                    self._save_cookies()
+                    return
+
+            self.logger.warning("[Oxford] Still on verification after 15s — proceeding anyway")
+            self._save_screenshot('verification_timeout')
+
+        # Also handle crawlprevention (existing logic)
+        self.detect_and_handle_captcha()
+
     def accept_cookies(self):
         for selector in [
             "button#onetrust-accept-btn-handler",
@@ -294,53 +340,32 @@ class OxfordScraper:
 
     def get_total_pages(self):
         """
-        Oxford updated their DOM — try multiple selectors.
-        Falls back to counting visible article cards if all selectors fail.
+        Oxford stats div text is like: "81-100 of 737"
+        Selector confirmed from live HTML: div.sr-statistics.at-sr-statistics
         """
-        # Selector candidates in priority order (Oxford has changed these before)
-        selectors = [
-            "div.sr-statistics.at-sr-statistics",      # old selector
-            "div.sr-statistics",                        # without at- class
-            "[data-test='results-count']",              # data-test variant
-            ".search-results-section-title",            # section title
-            ".number-of-search-results",                # another variant
-            "span.at-sr-statistics",                    # span variant
-            "#search-results-count",                    # id variant
-        ]
-
-        for sel in selectors:
-            try:
-                el    = WebDriverWait(self.driver, 6).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, sel)))
-                text  = el.text.strip()
-                # Extract the first integer-looking token (e.g. "1,234 results for...")
-                nums  = [t.replace(",", "").replace(".", "") for t in text.split()
-                         if t.replace(",", "").replace(".", "").isdigit()]
-                if nums:
-                    total = int(nums[0])
-                    pages = math.ceil(total / 20)
-                    self.logger.info("[Oxford] selector=%r  %d results -> %d pages",
-                                     sel, total, pages)
-                    return pages
-            except Exception:
-                continue
-
-        # Last resort: count article cards already rendered on the page
         try:
-            cards = self.driver.find_elements(
-                By.CSS_SELECTOR,
-                "div.sr-list.al-article-box, article.search-result-item, "
-                ".search-result-item, [data-test='article-item']")
-            if cards:
-                self.logger.info(
-                    "[Oxford] Used card count fallback: %d cards visible", len(cards))
-                # Assume 1 page with whatever is rendered
-                return 1
-        except Exception:
-            pass
-
-        self.logger.error("[Oxford] get_total_pages: no matching selector found")
-        self._save_screenshot('get_total_pages_error')
+            el   = WebDriverWait(self.driver, 15).until(
+                EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, "div.sr-statistics.at-sr-statistics")))
+            text = el.text.strip()
+            self.logger.info("[Oxford] sr-statistics text: %r", text)
+            # Parse "81-100 of 737" — grab the number after "of"
+            m = re.search(r'of\s+([\d,]+)', text)
+            if m:
+                total = int(m.group(1).replace(",", ""))
+                pages = math.ceil(total / 20)
+                self.logger.info("[Oxford] %d results -> %d pages", total, pages)
+                return pages
+            # Fallback: grab any standalone integer (handles "737 results" style)
+            nums = re.findall(r'\b(\d[\d,]*)\b', text)
+            if nums:
+                total = int(max(nums, key=lambda x: int(x.replace(",", ""))).replace(",", ""))
+                pages = math.ceil(total / 20)
+                self.logger.info("[Oxford] fallback parse: %d results -> %d pages", total, pages)
+                return pages
+        except Exception as e:
+            self.logger.error("[Oxford] get_total_pages error: %s", e)
+            self._save_screenshot('get_total_pages_error')
         return 0
 
     def extract_links(self):
@@ -446,7 +471,7 @@ class OxfordScraper:
                 50 + int(50 * i / max(total, 1)),
                 f"Extracting emails {i+1}/{total}",
                 url)
-            self.driver.get(url)
+            self._navigate(url)
             self.detect_and_handle_captcha()
             if not self.driver.current_url.startswith("https://academic.oup.com/"):
                 continue
@@ -549,14 +574,14 @@ class OxfordScraper:
 
             self._progress(8, 'Loading Oxford...')
             self._load_cookies()
-            self.driver.get(base_url)
+            self._navigate(base_url)
             time.sleep(3)
             self._save_screenshot('homepage')
             self.accept_cookies()
             self.detect_and_handle_captcha()
 
             self._progress(12, 'Running search...')
-            self.driver.get(search_url)
+            self._navigate(search_url)
             time.sleep(3)
             self._save_screenshot('search_results')
             self.detect_and_handle_captcha()
@@ -575,7 +600,7 @@ class OxfordScraper:
                 all_links.extend(links)
                 next_url = self.get_next_url()
                 if next_url:
-                    self.driver.get(next_url)
+                    self._navigate(next_url)
                     time.sleep(2)
                 else:
                     break

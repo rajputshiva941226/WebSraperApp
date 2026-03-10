@@ -440,6 +440,17 @@ class NatureScraper:
 
     # ── Main run — called by SeleniumScraperWrapper ───────────────────────────
 
+    def scrape_all_years(self, keyword=None, start_year=None, end_year=None,
+                         extract_emails=True):
+        """
+        Called directly by scraper_adapter (old calling convention).
+        Updates stored params then delegates to run().
+        """
+        if keyword:    self.keyword    = str(keyword)
+        if start_year: self.start_year = str(start_year)
+        if end_year:   self.end_year   = str(end_year)
+        return self.run()
+
     def run(self):
         """
         Entry point called by SeleniumScraperWrapper.
