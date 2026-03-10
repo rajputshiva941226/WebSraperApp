@@ -224,7 +224,7 @@ class OxfordScraper:
         try:
             with open(_OXFORD_COOKIE_FILE) as f:
                 cookies = json.load(f)
-            self._navigate("https://academic.oup.com/")
+            self.driver.get("https://academic.oup.com/")   # raw get — avoids recursion via _navigate→detect→_load_cookies
             time.sleep(2)
             for cookie in cookies:
                 cookie.pop('sameSite', None)
@@ -276,7 +276,7 @@ class OxfordScraper:
         Oxford sometimes shows "Verify you are a human" before the actual page —
         we wait up to 15 seconds for it to resolve automatically, then continue.
         """
-        self._navigate(url)
+        self.driver.get(url)   # raw Selenium — do NOT call _navigate here
 
         # Check for human-verification / Cloudflare / crawlprevention pages
         verify_signals = [
