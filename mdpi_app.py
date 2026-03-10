@@ -73,8 +73,9 @@ class MDPIScraper:
         self.screenshot_dir = os.path.join(self.output_dir, 'screenshots')
         os.makedirs(self.screenshot_dir, exist_ok=True)
 
-        self._cb     = progress_callback
+        self._cb       = progress_callback
         self._driver: Optional[uc.Chrome] = None
+        self._vdisplay = None   # pyvirtualdisplay / Xvfb handle (fallback)
 
         # ── File log handler — always write to output_dir/mdpi_debug.log ────
         # Celery may suppress or buffer stdout/stderr.  This guarantees a
@@ -267,142 +268,137 @@ class MDPIScraper:
         """
         Launch undetected Chrome — NO headless.
 
-        auth.mdpi.com is protected by Akamai Bot Manager which fingerprints
-        headless Chrome at the TLS level. Visible mode is the only option.
+        Strategy (Linux/EC2 with GNOME3):
+        1. Try DISPLAY=:0 with auto-detected XAUTHORITY (GNOME3 desktop display).
+        2. If Chrome crashes on :0 (common when Celery worker X cookie is refused),
+           automatically start Xvfb on :99 and retry there.
+           Xvfb requires no XAUTHORITY and always works on servers.
 
-        On EC2/Ubuntu with GNOME3: Chrome needs both DISPLAY and XAUTHORITY.
-        DISPLAY=:0 is the GNOME3 display; XAUTHORITY is the MIT-MAGIC-COOKIE
-        file that grants access to that display.  Celery workers running as
-        a different UID often have DISPLAY but NOT XAUTHORITY — causing the
-        'session not created: cannot connect to chrome' error.
-
-        We auto-detect and set XAUTHORITY before launching Chrome.
+        Akamai Bot Manager fingerprints headless Chrome TLS — must use
+        a real or virtual display, never --headless.
         """
-        import platform, subprocess, shutil
+        import platform, subprocess
 
         logger.info("[MDPI] ── _launch_chrome START ──")
-
-        # ── Run full environment diagnostic before attempting Chrome ─────────
         self._diagnose_environment()
 
-        # ── Ensure DISPLAY is set ────────────────────────────────────────────
-        if platform.system() != 'Windows':
-            if not os.environ.get('DISPLAY'):
-                os.environ['DISPLAY'] = ':0'
-                logger.info("[MDPI] DISPLAY not set — forcing :0")
-            else:
-                logger.info("[MDPI] DISPLAY=%s (already set)", os.environ['DISPLAY'])
+        if platform.system() == 'Windows':
+            self._try_launch_chrome_on_display(None)
+            return
 
-            # ── GNOME3 XAUTHORITY fix ────────────────────────────────────────
-            # If XAUTHORITY is already set and readable, use it.
-            # Otherwise probe known GNOME3/GDM locations and set it.
-            xauth = os.environ.get('XAUTHORITY', '')
-            if not xauth or not os.path.exists(xauth):
-                uid_str = str(os.getuid()) if hasattr(os, 'getuid') else '1000'
-                for candidate in [
-                    f"/run/user/{uid_str}/gdm/Xauthority",
-                    os.path.expanduser("~/.Xauthority"),
-                    "/home/ubuntu/.Xauthority",
-                    "/root/.Xauthority",
-                ]:
-                    if os.path.exists(candidate) and os.access(candidate, os.R_OK):
-                        os.environ['XAUTHORITY'] = candidate
-                        logger.info("[MDPI] XAUTHORITY set → %s", candidate)
-                        break
-                else:
-                    logger.warning(
-                        "[MDPI] XAUTHORITY not found in any standard location. "
-                        "Chrome may fail with 'session not created'. "
-                        "Fix: run  xhost +local:  on the GNOME3 desktop, OR "
-                        "set XAUTHORITY=/home/<user>/.Xauthority in the "
-                        "Celery worker's systemd/supervisor environment."
-                    )
-            else:
-                logger.info("[MDPI] XAUTHORITY=%s (already set, file exists)", xauth)
+        # ── Step 1: try real GNOME3 display :0 ───────────────────────────────
+        if not os.environ.get('DISPLAY'):
+            os.environ['DISPLAY'] = ':0'
+        display = os.environ['DISPLAY']
 
-        # ── Build Chrome options ─────────────────────────────────────────────
-        logger.info("[MDPI] Building Chrome options…")
+        xauth = os.environ.get('XAUTHORITY', '')
+        if not xauth or not os.path.exists(xauth):
+            uid_str = str(os.getuid()) if hasattr(os, 'getuid') else '1000'
+            for candidate in [
+                f"/run/user/{uid_str}/gdm/Xauthority",
+                os.path.expanduser("~/.Xauthority"),
+                "/home/ubuntu/.Xauthority",
+                "/root/.Xauthority",
+            ]:
+                if os.path.exists(candidate) and os.access(candidate, os.R_OK):
+                    os.environ['XAUTHORITY'] = candidate
+                    logger.info("[MDPI] XAUTHORITY → %s", candidate)
+                    break
+
+        logger.info("[MDPI] Trying DISPLAY=%s  XAUTHORITY=%s",
+                    os.environ.get('DISPLAY'), os.environ.get('XAUTHORITY', '<unset>'))
+        try:
+            self._try_launch_chrome_on_display(display)
+            logger.info("[MDPI] Chrome launched on GNOME3 display %s ✓", display)
+            return
+        except Exception as e1:
+            logger.warning("[MDPI] Chrome failed on %s: %s — falling back to Xvfb",
+                           display, type(e1).__name__)
+
+        # ── Step 2: Xvfb fallback ─────────────────────────────────────────────
+        # Xvfb always works on servers regardless of XAUTHORITY / xhost state.
+        xvfb_display = ':99'
+        logger.info("[MDPI] Starting Xvfb virtual display…")
+        try:
+            from pyvirtualdisplay import Display as VDisplay
+            self._vdisplay = VDisplay(visible=False, size=(1400, 900), backend='xvfb')
+            self._vdisplay.start()
+            xvfb_display = f":{self._vdisplay.display}"
+            logger.info("[MDPI] pyvirtualdisplay on %s", xvfb_display)
+        except ImportError:
+            logger.info("[MDPI] pyvirtualdisplay not installed — using Xvfb directly")
+            subprocess.run(['pkill', '-f', 'Xvfb :99'], capture_output=True)
+            time.sleep(0.5)
+            proc = subprocess.Popen(
+                ['Xvfb', ':99', '-screen', '0', '1400x900x24', '-ac'],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            self._vdisplay = proc
+            time.sleep(1.5)
+            logger.info("[MDPI] Xvfb PID=%d on :99", proc.pid)
+
+        os.environ['DISPLAY'] = xvfb_display
+        os.environ.pop('XAUTHORITY', None)   # Xvfb -ac needs no auth
+        logger.info("[MDPI] DISPLAY=%s (Xvfb, no XAUTHORITY)", xvfb_display)
+
+        try:
+            self._try_launch_chrome_on_display(xvfb_display)
+            logger.info("[MDPI] Chrome launched on Xvfb %s ✓", xvfb_display)
+        except Exception as e2:
+            logger.error(
+                "[MDPI] Chrome ALSO failed on Xvfb: %s\n"
+                "  Ensure Xvfb is installed:  sudo apt install xvfb\n"
+                "  Or install pyvirtualdisplay: pip install pyvirtualdisplay\n"
+                "  Or allow xhost:  DISPLAY=:0 xhost +local:", e2
+            )
+            self._save_chrome_log()
+            raise
+
+    def _try_launch_chrome_on_display(self, display) -> None:
+        """
+        Build Chrome options and launch uc.Chrome().
+        Raises SessionNotCreatedException on failure.
+        Caller retries on a different display if needed.
+        """
         opts = uc.ChromeOptions()
-        prefs = {
+        opts.add_experimental_option("prefs", {
             "download.default_directory":        self.output_dir,
             "download.prompt_for_download":       False,
             "download.directory_upgrade":         True,
             "safebrowsing.enabled":               False,
             "plugins.always_open_pdf_externally": True,
-        }
-        opts.add_experimental_option("prefs", prefs)
-        logger.info("[MDPI] Download dir prefs → %s", self.output_dir)
-
-        # ── NO --headless flag ─────────────────────────────────────────────
-        # Akamai Bot Manager blocks headless at TLS fingerprint level.
-        chrome_args = [
-            "--disable-lazy-loading",
-            "--remote-allow-origins=*",
-            "--disable-print-preview",
-            "--disable-stack-profiler",
-            "--disable-background-networking",
-            "--no-sandbox",
-            "--disable-infobars",
-            "--disable-browser-side-navigation",
-            "--disable-notifications",
-            "--disable-blink-features=AutomationControlled",
-            "--disable-popup-blocking",
-            "--disable-gpu",
-            "--disable-dev-shm-usage",
-            "--window-size=1400,900",
-            "--start-maximized",
-        ]
-        for arg in chrome_args:
+        })
+        # NO --headless — Akamai blocks headless TLS fingerprint
+        for arg in [
+            "--disable-lazy-loading", "--remote-allow-origins=*",
+            "--disable-print-preview", "--disable-stack-profiler",
+            "--disable-background-networking", "--no-sandbox",
+            "--disable-infobars", "--disable-browser-side-navigation",
+            "--disable-notifications", "--disable-blink-features=AutomationControlled",
+            "--disable-popup-blocking", "--disable-gpu", "--disable-dev-shm-usage",
+            "--window-size=1400,900", "--start-maximized",
+        ]:
             opts.add_argument(arg)
-        logger.info("[MDPI] Chrome args: %s", chrome_args)
 
         kwargs: dict = dict(options=opts)
         if self.driver_path:
             kwargs['driver_executable_path'] = self.driver_path
-            logger.info("[MDPI] Using driver_path=%s", self.driver_path)
-        else:
-            logger.info("[MDPI] driver_path not set — uc will auto-locate chromedriver")
 
-        # ── Launch Chrome ────────────────────────────────────────────────────
-        logger.info("[MDPI] Calling uc.Chrome(**kwargs) …  "
-                    "DISPLAY=%s  XAUTHORITY=%s",
-                    os.environ.get('DISPLAY', '<unset>'),
-                    os.environ.get('XAUTHORITY', '<unset>'))
-        try:
-            self._driver = uc.Chrome(**kwargs)
-            logger.info("[MDPI] uc.Chrome() returned successfully")
-        except Exception as exc:
-            logger.error(
-                "[MDPI] Chrome launch FAILED: %s\n"
-                "  DISPLAY=%s  XAUTHORITY=%s\n"
-                "  Hint: check that DISPLAY and XAUTHORITY are correct in\n"
-                "  the Celery worker systemd unit, e.g.:\n"
-                "    Environment=DISPLAY=:0\n"
-                "    Environment=XAUTHORITY=/home/ubuntu/.Xauthority\n"
-                "  Also verify xhost +local: has been run on the GNOME3 desktop.",
-                exc,
-                os.environ.get('DISPLAY', '<unset>'),
-                os.environ.get('XAUTHORITY', '<unset>'),
-            )
-            self._save_chrome_log()
-            raise
+        logger.info("[MDPI] uc.Chrome() DISPLAY=%s", os.environ.get('DISPLAY'))
+        self._driver = uc.Chrome(**kwargs)
+        logger.info("[MDPI] uc.Chrome() succeeded")
 
-        # ── Wait for Chrome window to be ready ───────────────────────────────
         deadline = time.time() + 15
         while time.time() < deadline:
             try:
                 if self._driver.window_handles:
                     self._driver.switch_to.window(self._driver.window_handles[0])
-                    logger.info("[MDPI] Chrome window ready — handle=%s",
-                                self._driver.window_handles[0])
-                    break
+                    logger.info("[MDPI] Chrome window ready")
+                    return
             except Exception:
                 pass
             time.sleep(0.5)
-        else:
-            logger.warning("[MDPI] Chrome window did not become ready within 15 s")
-
-        logger.info("[MDPI] ── _launch_chrome DONE ──")
+        logger.warning("[MDPI] Chrome window handle not ready within 15 s")
 
     def _quit_chrome(self) -> None:
         if self._driver is None:
@@ -414,6 +410,22 @@ class MDPIScraper:
             logger.warning("[MDPI] Error closing Chrome: %s", exc)
         finally:
             self._driver = None
+
+        # Stop Xvfb virtual display if we started one
+        if self._vdisplay is not None:
+            try:
+                # pyvirtualdisplay
+                if hasattr(self._vdisplay, 'stop'):
+                    self._vdisplay.stop()
+                    logger.info("[MDPI] pyvirtualdisplay stopped")
+                # raw subprocess.Popen
+                elif hasattr(self._vdisplay, 'terminate'):
+                    self._vdisplay.terminate()
+                    logger.info("[MDPI] Xvfb process terminated")
+            except Exception as e:
+                logger.debug("[MDPI] Error stopping Xvfb: %s", e)
+            finally:
+                self._vdisplay = None
 
     def _save_chrome_log(self) -> None:
         """
