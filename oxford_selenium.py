@@ -4,6 +4,8 @@ Oxford Academic Scraper
 - Xvfb fallback when GNOME3/DISPLAY:0 is not accessible via SSH
 - Cookie-based captcha bypass for academic.oup.com
 - Graceful Chrome session cleanup on finish or error
+- Compatible with SeleniumScraperWrapper: __init__ does NOT call run()
+  run() launches Chrome, scrapes, and cleans up; returns (csv_path, summary)
 """
 
 try:
@@ -20,7 +22,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-import os, time, sys, platform, json, subprocess, csv, math, logging
+import os, time, sys, platform, json, subprocess, csv, math, logging, datetime
 from urllib.parse import urlencode, urljoin
 from fuzzywuzzy import fuzz, process
 import undetected_chromedriver as uc
@@ -36,16 +38,12 @@ class OxfordScraper:
         self.end_year    = end_year
         self.driver_path = driver_path
         self.output_dir  = output_dir or os.getcwd()
+        self._cb         = progress_callback
         self._vdisplay   = None
         self.driver      = None
         self.directory   = keyword.replace(" ", "-")
         self._setup_logger()
-        self._launch_chrome()
-        self.wait = WebDriverWait(self.driver, 20)
-        try:
-            self.run()
-        finally:
-            self._quit()
+        # NOTE: __init__ does NOT call run() — SeleniumScraperWrapper calls run() directly
 
     # ── Logging ──────────────────────────────────────────────────────────────
 
@@ -59,6 +57,37 @@ class OxfordScraper:
         sh = logging.StreamHandler(sys.stdout)
         sh.setFormatter(fmt)
         self.logger.addHandler(sh)
+        # Also write to debug log file in output_dir
+        try:
+            os.makedirs(self.output_dir, exist_ok=True)
+            fh = logging.FileHandler(
+                os.path.join(self.output_dir, 'oxford_debug.log'), encoding='utf-8')
+            fh.setFormatter(fmt)
+            self.logger.addHandler(fh)
+        except Exception:
+            pass
+
+    def _save_screenshot(self, label: str):
+        """Save a debug screenshot to output_dir/screenshots/"""
+        if self.driver is None:
+            return
+        try:
+            ss_dir = os.path.join(self.output_dir, 'screenshots')
+            os.makedirs(ss_dir, exist_ok=True)
+            ts   = datetime.datetime.now().strftime('%H%M%S')
+            path = os.path.join(ss_dir, f'{ts}_{label}.png')
+            self.driver.save_screenshot(path)
+            self.logger.info("[Oxford] Screenshot -> %s", path)
+        except Exception as e:
+            self.logger.debug("[Oxford] Screenshot failed: %s", e)
+
+    def _progress(self, pct, msg, url=''):
+        if self._cb:
+            try:
+                self._cb(progress=pct, status=msg, current_url=url)
+            except Exception:
+                pass
+        self.logger.info("[Oxford] [%d%%] %s", pct, msg)
 
     # ── Virtual display (Xvfb) ───────────────────────────────────────────────
 
@@ -118,6 +147,16 @@ class OxfordScraper:
             kwargs['driver_executable_path'] = self.driver_path
         self.logger.info("[Oxford] uc.Chrome() DISPLAY=%s", os.environ.get('DISPLAY'))
         self.driver = uc.Chrome(**kwargs)
+        # Wait for window handle
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            try:
+                if self.driver.window_handles:
+                    self.driver.switch_to.window(self.driver.window_handles[0])
+                    break
+            except Exception:
+                pass
+            time.sleep(0.5)
         self.logger.info("[Oxford] Chrome launched OK")
 
     def _launch_chrome(self):
@@ -157,6 +196,7 @@ class OxfordScraper:
             raise
 
     def _quit(self):
+        """Always call this in finally — closes Chrome and stops Xvfb."""
         if self.driver:
             try:
                 self.driver.quit()
@@ -174,7 +214,7 @@ class OxfordScraper:
             cookies = self.driver.get_cookies()
             with open(_OXFORD_COOKIE_FILE, 'w') as f:
                 json.dump(cookies, f)
-            self.logger.info("[Oxford] Cookies saved")
+            self.logger.info("[Oxford] Cookies saved -> %s", _OXFORD_COOKIE_FILE)
         except Exception as e:
             self.logger.warning("[Oxford] Could not save cookies: %s", e)
 
@@ -205,31 +245,30 @@ class OxfordScraper:
     def detect_and_handle_captcha(self):
         """
         Oxford 'crawlprevention/governor' soft-block handler.
-        Waits up to 60s for auto-resolution, then tries a cookie reload.
-        Saves cookies after passing so future sessions are faster.
+        Waits up to 60s for auto-resolution, saves cookies after passing.
         """
         if 'crawlprevention' not in self.driver.current_url.lower():
             return
-
-        self.logger.warning("[Oxford] Crawler-prevention page detected: %s",
-                            self.driver.current_url)
-        self.logger.info("[Oxford] Waiting up to 60s for block to clear...")
+        self.logger.warning("[Oxford] Crawler-prevention page: %s", self.driver.current_url)
+        self._save_screenshot('captcha_detected')
+        self._progress(0, 'Oxford captcha detected — waiting up to 60s...')
 
         for i in range(60):
             time.sleep(1)
             if 'crawlprevention' not in self.driver.current_url.lower():
                 self.logger.info("[Oxford] Block cleared after %ds", i + 1)
+                self._save_screenshot('captcha_cleared')
                 self._save_cookies()
                 return
 
         self.logger.warning("[Oxford] Still blocked after 60s — reloading cookies")
+        self._save_screenshot('captcha_still_blocked')
         self._load_cookies()
         time.sleep(3)
 
         if 'crawlprevention' in self.driver.current_url.lower():
             self.logger.error(
-                "[Oxford] Captcha still present. Scraper will continue but results may be limited.\n"
-                "  Tip: wait a few minutes and retry, or clear %s", _OXFORD_COOKIE_FILE)
+                "[Oxford] Captcha persists. Scraper continues but results may be limited.")
 
     def accept_cookies(self):
         for selector in [
@@ -250,9 +289,12 @@ class OxfordScraper:
 
     # ── Scraping helpers ──────────────────────────────────────────────────────
 
+    def _get_wait(self):
+        return WebDriverWait(self.driver, 20)
+
     def get_total_pages(self):
         try:
-            stats = self.wait.until(EC.presence_of_element_located(
+            stats = self._get_wait().until(EC.presence_of_element_located(
                 (By.CSS_SELECTOR, "div.sr-statistics.at-sr-statistics")))
             total = int(stats.text.split()[2].replace(",", ""))
             pages = math.ceil(total / 20)
@@ -260,12 +302,13 @@ class OxfordScraper:
             return pages
         except Exception as e:
             self.logger.error("[Oxford] get_total_pages error: %s", e)
+            self._save_screenshot('get_total_pages_error')
             return 0
 
     def extract_links(self):
         links = []
         try:
-            articles = self.wait.until(EC.presence_of_all_elements_located(
+            articles = self._get_wait().until(EC.presence_of_all_elements_located(
                 (By.CSS_SELECTOR, "div.sr-list.al-article-box.al-normal.clearfix")))
             for article in articles:
                 try:
@@ -277,6 +320,7 @@ class OxfordScraper:
             self.logger.info("[Oxford] Extracted %d links", len(links))
         except Exception as e:
             self.logger.error("[Oxford] extract_links error: %s", e)
+            self._save_screenshot('extract_links_error')
         return links
 
     def get_next_url(self):
@@ -297,20 +341,27 @@ class OxfordScraper:
                 if os.path.getsize(filepath) == 0 and header:
                     writer.writerow(header)
                 writer.writerows(data)
+            return filepath
         except Exception as e:
             self.logger.error("[Oxford] save_to_csv error: %s", e)
+            return None
 
     def scrape_author_emails(self, input_csv, output_csv):
         try:
             with open(input_csv, "r", encoding="utf-8") as f:
                 reader = csv.reader(f)
                 next(reader)
-                urls = [row[0] for row in reader]
+                urls = [row[0] for row in reader if row]
         except Exception as e:
             self.logger.error("[Oxford] Cannot read input CSV: %s", e)
             return
 
-        for url in urls:
+        total = len(urls)
+        for i, url in enumerate(urls):
+            self._progress(
+                50 + int(50 * i / max(total, 1)),
+                f"Extracting emails {i+1}/{total}",
+                url)
             self.driver.get(url)
             self.detect_and_handle_captcha()
             if not self.driver.current_url.startswith("https://academic.oup.com/"):
@@ -336,10 +387,10 @@ class OxfordScraper:
                         author_name = link.text.strip()
                         author_names.append(author_name)
                         link.click()
-                        popup = self.wait.until(EC.presence_of_element_located(
+                        popup = self._get_wait().until(EC.presence_of_element_located(
                             (By.CSS_SELECTOR, "span.al-author-info-wrap.open")))
                         for el in popup.find_elements(By.CSS_SELECTOR, "a[href^='mailto']"):
-                            email      = el.get_attribute("href").replace("mailto:", "")
+                            email       = el.get_attribute("href").replace("mailto:", "")
                             best, score = process.extractOne(
                                 email.split("@")[0], author_names, scorer=fuzz.ratio)
                             self.save_to_csv(
@@ -358,7 +409,7 @@ class OxfordScraper:
                             EC.presence_of_all_elements_located(
                                 (By.CSS_SELECTOR, "p.footnote-compatibility"))):
                         for el in popup.find_elements(By.CSS_SELECTOR, "a[href^='mailto']"):
-                            email      = el.get_attribute("href").replace("mailto:", "")
+                            email       = el.get_attribute("href").replace("mailto:", "")
                             best, score = process.extractOne(
                                 email.split("@")[0], author_names or ["unknown"],
                                 scorer=fuzz.ratio)
@@ -372,11 +423,25 @@ class OxfordScraper:
 
             except Exception as e:
                 self.logger.error("[Oxford] Error on %s: %s", url, e)
+                self._save_screenshot(f'article_error_{i}')
 
-    # ── Run ───────────────────────────────────────────────────────────────────
+    # ── Main run — called by SeleniumScraperWrapper ───────────────────────────
 
     def run(self):
+        """
+        Entry point called by SeleniumScraperWrapper.
+        Launches Chrome, scrapes, cleans up in finally.
+        Returns (csv_path, summary_dict).
+        """
+        csv_path     = None
+        authors_seen = set()
+        emails_seen  = set()
+
         try:
+            self._progress(1, 'Launching Chrome...')
+            self._launch_chrome()
+            self._progress(5, 'Chrome ready')
+
             qp = {
                 "q":                          self.keyword,
                 "f_ContentType":              "Journal Article",
@@ -391,25 +456,32 @@ class OxfordScraper:
             }
             base_url   = "https://academic.oup.com/search-results"
             search_url = f"{base_url}?{urlencode(qp)}"
-            out_dir    = self.output_dir or self.directory
+            out_dir    = self.output_dir
             slug       = self.directory
             s          = self.start_year.replace('/', '-')
             e          = self.end_year.replace('/', '-')
 
+            self._progress(8, 'Loading Oxford...')
             self._load_cookies()
             self.driver.get(base_url)
             time.sleep(3)
+            self._save_screenshot('homepage')
             self.accept_cookies()
             self.detect_and_handle_captcha()
 
+            self._progress(12, 'Running search...')
             self.driver.get(search_url)
             time.sleep(3)
+            self._save_screenshot('search_results')
             self.detect_and_handle_captcha()
 
             total_pages = self.get_total_pages()
             all_links   = []
 
-            for _ in range(total_pages):
+            for page_num in range(total_pages):
+                pct = 12 + int(38 * page_num / max(total_pages, 1))
+                self._progress(pct, f'Collecting links page {page_num+1}/{total_pages}',
+                               self.driver.current_url)
                 self.detect_and_handle_captcha()
                 links    = self.extract_links()
                 all_links.extend(links)
@@ -424,12 +496,40 @@ class OxfordScraper:
             email_file = f"Oxford_{slug}_{s}_to_{e}_authors_emails.csv"
             self.save_to_csv([[lnk] for lnk in all_links],
                              out_dir, url_file, header=["Article_URL"])
+
+            self._progress(50, f'Collected {len(all_links)} links — extracting emails...')
+
+            email_csv_path = os.path.join(out_dir, email_file)
             self.scrape_author_emails(
                 os.path.join(out_dir, url_file),
-                os.path.join(out_dir, email_file))
+                email_csv_path)
+
+            # Count results
+            if os.path.exists(email_csv_path):
+                csv_path = email_csv_path
+                try:
+                    with open(email_csv_path, encoding='utf-8') as f:
+                        for row in csv.DictReader(f):
+                            if row.get('author'):
+                                authors_seen.add(row['author'])
+                            if row.get('email'):
+                                emails_seen.add(row['email'])
+                except Exception:
+                    pass
+
             self._save_cookies()
-            self.logger.info("[Oxford] Done — %d articles", len(all_links))
+            self._progress(100, f'Done — {len(authors_seen)} authors, {len(emails_seen)} emails')
 
         except Exception as e:
             self.logger.error("[Oxford] Fatal error: %s", e)
+            self._save_screenshot('fatal_error')
             raise
+        finally:
+            self._quit()
+
+        summary = {
+            'unique_authors': len(authors_seen),
+            'unique_emails':  len(emails_seen),
+            'message':        f'Found {len(authors_seen)} unique authors, {len(emails_seen)} unique emails',
+        }
+        return csv_path, summary

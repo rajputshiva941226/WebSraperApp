@@ -2,7 +2,10 @@
 Nature.com Article Scraper
 - Non-headless Chrome (Xvfb virtual display on EC2/Linux servers)
 - Xvfb fallback when GNOME3/DISPLAY:0 is not accessible via SSH
-- Graceful Chrome + virtual display cleanup on completion or error
+- Screenshots saved for debugging
+- Graceful Chrome + Xvfb cleanup
+- Compatible with SeleniumScraperWrapper: __init__ does NOT call run()
+  run() launches Chrome, scrapes, cleans up; returns (csv_path, summary)
 """
 
 try:
@@ -24,17 +27,23 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import (
     TimeoutException, NoSuchElementException, ElementClickInterceptedException)
 
-import csv, time, os, sys, re, glob, platform, subprocess, logging
-from datetime import datetime
+import csv, time, os, sys, re, glob, platform, subprocess, logging, datetime
 from webdriver_manager.chrome import ChromeDriverManager
 
 
 class NatureScraper:
-    def __init__(self):
+    def __init__(self, keyword=None, start_year=None, end_year=None,
+                 driver_path=None, output_dir=None, progress_callback=None):
+        self.keyword     = keyword or 'bioinformatics'
+        self.start_year  = str(start_year) if start_year else str(datetime.datetime.now().year)
+        self.end_year    = str(end_year)   if end_year   else str(datetime.datetime.now().year)
+        self.driver_path = driver_path
+        self.output_dir  = output_dir or os.getcwd()
+        self._cb         = progress_callback
+
         self.driver           = None
-        self.output_dir       = None
-        self.cookies_accepted = False
         self._vdisplay        = None
+        self.cookies_accepted = False
         self.logger           = self._setup_logger()
 
         self.article_types = [
@@ -49,24 +58,54 @@ class NatureScraper:
             'structural-biology', 'systems-biology', 'cancer', 'genetics',
             'immunology', 'medical-research', 'scientific-community', 'social-sciences',
         ]
+        # NOTE: __init__ does NOT call run() — SeleniumScraperWrapper calls run() directly
 
     # ── Logging ──────────────────────────────────────────────────────────────
 
     def _setup_logger(self):
-        logger = logging.getLogger("NatureScraper")
+        logger = logging.getLogger(f"Nature.{self.keyword[:20]}")
         logger.setLevel(logging.INFO)
-        if not logger.hasHandlers():
-            fmt = logging.Formatter('%(asctime)s  %(levelname)-8s %(message)s',
-                                    datefmt='%H:%M:%S')
-            sh = logging.StreamHandler(sys.stdout)
-            sh.setFormatter(fmt)
-            logger.addHandler(sh)
+        if logger.hasHandlers():
+            logger.handlers.clear()
+        fmt = logging.Formatter('%(asctime)s  %(levelname)-8s %(message)s',
+                                datefmt='%H:%M:%S')
+        sh = logging.StreamHandler(sys.stdout)
+        sh.setFormatter(fmt)
+        logger.addHandler(sh)
+        try:
+            os.makedirs(self.output_dir, exist_ok=True)
+            fh = logging.FileHandler(
+                os.path.join(self.output_dir, 'nature_debug.log'), encoding='utf-8')
+            fh.setFormatter(fmt)
+            logger.addHandler(fh)
+        except Exception:
+            pass
         return logger
+
+    def _save_screenshot(self, label: str):
+        if self.driver is None:
+            return
+        try:
+            ss_dir = os.path.join(self.output_dir, 'screenshots')
+            os.makedirs(ss_dir, exist_ok=True)
+            ts   = datetime.datetime.now().strftime('%H%M%S')
+            path = os.path.join(ss_dir, f'{ts}_{label}.png')
+            self.driver.save_screenshot(path)
+            self.logger.info("[Nature] Screenshot -> %s", path)
+        except Exception as e:
+            self.logger.debug("[Nature] Screenshot failed: %s", e)
+
+    def _progress(self, pct, msg, url=''):
+        if self._cb:
+            try:
+                self._cb(progress=pct, status=msg, current_url=url)
+            except Exception:
+                pass
+        self.logger.info("[Nature] [%d%%] %s", pct, msg)
 
     # ── Virtual display (Xvfb) ───────────────────────────────────────────────
 
     def _start_virtual_display(self):
-        """Start Xvfb. Returns new DISPLAY string."""
         try:
             from pyvirtualdisplay import Display
             self._vdisplay = Display(visible=False, size=(1920, 1080), backend='xvfb')
@@ -104,7 +143,7 @@ class NatureScraper:
 
     def _build_chrome_options(self):
         opts = Options()
-        # NO --headless: Nature popup/email extraction needs a real (or virtual) display
+        # NO --headless: Nature popup/email extraction needs real or virtual display
         for arg in [
             '--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu',
             '--window-size=1920,1080',
@@ -120,22 +159,21 @@ class NatureScraper:
     def _try_launch_chrome(self):
         opts = self._build_chrome_options()
         self.logger.info("[Nature] Launching Chrome DISPLAY=%s", os.environ.get('DISPLAY'))
-        service = Service(ChromeDriverManager().install())
+        if self.driver_path:
+            service = Service(self.driver_path)
+        else:
+            service = Service(ChromeDriverManager().install())
         self.driver = webdriver.Chrome(service=service, options=opts)
         self.driver.execute_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         self.logger.info("[Nature] Chrome launched OK")
 
     def setup_driver(self):
-        """
-        Launch Chrome with Xvfb fallback.
-        Called once at the start of a scraping session.
-        """
+        """Launch Chrome with Xvfb fallback. Called once at start of run()."""
         if platform.system() == 'Windows':
             self._try_launch_chrome()
             return
 
-        # ── Attempt 1: real GNOME3 display ───────────────────────────────────
         if not os.environ.get('DISPLAY'):
             os.environ['DISPLAY'] = ':0'
         uid_str = str(os.getuid()) if hasattr(os, 'getuid') else '1000'
@@ -156,7 +194,6 @@ class NatureScraper:
             self.logger.warning("[Nature] Chrome failed on :0 (%s) -> trying Xvfb",
                                 type(e1).__name__)
 
-        # ── Attempt 2: Xvfb ──────────────────────────────────────────────────
         xvfb = self._start_virtual_display()
         os.environ['DISPLAY'] = xvfb
         os.environ.pop('XAUTHORITY', None)
@@ -170,7 +207,7 @@ class NatureScraper:
             raise
 
     def cleanup(self):
-        """Close Chrome and stop Xvfb. Always call this when done."""
+        """Close Chrome and stop Xvfb. Called in run() finally block."""
         if self.driver:
             try:
                 self.driver.quit()
@@ -199,12 +236,7 @@ class NatureScraper:
         except Exception:
             self.cookies_accepted = True
 
-    def create_output_directory(self, keyword, start_year, end_year):
-        dir_name = f"{keyword.replace(' ', '_')}_{start_year}-{end_year}"
-        os.makedirs(dir_name, exist_ok=True)
-        self.output_dir = dir_name
-        self.logger.info("[Nature] Output dir: %s", os.path.abspath(dir_name))
-        return dir_name
+    # ── Link scraping ─────────────────────────────────────────────────────────
 
     def get_total_results(self, url):
         try:
@@ -219,14 +251,11 @@ class NatureScraper:
         except Exception:
             return 0
 
-    # ── Link scraping ─────────────────────────────────────────────────────────
-
     def scrape_links_from_url(self, base_url, links_file):
         total = self.get_total_results(base_url + "&page=1")
         if total == 0:
             return []
         total_pages = min((total // 50) + 1, 20)
-        self.logger.info("[Nature] %d results, %d pages", total, total_pages)
         links = []
         with open(links_file, 'a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
@@ -248,11 +277,9 @@ class NatureScraper:
                                 links.append(lnk)
                         except Exception:
                             pass
-                    print(f"\r  Page {page}/{total_pages} — {len(links)} articles", end='')
                     time.sleep(1)
                 except Exception:
                     continue
-        print()
         return links
 
     # ── Email extraction ──────────────────────────────────────────────────────
@@ -285,14 +312,12 @@ class NatureScraper:
                     try:
                         WebDriverWait(self.driver, 2).until(
                             EC.element_to_be_clickable(
-                                (By.CSS_SELECTOR,
-                                 'button.c-article-author-list__button')))
+                                (By.CSS_SELECTOR, 'button.c-article-author-list__button')))
                         show_btn.click()
                         break
                     except (ElementClickInterceptedException, TimeoutException):
                         try:
-                            self.driver.execute_script(
-                                "arguments[0].click();", show_btn)
+                            self.driver.execute_script("arguments[0].click();", show_btn)
                             break
                         except Exception:
                             time.sleep(1)
@@ -326,8 +351,7 @@ class NatureScraper:
                     email = ''
                     try:
                         self.driver.execute_script(
-                            "arguments[0].scrollIntoView({block: 'center'});",
-                            author_link)
+                            "arguments[0].scrollIntoView({block: 'center'});", author_link)
                         time.sleep(0.5)
                         author_link.click()
                         time.sleep(1)
@@ -338,15 +362,17 @@ class NatureScraper:
                                 EC.visibility_of_element_located(
                                     (By.CSS_SELECTOR, popup_sel)))
                         except TimeoutException:
-                            WebDriverWait(self.driver, 3).until(
-                                EC.visibility_of_element_located(
-                                    (By.CSS_SELECTOR, ".app-researcher-popup")))
+                            try:
+                                WebDriverWait(self.driver, 3).until(
+                                    EC.visibility_of_element_located(
+                                        (By.CSS_SELECTOR, ".app-researcher-popup")))
+                            except TimeoutException:
+                                self._save_screenshot(f'popup_timeout_{idx}')
 
                         try:
                             el = WebDriverWait(self.driver, 3).until(
                                 EC.visibility_of_element_located(
-                                    (By.CSS_SELECTOR,
-                                     f"{popup_sel} a[href^='mailto:']")))
+                                    (By.CSS_SELECTOR, f"{popup_sel} a[href^='mailto:']")))
                             email = el.get_attribute('href').replace('mailto:', '').strip()
                         except TimeoutException:
                             pass
@@ -377,6 +403,7 @@ class NatureScraper:
 
         except Exception as e:
             self.logger.warning("[Nature] Page error on %s: %s", article_url, str(e)[:60])
+            self._save_screenshot('article_page_error')
             return []
 
     def extract_emails_for_links(self, links, emails_file):
@@ -385,118 +412,102 @@ class NatureScraper:
         with open(emails_file, 'a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             for idx, url in enumerate(links, 1):
-                print(f"  [{idx}/{len(links)}] {url}")
                 authors = self.extract_author_emails(url)
                 for author in authors:
                     writer.writerow([url, author['name'], author['email']])
                 f.flush()
                 time.sleep(2)
 
-    # ── Year / all-years scraping ─────────────────────────────────────────────
+    # ── Main run — called by SeleniumScraperWrapper ───────────────────────────
 
-    def scrape_year_data(self, keyword, year, extract_emails=True):
-        links_file  = os.path.join(self.output_dir,
-                                   f"{keyword.replace(' ', '_')}-{year}-links.csv")
-        emails_file = os.path.join(self.output_dir,
-                                   f"{keyword.replace(' ', '_')}-{year}-emails.csv")
+    def run(self):
+        """
+        Entry point called by SeleniumScraperWrapper.
+        Launches Chrome, scrapes all years, cleans up in finally.
+        Returns (csv_path, summary_dict).
+        """
+        authors_seen = set()
+        emails_seen  = set()
+        csv_path     = None
 
-        with open(links_file, 'w', newline='', encoding='utf-8') as f:
-            csv.writer(f).writerow(['article_link'])
-        if extract_emails:
-            with open(emails_file, 'w', newline='', encoding='utf-8') as f:
-                csv.writer(f).writerow(['article_link', 'author_name', 'email'])
+        try:
+            self._progress(1, 'Launching Chrome...')
+            self.setup_driver()
+            self._progress(5, 'Chrome ready')
+            self._save_screenshot('chrome_started')
 
-        year_total = 0
+            keyword    = self.keyword
+            start_year = self.start_year
+            end_year   = self.end_year
 
-        # 1. Search without filters
-        base_url = (f"https://www.nature.com/search?q={keyword}"
-                    f"&date_range={year}-&order=relevance")
-        links     = self.scrape_links_from_url(base_url, links_file)
-        year_total += len(links)
-        if links and extract_emails:
-            self.extract_emails_for_links(links, emails_file)
+            out_dir = os.path.join(
+                self.output_dir,
+                f"{keyword.replace(' ', '_')}_{start_year}-{end_year}")
+            os.makedirs(out_dir, exist_ok=True)
 
-        # 2. All article_type × subject combos
-        for atype in self.article_types:
-            for subject in self.subjects:
+            years = range(int(start_year), int(end_year) + 1)
+            total_years = len(years)
+
+            for yr_idx, year in enumerate(years):
+                yr_pct_base = 5 + int(90 * yr_idx / max(total_years, 1))
+                self._progress(yr_pct_base, f'Scraping year {year}...')
+
+                links_file  = os.path.join(out_dir,
+                                           f"{keyword.replace(' ', '_')}-{year}-links.csv")
+                emails_file = os.path.join(out_dir,
+                                           f"{keyword.replace(' ', '_')}-{year}-emails.csv")
+
+                with open(links_file, 'w', newline='', encoding='utf-8') as f:
+                    csv.writer(f).writerow(['article_link'])
+                with open(emails_file, 'w', newline='', encoding='utf-8') as f:
+                    csv.writer(f).writerow(['article_link', 'author_name', 'email'])
+
+                # No-filter search
                 base_url = (f"https://www.nature.com/search?q={keyword}"
-                            f"&article_type={atype}&subject={subject}"
                             f"&date_range={year}-&order=relevance")
                 links = self.scrape_links_from_url(base_url, links_file)
-                year_total += len(links)
-                if links and extract_emails:
+                if links:
                     self.extract_emails_for_links(links, emails_file)
-                time.sleep(0.5)
 
-        self.logger.info("[Nature] Year %s: %d links", year, year_total)
-        return year_total
+                # All article_type × subject combos
+                total_combos = len(self.article_types) * len(self.subjects)
+                for combo_idx, (atype, subject) in enumerate(
+                        [(a, s) for a in self.article_types for s in self.subjects]):
+                    combo_pct = yr_pct_base + int(
+                        (90 / max(total_years, 1)) * combo_idx / max(total_combos, 1))
+                    self._progress(combo_pct, f'Year {year}: {atype}/{subject[:20]}')
+                    base_url = (f"https://www.nature.com/search?q={keyword}"
+                                f"&article_type={atype}&subject={subject}"
+                                f"&date_range={year}-&order=relevance")
+                    links = self.scrape_links_from_url(base_url, links_file)
+                    if links:
+                        self.extract_emails_for_links(links, emails_file)
+                    time.sleep(0.5)
 
-    def scrape_all_years(self, keyword, start_year, end_year, extract_emails=True):
-        self.setup_driver()
-        self.create_output_directory(keyword, start_year, end_year)
-        grand_total = 0
-        for year in range(int(start_year), int(end_year) + 1):
-            grand_total += self.scrape_year_data(keyword, year, extract_emails)
-        self.logger.info("[Nature] Grand total: %d articles", grand_total)
-        return True
+                # Count results from this year's email file
+                csv_path = emails_file   # return last year's file; caller may merge
+                try:
+                    with open(emails_file, encoding='utf-8') as f:
+                        for row in csv.DictReader(f):
+                            if row.get('author_name'):
+                                authors_seen.add(row['author_name'])
+                            if row.get('email'):
+                                emails_seen.add(row['email'])
+                except Exception:
+                    pass
 
-    def extract_emails_from_existing_links(self, keyword, start_year, end_year):
-        if not self.output_dir or not os.path.exists(self.output_dir):
-            self.logger.error("[Nature] Output dir not found: %s", self.output_dir)
-            return False
-        link_files = glob.glob(
-            os.path.join(self.output_dir,
-                         f"{keyword.replace(' ', '_')}-*-links.csv"))
-        if not link_files:
-            self.logger.error("[Nature] No link files in %s", self.output_dir)
-            return False
-        if not self.driver:
-            self.setup_driver()
-        self.cookies_accepted = False
-        for lf in sorted(link_files):
-            year        = lf.split('-')[-2]
-            emails_file = lf.replace('-links.csv', '-emails.csv')
-            with open(lf, 'r', encoding='utf-8') as f:
-                links = list(set([row['article_link'] for row in csv.DictReader(f)]))
-            with open(emails_file, 'w', newline='', encoding='utf-8') as f:
-                csv.writer(f).writerow(['article_link', 'author_name', 'email'])
-            self.logger.info("[Nature] Processing year %s (%d articles)", year, len(links))
-            self.extract_emails_for_links(links, emails_file)
-        return True
+            self._progress(100, f'Done — {len(authors_seen)} authors, {len(emails_seen)} emails')
 
+        except Exception as e:
+            self.logger.error("[Nature] Fatal error: %s", e)
+            self._save_screenshot('fatal_error')
+            raise
+        finally:
+            self.cleanup()
 
-def main():
-    keyword     = input("Search keyword (default: Bioinformatics): ").strip() or "Bioinformatics"
-    start_year  = input("Start year (default: 2020): ").strip() or "2020"
-    end_year    = input("End year (default: current): ").strip() or str(datetime.now().year)
-    new_links   = (input("Extract NEW article links? (y/n, default: y): ").strip().lower()
-                   or 'y') in ('y', 'yes')
-    ext_emails  = False
-    if new_links:
-        ext_emails = (input("Extract emails immediately? (y/n, default: y): ").strip().lower()
-                      or 'y') in ('y', 'yes')
-
-    scraper = NatureScraper()
-    scraper.output_dir = f"{keyword.replace(' ', '_')}_{start_year}-{end_year}"
-
-    try:
-        if new_links:
-            scraper.scrape_all_years(keyword, start_year, end_year, ext_emails)
-        else:
-            if not os.path.exists(scraper.output_dir):
-                print(f"Directory not found: {scraper.output_dir}")
-                return
-            scraper.extract_emails_from_existing_links(keyword, start_year, end_year)
-        print("\nDone!")
-    except KeyboardInterrupt:
-        print("\nInterrupted by user")
-    except Exception as e:
-        print(f"\nError: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        scraper.cleanup()   # Always close Chrome + Xvfb
-
-
-if __name__ == "__main__":
-    main()
+        summary = {
+            'unique_authors': len(authors_seen),
+            'unique_emails':  len(emails_seen),
+            'message':        f'Found {len(authors_seen)} unique authors, {len(emails_seen)} unique emails',
+        }
+        return csv_path, summary
