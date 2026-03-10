@@ -1,12 +1,12 @@
 """
-Nature.com Article Scraper - Improved Email Extraction
-With "Show authors" button handling and better popup detection
+Nature.com Article Scraper
+- Non-headless Chrome (Xvfb virtual display on EC2/Linux servers)
+- Xvfb fallback when GNOME3/DISPLAY:0 is not accessible via SSH
+- Graceful Chrome + virtual display cleanup on completion or error
 """
 
-# Fix for Python 3.12+ distutils compatibility
 try:
-    import setuptools
-    import sys
+    import setuptools, sys
     if sys.version_info >= (3, 12):
         import importlib.util
         spec = importlib.util.find_spec('setuptools._distutils')
@@ -21,637 +21,481 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.action_chains import ActionChains
+from selenium.common.exceptions import (
+    TimeoutException, NoSuchElementException, ElementClickInterceptedException)
 
-import csv
-import time
-import os
-import sys
-import glob
+import csv, time, os, sys, re, glob, platform, subprocess, logging
 from datetime import datetime
-from selenium import webdriver
-
-
-
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from webdriver_manager.chrome import ChromeDriverManager
-
-
-
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException
 
 
 class NatureScraper:
     def __init__(self):
-        self.driver = None
-        self.output_dir = None
+        self.driver           = None
+        self.output_dir       = None
         self.cookies_accepted = False
-        
-        # Article types and subjects to iterate through
+        self._vdisplay        = None
+        self.logger           = self._setup_logger()
+
         self.article_types = [
-            'research',
-            'reviews', 
-            'protocols',
-            'comments-and-opinion',
-            'amendments-and-corrections',
-            'research-highlights',
-            'correspondence'
+            'research', 'reviews', 'protocols', 'comments-and-opinion',
+            'amendments-and-corrections', 'research-highlights', 'correspondence',
         ]
-        
         self.subjects = [
-            'biochemistry',
-            'molecular-biology',
-            'cell-biology',
-            'biological-techniques',
-            'biophysics',
-            'biomarkers',
-            'biotechnology',
-            'drug-discovery',
-            'diseases',
-            'developing-world',
-            'computational-biology-and-bioinformatics',
-            'neuroscience',
-            'structural-biology',
-            'systems-biology',
-            'cancer',
-            'genetics',
-            'immunology',
-            'medical-research',
-            'scientific-community',
-            'social-sciences'
+            'biochemistry', 'molecular-biology', 'cell-biology',
+            'biological-techniques', 'biophysics', 'biomarkers', 'biotechnology',
+            'drug-discovery', 'diseases', 'developing-world',
+            'computational-biology-and-bioinformatics', 'neuroscience',
+            'structural-biology', 'systems-biology', 'cancer', 'genetics',
+            'immunology', 'medical-research', 'scientific-community', 'social-sciences',
         ]
-        
-    def setup_driver(self):
-        """Setup Chrome WebDriver with optimized settings"""
-        chrome_options = Options()
-        chrome_options.add_argument('--headless=new')
-        chrome_options.add_argument('--no-sandbox')
-        chrome_options.add_argument('--disable-dev-shm-usage')
-        chrome_options.add_argument('--disable-gpu')
-        chrome_options.add_argument('--window-size=1920,1080')
-        chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        chrome_options.add_experimental_option('useAutomationExtension', False)
-        
+
+    # ── Logging ──────────────────────────────────────────────────────────────
+
+    def _setup_logger(self):
+        logger = logging.getLogger("NatureScraper")
+        logger.setLevel(logging.INFO)
+        if not logger.hasHandlers():
+            fmt = logging.Formatter('%(asctime)s  %(levelname)-8s %(message)s',
+                                    datefmt='%H:%M:%S')
+            sh = logging.StreamHandler(sys.stdout)
+            sh.setFormatter(fmt)
+            logger.addHandler(sh)
+        return logger
+
+    # ── Virtual display (Xvfb) ───────────────────────────────────────────────
+
+    def _start_virtual_display(self):
+        """Start Xvfb. Returns new DISPLAY string."""
         try:
-            print("Initializing Chrome WebDriver...")
-            service = Service(ChromeDriverManager().install())
-            self.driver = webdriver.Chrome(service=service, options=chrome_options)
-            self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            print("✓ Chrome WebDriver initialized successfully\n")
-        except Exception as e:
-            print(f"✗ Error initializing WebDriver: {e}")
-            raise RuntimeError(f"Chrome WebDriver failed to start: {e}")
-    
+            from pyvirtualdisplay import Display
+            self._vdisplay = Display(visible=False, size=(1920, 1080), backend='xvfb')
+            self._vdisplay.start()
+            disp = f":{self._vdisplay.display}"
+            self.logger.info("[Nature] pyvirtualdisplay on %s", disp)
+            return disp
+        except ImportError:
+            self.logger.info("[Nature] pyvirtualdisplay not installed — using Xvfb directly")
+            subprocess.run(['pkill', '-f', 'Xvfb :99'], capture_output=True)
+            time.sleep(0.5)
+            proc = subprocess.Popen(
+                ['Xvfb', ':99', '-screen', '0', '1920x1080x24', '-ac'],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self._vdisplay = proc
+            time.sleep(1.5)
+            self.logger.info("[Nature] Xvfb PID=%d on :99", proc.pid)
+            return ':99'
+
+    def _stop_virtual_display(self):
+        if self._vdisplay is None:
+            return
+        try:
+            if hasattr(self._vdisplay, 'stop'):
+                self._vdisplay.stop()
+            elif hasattr(self._vdisplay, 'terminate'):
+                self._vdisplay.terminate()
+        except Exception:
+            pass
+        finally:
+            self._vdisplay = None
+        self.logger.info("[Nature] Virtual display stopped")
+
+    # ── Chrome setup ─────────────────────────────────────────────────────────
+
+    def _build_chrome_options(self):
+        opts = Options()
+        # NO --headless: Nature popup/email extraction needs a real (or virtual) display
+        for arg in [
+            '--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu',
+            '--window-size=1920,1080',
+            '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            '--disable-blink-features=AutomationControlled',
+        ]:
+            opts.add_argument(arg)
+        opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+        opts.add_experimental_option('useAutomationExtension', False)
+        return opts
+
+    def _try_launch_chrome(self):
+        opts = self._build_chrome_options()
+        self.logger.info("[Nature] Launching Chrome DISPLAY=%s", os.environ.get('DISPLAY'))
+        service = Service(ChromeDriverManager().install())
+        self.driver = webdriver.Chrome(service=service, options=opts)
+        self.driver.execute_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        self.logger.info("[Nature] Chrome launched OK")
+
+    def setup_driver(self):
+        """
+        Launch Chrome with Xvfb fallback.
+        Called once at the start of a scraping session.
+        """
+        if platform.system() == 'Windows':
+            self._try_launch_chrome()
+            return
+
+        # ── Attempt 1: real GNOME3 display ───────────────────────────────────
+        if not os.environ.get('DISPLAY'):
+            os.environ['DISPLAY'] = ':0'
+        uid_str = str(os.getuid()) if hasattr(os, 'getuid') else '1000'
+        xauth   = os.environ.get('XAUTHORITY', '')
+        if not xauth or not os.path.exists(xauth):
+            for c in [f"/run/user/{uid_str}/gdm/Xauthority",
+                      os.path.expanduser("~/.Xauthority"),
+                      "/home/ubuntu/.Xauthority", "/root/.Xauthority"]:
+                if os.path.exists(c) and os.access(c, os.R_OK):
+                    os.environ['XAUTHORITY'] = c
+                    self.logger.info("[Nature] XAUTHORITY -> %s", c)
+                    break
+
+        try:
+            self._try_launch_chrome()
+            return
+        except Exception as e1:
+            self.logger.warning("[Nature] Chrome failed on :0 (%s) -> trying Xvfb",
+                                type(e1).__name__)
+
+        # ── Attempt 2: Xvfb ──────────────────────────────────────────────────
+        xvfb = self._start_virtual_display()
+        os.environ['DISPLAY'] = xvfb
+        os.environ.pop('XAUTHORITY', None)
+        try:
+            self._try_launch_chrome()
+            self.logger.info("[Nature] Chrome on Xvfb %s OK", xvfb)
+        except Exception as e2:
+            self.logger.error("[Nature] Chrome also failed on Xvfb: %s\n"
+                              "  Install: sudo apt install xvfb && pip install pyvirtualdisplay",
+                              e2)
+            raise
+
+    def cleanup(self):
+        """Close Chrome and stop Xvfb. Always call this when done."""
+        if self.driver:
+            try:
+                self.driver.quit()
+                self.logger.info("[Nature] Chrome session closed")
+            except Exception:
+                pass
+            finally:
+                self.driver = None
+        self._stop_virtual_display()
+
+    # ── Cookie / navigation helpers ───────────────────────────────────────────
+
     def accept_cookies(self):
-        """Accept cookies using the specific cookie banner structure"""
         if self.cookies_accepted:
             return
-            
         try:
-            cookie_button = WebDriverWait(self.driver, 5).until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[data-cc-action="accept"]'))
-            )
-            cookie_button.click()
-            print("✓ Cookies accepted\n")
+            btn = WebDriverWait(self.driver, 5).until(
+                EC.element_to_be_clickable(
+                    (By.CSS_SELECTOR, 'button[data-cc-action="accept"]')))
+            btn.click()
+            self.logger.info("[Nature] Cookies accepted")
             self.cookies_accepted = True
             time.sleep(2)
         except TimeoutException:
-            print("ℹ No cookie banner found or already accepted\n")
             self.cookies_accepted = True
-        except Exception as e:
-            print(f"ℹ Cookie handling: {e}\n")
+        except Exception:
             self.cookies_accepted = True
-    
+
     def create_output_directory(self, keyword, start_year, end_year):
-        """Create output directory for results"""
         dir_name = f"{keyword.replace(' ', '_')}_{start_year}-{end_year}"
-        if not os.path.exists(dir_name):
-            os.makedirs(dir_name)
+        os.makedirs(dir_name, exist_ok=True)
         self.output_dir = dir_name
-        print(f"✓ Output directory: {os.path.abspath(dir_name)}\n")
+        self.logger.info("[Nature] Output dir: %s", os.path.abspath(dir_name))
         return dir_name
-    
+
     def get_total_results(self, url):
-        """Get total number of results from search page"""
         try:
             self.driver.get(url)
-            
             if not self.cookies_accepted:
                 self.accept_cookies()
-            
             time.sleep(2)
-            
-            results_element = WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, '[data-test="results-data"] span:last-child'))
-            )
-            
-            results_text = results_element.text.strip()
-            total = int(results_text.split()[0].replace(',', ''))
-            
-            return total
-            
-        except Exception as e:
+            el = WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, '[data-test="results-data"] span:last-child')))
+            return int(el.text.strip().split()[0].replace(',', ''))
+        except Exception:
             return 0
-    
-    def scrape_links_from_url(self, base_url, links_file):
-        """Scrape article links from a search URL and return list of links"""
-        total_results = self.get_total_results(base_url + "&page=1")
-        
-        if total_results == 0:
-            return []
-        
-        # Calculate pages - max 20 pages (1000 results / 50 per page)
-        total_pages = min((total_results // 50) + 1, 20)
-        
-        print(f"      {total_results} results ({total_pages} pages)")
-        
-        links = []
-        
-        # Open CSV file in append mode
-        with open(links_file, 'a', newline='', encoding='utf-8') as csvfile:
-            writer = csv.writer(csvfile)
-            
-            for page in range(1, total_pages + 1):
-                url = base_url + f"&page={page}"
-                
-                try:
-                    self.driver.get(url)
-                    time.sleep(1.5)
-                    
-                    WebDriverWait(self.driver, 10).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, '.app-article-list-row__item'))
-                    )
-                    
-                    article_elements = self.driver.find_elements(By.CSS_SELECTOR, '.app-article-list-row__item article')
-                    
-                    for article in article_elements:
-                        try:
-                            title_element = article.find_element(By.CSS_SELECTOR, '.c-card__title a')
-                            link = title_element.get_attribute('href')
-                            
-                            if link:
-                                writer.writerow([link])
-                                csvfile.flush()
-                                links.append(link)
-                                
-                        except Exception as e:
-                            continue
-                    
-                    print(f"\r        Page {page}/{total_pages} - Articles: {len(links)}", end='')
-                    time.sleep(1)
-                    
-                except Exception as e:
-                    continue
-            
-            print()
-            
-        return links
-    
-    def extract_author_emails(self, article_url):
-        """Extract author emails by clicking on author names (robust version with improved popup detection)."""
-        import re
-        
-        
-        
-        from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException
 
+    # ── Link scraping ─────────────────────────────────────────────────────────
+
+    def scrape_links_from_url(self, base_url, links_file):
+        total = self.get_total_results(base_url + "&page=1")
+        if total == 0:
+            return []
+        total_pages = min((total // 50) + 1, 20)
+        self.logger.info("[Nature] %d results, %d pages", total, total_pages)
+        links = []
+        with open(links_file, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            for page in range(1, total_pages + 1):
+                try:
+                    self.driver.get(base_url + f"&page={page}")
+                    time.sleep(1.5)
+                    WebDriverWait(self.driver, 10).until(
+                        EC.presence_of_element_located(
+                            (By.CSS_SELECTOR, '.app-article-list-row__item')))
+                    for article in self.driver.find_elements(
+                            By.CSS_SELECTOR, '.app-article-list-row__item article'):
+                        try:
+                            lnk = article.find_element(
+                                By.CSS_SELECTOR, '.c-card__title a').get_attribute('href')
+                            if lnk:
+                                writer.writerow([lnk])
+                                f.flush()
+                                links.append(lnk)
+                        except Exception:
+                            pass
+                    print(f"\r  Page {page}/{total_pages} — {len(links)} articles", end='')
+                    time.sleep(1)
+                except Exception:
+                    continue
+        print()
+        return links
+
+    # ── Email extraction ──────────────────────────────────────────────────────
+
+    def extract_author_emails(self, article_url):
         try:
             self.driver.get(article_url)
             time.sleep(2)
-
-            # Accept cookies if needed
-            if not getattr(self, "cookies_accepted", False):
+            if not self.cookies_accepted:
                 self.accept_cookies()
             time.sleep(0.5)
-
             authors_data = []
 
-            # Wait for authors list
             try:
                 WebDriverWait(self.driver, 5).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, '[data-test="authors-list"]'))
-                )
+                    EC.presence_of_element_located(
+                        (By.CSS_SELECTOR, '[data-test="authors-list"]')))
             except TimeoutException:
-                print("        ✗ Authors list not found.")
                 return []
 
-            # === STEP 1: Try clicking "Show authors" button if it exists ===
+            # Click "Show authors" if present
             try:
                 show_btn = WebDriverWait(self.driver, 3).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, 'button.c-article-author-list__button'))
-                )
-                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", show_btn)
+                    EC.presence_of_element_located(
+                        (By.CSS_SELECTOR, 'button.c-article-author-list__button')))
+                self.driver.execute_script(
+                    "arguments[0].scrollIntoView({block: 'center'});", show_btn)
                 time.sleep(1)
-
-                # Retry clicking a few times
-                for attempt in range(3):
+                for _ in range(3):
                     try:
                         WebDriverWait(self.driver, 2).until(
-                            EC.element_to_be_clickable((By.CSS_SELECTOR, 'button.c-article-author-list__button'))
-                        )
+                            EC.element_to_be_clickable(
+                                (By.CSS_SELECTOR,
+                                 'button.c-article-author-list__button')))
                         show_btn.click()
-                        print("        ✓ Clicked 'Show authors' button")
                         break
                     except (ElementClickInterceptedException, TimeoutException):
                         try:
-                            self.driver.execute_script("arguments[0].click();", show_btn)
-                            print("        ✓ Clicked 'Show authors' button (via JS)")
+                            self.driver.execute_script(
+                                "arguments[0].click();", show_btn)
                             break
                         except Exception:
                             time.sleep(1)
                 time.sleep(2)
-
             except TimeoutException:
-                print("        ℹ 'Show authors' button not found - all authors visible")
-            except Exception as e:
-                print(f"        ⚠ Error handling 'Show authors' button: {e}")
+                pass
 
-            # === STEP 2: Find all authors ===
-            author_links = self.driver.find_elements(By.CSS_SELECTOR, '[data-test="authors-list"] a[data-test="author-name"]')
-            print(f"        Found {len(author_links)} author(s)")
+            author_links = self.driver.find_elements(
+                By.CSS_SELECTOR,
+                '[data-test="authors-list"] a[data-test="author-name"]')
 
-            # === STEP 3: Process each author ===
             for idx in range(len(author_links)):
                 try:
-                    author_links = self.driver.find_elements(By.CSS_SELECTOR, '[data-test="authors-list"] a[data-test="author-name"]')
+                    author_links = self.driver.find_elements(
+                        By.CSS_SELECTOR,
+                        '[data-test="authors-list"] a[data-test="author-name"]')
                     if idx >= len(author_links):
                         break
-
                     author_link = author_links[idx]
                     author_name = author_link.text.strip().replace('✉', '').strip()
-                    safe_name = re.sub(r'[^a-zA-Z0-9]', '-', author_name)  # normalize for matching popup id
+                    safe_name   = re.sub(r'[^a-zA-Z0-9]', '-', author_name)
 
-                    # Skip if no mail icon
+                    # Only process authors with email icon
                     try:
-                        author_link.find_element(By.CSS_SELECTOR, 'svg use[href*="mail"], svg use[*|href*="mail"]')
-                        has_email = True
+                        author_link.find_element(
+                            By.CSS_SELECTOR,
+                            'svg use[href*="mail"], svg use[*|href*="mail"]')
                     except NoSuchElementException:
-                        has_email = False
-
-                    if not has_email:
-                        print(f"          Author {idx+1}: {author_name[:30]} - No email icon (skipped)")
                         continue
 
-                    # Click author to open popup
                     email = ''
                     try:
-                        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", author_link)
+                        self.driver.execute_script(
+                            "arguments[0].scrollIntoView({block: 'center'});",
+                            author_link)
                         time.sleep(0.5)
                         author_link.click()
                         time.sleep(1)
 
-                        # Wait for popup (new method using partial id with author name)
-                        popup_selector = f"div[id*='popup-auth-{safe_name[:5]}']"  # use first 20 chars of safe_name
+                        popup_sel = f"div[id*='popup-auth-{safe_name[:5]}']"
                         try:
-                            popup = WebDriverWait(self.driver, 5).until(
-                                EC.visibility_of_element_located((By.CSS_SELECTOR, popup_selector))
-                            )
+                            WebDriverWait(self.driver, 5).until(
+                                EC.visibility_of_element_located(
+                                    (By.CSS_SELECTOR, popup_sel)))
                         except TimeoutException:
-                            popup = WebDriverWait(self.driver, 3).until(
-                                EC.visibility_of_element_located((By.CSS_SELECTOR, ".app-researcher-popup"))
-                            )
+                            WebDriverWait(self.driver, 3).until(
+                                EC.visibility_of_element_located(
+                                    (By.CSS_SELECTOR, ".app-researcher-popup")))
 
-                        # Wait for email inside popup
                         try:
-                            email_link = WebDriverWait(self.driver, 3).until(
-                                EC.visibility_of_element_located((By.CSS_SELECTOR, f"{popup_selector} a[href^='mailto:']"))
-                            )
-                            email = email_link.get_attribute('href').replace('mailto:', '').strip()
+                            el = WebDriverWait(self.driver, 3).until(
+                                EC.visibility_of_element_located(
+                                    (By.CSS_SELECTOR,
+                                     f"{popup_sel} a[href^='mailto:']")))
+                            email = el.get_attribute('href').replace('mailto:', '').strip()
                         except TimeoutException:
-                            print(f"          Author {idx+1}: {author_name[:30]} - Popup opened, email not found (timeout)")
+                            pass
 
                         if email:
-                            print(f"          Author {idx+1}: {author_name[:30]} - ✓ Email: {email}")
                             authors_data.append({'name': author_name, 'email': email})
-                        else:
-                            print(f"          Author {idx+1}: {author_name[:30]} - Empty email (skipped)")
 
-                    except Exception as e:
-                        print(f"          Author {idx+1}: {author_name[:30]} - Popup or email not found ({str(e)[:40]})")
+                    except Exception:
+                        pass
 
                     # Close popup
                     try:
-                        close_btn = WebDriverWait(self.driver, 2).until(
-                            EC.element_to_be_clickable((By.CSS_SELECTOR, 'button.c-popup__close'))
-                        )
-                        close_btn.click()
+                        close = WebDriverWait(self.driver, 2).until(
+                            EC.element_to_be_clickable(
+                                (By.CSS_SELECTOR, 'button.c-popup__close')))
+                        close.click()
                         WebDriverWait(self.driver, 3).until(
-                            EC.invisibility_of_element_located((By.CSS_SELECTOR, 'button.c-popup__close'))
-                        )
+                            EC.invisibility_of_element_located(
+                                (By.CSS_SELECTOR, 'button.c-popup__close')))
                     except Exception:
                         self.driver.execute_script("document.body.click();")
                         time.sleep(0.5)
 
-                except Exception as e:
-                    print(f"          Author {idx+1}: Exception - {str(e)[:50]}")
+                except Exception:
                     continue
 
-            print(f"        ✓ Total authors with emails: {len(authors_data)}")
             return authors_data
 
         except Exception as e:
-            print(f"        ✗ Page error: {str(e)[:50]}")
+            self.logger.warning("[Nature] Page error on %s: %s", article_url, str(e)[:60])
             return []
 
-    def extract_emails_for_links(self, links, emails_file, label=""):
-        """Extract emails for a list of article links"""
+    def extract_emails_for_links(self, links, emails_file):
         if not links:
             return
-        
-        total_links = len(links)
-        print(f"\n      Extracting emails for {total_links} articles...")
-        
-        with open(emails_file, 'a', newline='', encoding='utf-8') as outfile:
-            writer = csv.writer(outfile)
-            
-            for idx, article_url in enumerate(links, 1):
-                print(f"\n      [{idx}/{total_links}] {article_url}")
-                
-                authors = self.extract_author_emails(article_url)
-                
-                if authors:
-                    for author in authors:
-                        writer.writerow([
-                            article_url,
-                            author['name'],
-                            author['email']
-                        ])
-                    outfile.flush()
-                    print(f"      ✓ Saved {len(authors)} author(s)")
-                else:
-                    print(f"      ⚠ No authors found")
-                
-                time.sleep(2)  # Increased delay between articles
-    
-    def scrape_year_data(self, keyword, year, extract_emails=True):
-        """Scrape data for a specific year - extract emails immediately after each combination"""
-        print(f"\n{'='*70}")
-        print(f"  YEAR: {year}")
-        print(f"{'='*70}\n")
-        
-        # Create files for this year
-        links_file = os.path.join(self.output_dir, f"{keyword.replace(' ', '_')}-{year}-links.csv")
-        emails_file = os.path.join(self.output_dir, f"{keyword.replace(' ', '_')}-{year}-emails.csv")
-        
-        # Initialize CSV files
-        with open(links_file, 'w', newline='', encoding='utf-8') as f:
+        with open(emails_file, 'a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerow(['article_link'])
-        
+            for idx, url in enumerate(links, 1):
+                print(f"  [{idx}/{len(links)}] {url}")
+                authors = self.extract_author_emails(url)
+                for author in authors:
+                    writer.writerow([url, author['name'], author['email']])
+                f.flush()
+                time.sleep(2)
+
+    # ── Year / all-years scraping ─────────────────────────────────────────────
+
+    def scrape_year_data(self, keyword, year, extract_emails=True):
+        links_file  = os.path.join(self.output_dir,
+                                   f"{keyword.replace(' ', '_')}-{year}-links.csv")
+        emails_file = os.path.join(self.output_dir,
+                                   f"{keyword.replace(' ', '_')}-{year}-emails.csv")
+
+        with open(links_file, 'w', newline='', encoding='utf-8') as f:
+            csv.writer(f).writerow(['article_link'])
         if extract_emails:
             with open(emails_file, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                writer.writerow(['article_link', 'author_name', 'email'])
-        
-        year_total_links = 0
-        
-        # Step 1: Search WITHOUT filters
-        print(f"  [1/141] Searching WITHOUT filters...")
-        base_url = f"https://www.nature.com/search?q={keyword}&date_range={year}-&order=relevance"
-        links = self.scrape_links_from_url(base_url, links_file)
-        year_total_links += len(links)
-        
-        if links:
-            print(f"      ✓ Found {len(links)} articles")
-            if extract_emails:
-                self.extract_emails_for_links(links, emails_file, "No filters")
-        else:
-            print(f"      ⚠ No articles found")
-        
-        print()
-        time.sleep(1)
-        
-        # Step 2: Iterate through combinations
-        combination_num = 1
-        for article_type in self.article_types:
+                csv.writer(f).writerow(['article_link', 'author_name', 'email'])
+
+        year_total = 0
+
+        # 1. Search without filters
+        base_url = (f"https://www.nature.com/search?q={keyword}"
+                    f"&date_range={year}-&order=relevance")
+        links     = self.scrape_links_from_url(base_url, links_file)
+        year_total += len(links)
+        if links and extract_emails:
+            self.extract_emails_for_links(links, emails_file)
+
+        # 2. All article_type × subject combos
+        for atype in self.article_types:
             for subject in self.subjects:
-                combination_num += 1
-                
-                print(f"  [{combination_num}/141] Type: {article_type[:20]:<20} | Subject: {subject[:30]:<30}")
-                
-                base_url = f"https://www.nature.com/search?q={keyword}&article_type={article_type}&subject={subject}&date_range={year}-&order=relevance"
-                
-                # Scrape links for this combination
+                base_url = (f"https://www.nature.com/search?q={keyword}"
+                            f"&article_type={atype}&subject={subject}"
+                            f"&date_range={year}-&order=relevance")
                 links = self.scrape_links_from_url(base_url, links_file)
-                year_total_links += len(links)
-                
-                if links:
-                    print(f"      ✓ Found {len(links)} articles")
-                    
-                    # Extract emails immediately if enabled
-                    if extract_emails:
-                        self.extract_emails_for_links(links, emails_file, f"{article_type} - {subject}")
-                
-                print()
+                year_total += len(links)
+                if links and extract_emails:
+                    self.extract_emails_for_links(links, emails_file)
                 time.sleep(0.5)
-        
-        print(f"  {'─'*70}")
-        print(f"  Year {year} Total: {year_total_links} article links")
-        print(f"  Links saved to: {links_file}")
-        if extract_emails:
-            print(f"  Emails saved to: {emails_file}")
-        print(f"  {'─'*70}\n")
-        
-        return year_total_links
-    
+
+        self.logger.info("[Nature] Year %s: %d links", year, year_total)
+        return year_total
+
     def scrape_all_years(self, keyword, start_year, end_year, extract_emails=True):
-        """Scrape article links and emails for all years"""
-        print(f"\n{'='*70}")
-        print(f"  COLLECTING ARTICLE LINKS {'AND EMAILS' if extract_emails else ''}")
-        print(f"{'='*70}")
-        print(f"  Keyword: {keyword}")
-        print(f"  Year Range: {start_year} - {end_year}")
-        print(f"  Extract Emails: {'Yes' if extract_emails else 'No'}")
-        print(f"  Strategy: Extract links, then {'immediately extract emails' if extract_emails else 'skip emails'}")
-        print(f"  Article Types: {len(self.article_types)}")
-        print(f"  Subjects: {len(self.subjects)}")
-        print(f"{'='*70}\n")
-        
-        # Setup driver
         self.setup_driver()
-        
-        # Create output directory
         self.create_output_directory(keyword, start_year, end_year)
-        
-        years = range(int(start_year), int(end_year) + 1)
-        grand_total_articles = 0
-        
-        # Process each year
-        for year in years:
-            year_total = self.scrape_year_data(keyword, year, extract_emails)
-            grand_total_articles += year_total
-        
-        print(f"\n{'='*70}")
-        print(f"  ✓ {'LINK AND EMAIL' if extract_emails else 'LINK'} COLLECTION COMPLETE!")
-        print(f"  Grand Total Article Links: {grand_total_articles}")
-        print(f"{'='*70}\n")
-        
+        grand_total = 0
+        for year in range(int(start_year), int(end_year) + 1):
+            grand_total += self.scrape_year_data(keyword, year, extract_emails)
+        self.logger.info("[Nature] Grand total: %d articles", grand_total)
         return True
-    
+
     def extract_emails_from_existing_links(self, keyword, start_year, end_year):
-        """Extract emails from existing link files"""
-        print(f"\n{'='*70}")
-        print(f"  EXTRACTING EMAILS FROM EXISTING LINKS")
-        print(f"{'='*70}\n")
-        
-        # Check if output directory exists
         if not self.output_dir or not os.path.exists(self.output_dir):
-            print(f"  ✗ Output directory not found: {self.output_dir or 'Not set'}")
+            self.logger.error("[Nature] Output dir not found: %s", self.output_dir)
             return False
-        
-        # Find all link files
-        link_files = glob.glob(os.path.join(self.output_dir, f"{keyword.replace(' ', '_')}-*-links.csv"))
-        
+        link_files = glob.glob(
+            os.path.join(self.output_dir,
+                         f"{keyword.replace(' ', '_')}-*-links.csv"))
         if not link_files:
-            print(f"  ✗ No link files found in {self.output_dir}")
+            self.logger.error("[Nature] No link files in %s", self.output_dir)
             return False
-        
-        print(f"  Found {len(link_files)} link file(s)\n")
-        
-        # Setup driver if not already setup
         if not self.driver:
             self.setup_driver()
-        
-        # Reset cookies_accepted flag to check cookies on first article
         self.cookies_accepted = False
-        
-        # Process each link file
-        for link_file in sorted(link_files):
-            year = link_file.split('-')[-2]  # Extract year from filename
-            
-            print(f"{'='*70}")
-            print(f"  PROCESSING YEAR: {year}")
-            print(f"{'='*70}\n")
-            
-            emails_file = link_file.replace('-links.csv', '-emails.csv')
-            
-            # Check if emails file already exists
-            if os.path.exists(emails_file):
-                overwrite = input(f"  Emails file exists: {emails_file}\n  Overwrite? (y/n): ").strip().lower()
-                if overwrite != 'y':
-                    print(f"  Skipping {year}...\n")
-                    continue
-            
-            # Read unique links
-            with open(link_file, 'r', encoding='utf-8') as f:
-                reader = csv.DictReader(f)
-                links = list(set([row['article_link'] for row in reader]))
-            
-            total_links = len(links)
-            print(f"  Processing {total_links} unique articles for year {year}...\n")
-            
-            # Create emails file
-            with open(emails_file, 'w', newline='', encoding='utf-8') as outfile:
-                writer = csv.writer(outfile)
-                writer.writerow(['article_link', 'author_name', 'email'])
-            
-            # Extract emails
-            self.extract_emails_for_links(links, emails_file, f"Year {year}")
-            
-            print(f"\n  ✓ Emails saved to: {emails_file}\n")
-        
-        print(f"{'='*70}")
-        print(f"  ✓ ALL EMAIL EXTRACTION COMPLETE!")
-        print(f"{'='*70}\n")
-        
+        for lf in sorted(link_files):
+            year        = lf.split('-')[-2]
+            emails_file = lf.replace('-links.csv', '-emails.csv')
+            with open(lf, 'r', encoding='utf-8') as f:
+                links = list(set([row['article_link'] for row in csv.DictReader(f)]))
+            with open(emails_file, 'w', newline='', encoding='utf-8') as f:
+                csv.writer(f).writerow(['article_link', 'author_name', 'email'])
+            self.logger.info("[Nature] Processing year %s (%d articles)", year, len(links))
+            self.extract_emails_for_links(links, emails_file)
         return True
-    
-    def cleanup(self):
-        """Close the WebDriver"""
-        if self.driver:
-            self.driver.quit()
-            print("✓ WebDriver closed\n")
 
 
 def main():
-    """Main function to run the scraper"""
-    print("\n" + "="*70)
-    print("  NATURE.COM ARTICLE SCRAPER - IMPROVED EMAIL EXTRACTION")
-    print("  With 'Show authors' button handling and better popup detection")
-    print("="*70 + "\n")
-    
-    # Get user input
-    print("Please enter search parameters:\n")
-    
-    keyword = input("  Search keyword (default: Bioinformatics): ").strip()
-    if not keyword:
-        keyword = "Bioinformatics"
-    
-    start_year = input("  Start year (default: 2020): ").strip()
-    if not start_year or not start_year.isdigit():
-        start_year = "2020"
-    
-    end_year = input("  End year (default: 2025): ").strip()
-    if not end_year or not end_year.isdigit():
-        end_year = str(datetime.now().year)
-    
-    # Ask about link extraction
-    extract_new_links = input("  Extract NEW article links? (y/n, default: y): ").strip().lower()
-    if not extract_new_links:
-        extract_new_links = 'y'
-    
-    extract_emails = False
-    
-    if extract_new_links in ['y', 'yes']:
-        # Ask about email extraction during link collection
-        extract_emails_input = input("  Extract emails immediately after getting links? (y/n, default: y): ").strip().lower()
-        if not extract_emails_input or extract_emails_input in ['y', 'yes']:
-            extract_emails = True
-    
-    # Validate years
-    if int(start_year) > int(end_year):
-        print("\n✗ Error: Start year must be less than or equal to end year!")
-        input("\nPress Enter to exit...")
-        return
-    
-    # Create scraper
+    keyword     = input("Search keyword (default: Bioinformatics): ").strip() or "Bioinformatics"
+    start_year  = input("Start year (default: 2020): ").strip() or "2020"
+    end_year    = input("End year (default: current): ").strip() or str(datetime.now().year)
+    new_links   = (input("Extract NEW article links? (y/n, default: y): ").strip().lower()
+                   or 'y') in ('y', 'yes')
+    ext_emails  = False
+    if new_links:
+        ext_emails = (input("Extract emails immediately? (y/n, default: y): ").strip().lower()
+                      or 'y') in ('y', 'yes')
+
     scraper = NatureScraper()
-    
-    # Set output directory for existing files case
     scraper.output_dir = f"{keyword.replace(' ', '_')}_{start_year}-{end_year}"
-    
+
     try:
-        if extract_new_links in ['y', 'yes']:
-            # Extract new links (and optionally emails)
-            success = scraper.scrape_all_years(keyword, start_year, end_year, extract_emails)
-            
-            if success:
-                print("="*70)
-                print("  ✓ SCRAPING COMPLETED SUCCESSFULLY!")
-                print(f"  Output directory: {os.path.abspath(scraper.output_dir)}")
-                print("="*70)
+        if new_links:
+            scraper.scrape_all_years(keyword, start_year, end_year, ext_emails)
         else:
-            # Use existing link files to extract emails
-            print("\nℹ Using existing link files to extract emails...\n")
-            
             if not os.path.exists(scraper.output_dir):
-                print(f"✗ Directory not found: {scraper.output_dir}")
-                print("  Please run with 'y' to extract new links first.")
-                input("\nPress Enter to exit...")
+                print(f"Directory not found: {scraper.output_dir}")
                 return
-            
-            success = scraper.extract_emails_from_existing_links(keyword, start_year, end_year)
-            
-            if success:
-                print("="*70)
-                print("  ✓ EMAIL EXTRACTION COMPLETED SUCCESSFULLY!")
-                print(f"  Output directory: {os.path.abspath(scraper.output_dir)}")
-                print("="*70)
-            else:
-                print("\n✗ Email extraction failed.")
-            
+            scraper.extract_emails_from_existing_links(keyword, start_year, end_year)
+        print("\nDone!")
     except KeyboardInterrupt:
-        print("\n\n⚠ Scraping interrupted by user.")
+        print("\nInterrupted by user")
     except Exception as e:
-        print(f"\n✗ An error occurred: {e}")
+        print(f"\nError: {e}")
         import traceback
         traceback.print_exc()
     finally:
-        scraper.cleanup()
-        print("\nPress Enter to exit...")
-        input()
+        scraper.cleanup()   # Always close Chrome + Xvfb
 
 
 if __name__ == "__main__":
