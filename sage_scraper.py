@@ -1,278 +1,3 @@
-# # Fix for Python 3.12+ distutils compatibility
-# try:
-#     import setuptools
-#     import sys
-#     if sys.version_info >= (3, 12):
-#         import importlib.util
-#         spec = importlib.util.find_spec('setuptools._distutils')
-#         if spec:
-#             sys.modules['distutils'] = importlib.import_module('setuptools._distutils')
-# except ImportError:
-#     pass
-
-# import os, argparse, csv, logging, time, math, sys
-# from selenium import webdriver
-# from selenium.webdriver.support.ui import WebDriverWait
-# from selenium.webdriver.common.by import By
-# from selenium.webdriver.chrome.service import Service
-# from selenium.webdriver.chrome.options import Options
-# from selenium.webdriver.support import expected_conditions as EC
-# from webdriver_manager.chrome import ChromeDriverManager
-# from selenium.webdriver.common.action_chains import ActionChains
-# from selenium.webdriver.common.keys import Keys
-# from urllib.parse import urlencode
-# import undetected_chromedriver as uc
-# import tempfile
-
-
-# class SageScraper:
-#     def __init__(self, keyword, start_year, end_year, driver_path):
-#         # Configure logging first to ensure root logger is set up
-#         logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-#         self.logger = logging.getLogger(__name__)
-#         self.keyword = keyword
-#         self.start_year = start_year
-#         self.end_year = end_year
-#         self.options = Options()
-        
-#         self.options.add_argument("--window-size=1920,1080")
-#         #self.options.add_argument("--force-device-scale-factor=1")
-#         self.options.add_argument("--disable-notifications")
-#         self.options.add_argument("--disable-background-timer-throttling")
-#         self.options.add_argument("--disable-backgrounding-occluded-windows")
-#         self.options.add_argument("--disable-renderer-backgrounding")
-#         self.options.add_argument("--disable-notifications")
-        
-        
-#         self.options.add_argument("--no-sandbox")
-        
-#         self.options.add_argument("--disable-infobars")
-#         self.options.add_argument("--disable-browser-side-navigation")
-        
-#         self.options.add_argument("--disable-popup-blocking")
-#         self.options.add_argument("--disable-crash-reporter")
-#         self.options.add_argument("--disable-dev-shm-usage")
-#         self.options.add_argument("--disable-logging")
-#         self.uc_temp_dir = tempfile.mkdtemp(prefix="Sage_")
-#         self.driver = uc.Chrome(
-#             options=self.options,
-#             driver_executable_path=driver_path,
-#             version_main=None,  # Auto-detect Chrome version
-#             use_subprocess=False  # Important for multiprocessing
-#         )
-#         self.wait = WebDriverWait(self.driver, 20)
-#         self.directory = keyword.replace(" ","-")
-
-#         self.url_csv = f"Sage_{self.directory}-{start_year.replace('/', '-')}-{end_year.replace('/', '-')}_urls.csv"
-#         self.authors_csv = f"Sage_{self.directory}-{start_year.replace('/', '-')}-{end_year.replace('/', '-')}_authors.csv"
-
-#         self._setup_logger()  # Initialize the logger configuration
-#         self.driver.maximize_window()
-#         self.driver.set_page_load_timeout(180)
-#         self.driver.set_script_timeout(180)
-#         self.run()
-
-#     def _setup_logger(self):
-#         """Configure the logger with both file and stdout handlers (UTF-8 safe)."""
-#         self.logger = logging.getLogger(self.__class__.__name__)
-#         self.logger.setLevel(logging.INFO)
-
-#         log_dir = "logs"
-#         os.makedirs(log_dir, exist_ok=True)
-#         log_file = os.path.join(
-#             log_dir, 
-#             f"{self.__class__.__name__}-{self.directory}-{self.start_year.replace('/', '-')}-{self.end_year.replace('/', '-')}.log"
-#         )
-
-#         # Ensure sys.stdout supports UTF-8 for emoji printing
-#         sys.stdout.reconfigure(encoding='utf-8')
-
-#         # Remove existing handlers to avoid duplication
-#         if self.logger.hasHandlers():
-#             self.logger.handlers.clear()
-
-#         # File handler (UTF-8 encoding)
-#         file_handler = logging.FileHandler(log_file, encoding="utf-8")
-#         file_handler.setLevel(logging.INFO)
-
-#         # Stream handler for logging to stdout
-#         stream_handler = logging.StreamHandler(sys.stdout)
-#         stream_handler.setLevel(logging.INFO)
-
-#         # Formatter for both handlers
-#         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-#         file_handler.setFormatter(formatter)
-#         stream_handler.setFormatter(formatter)
-
-#         self.logger.addHandler(file_handler)
-#         self.logger.addHandler(stream_handler)
-#     def save_to_csv(self, data, filename, header=None):
-#         """Save data to a CSV file."""
-#         try:
-#             os.makedirs(self.directory, exist_ok=True)
-#             filepath = os.path.join(self.directory, filename)
-#             with open(filepath, mode="a", newline="", encoding="utf-8") as file:
-#                 writer = csv.writer(file)
-#                 if os.path.getsize(filepath) == 0 and header:  # Write header only if file is empty
-#                     writer.writerow(header)
-#                 writer.writerows(data)
-#             self.logger.info(f"Sage ==> Saved data to {filepath}.")
-#         except Exception as e:
-#             self.logger.error(f"Sage ==> Failed to save data to CSV: {e}")
-
-#     def get_total_pages(self):
-#         """Retrieve the total number of pages from the search results."""
-#         try:
-#             stats_element = self.wait.until(
-#                 EC.presence_of_element_located((By.CSS_SELECTOR, "span.result__count"))
-#             )
-#             total_results_text = stats_element.text.split()[-1]
-#             total_results = int(total_results_text)
-#             total_pages = math.ceil(total_results / 100)
-#             self.logger.info(f"Sage ==> Total results: {total_results}, Total pages: {total_pages}")
-#             return total_pages
-#         except Exception as e:
-#             self.logger.error(f"Sage ==> Failed to get total pages: {e}")
-#             return 0
-
-#     def extract_article_links(self, total_pages, base_url, query_params):
-#         """Extract article links from each page and save them to a CSV file."""
-#         #all_links = []
-
-#         for page in range(0, total_pages):
-#             query_params["startPage"] = page  # Update page number in query params
-#             page_url = f"{base_url}?{urlencode(query_params)}"
-#             self.driver.get(page_url)
-
-#             time.sleep(2)  # Allow time for page to load
-
-#             try:
-#                 links = self.wait.until(
-#                     EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'div.issue-item__title > a[data-id="srp-article-title"]'))
-#                 )
-#                 page_links = [[link.get_attribute("href")] for link in links if link.get_attribute("href")]
-#                 self.save_to_csv(page_links, self.url_csv, header=["Article_URL"])
-#                 #all_links.extend(page_links)
-#                 self.logger.info(f"Sage ==> Extracted {len(page_links)} links from page {page}.")
-#             except Exception as e:
-#                 self.logger.error(f"Sage ==> Failed to extract links from page {page}: {e}")
-
-
-#     def extract_author_info(self):
-#         """Read article URLs from the CSV file and extract corresponding author name and email."""
-#         filepath = os.path.join(self.directory, self.url_csv)
-#         if not os.path.exists(filepath):
-#             self.logger.error("Sage ==> URLs file not found! Run extract_article_links() first.")
-#             return
-
-#         extracted_data = []
-#         with open(filepath, mode="r", encoding="utf-8") as file:
-#             reader = csv.reader(file)
-#             next(reader)  # Skip header
-
-#             for row in reader:
-#                 article_url = row[0]
-#                 self.driver.get(article_url)
-#                 time.sleep(2)  # Allow time for the page to load
-
-#                 try:
-#                     # Open the author section
-#                     author_section = self.wait.until(
-#                         EC.element_to_be_clickable((By.CSS_SELECTOR, "a.to-authors-affiliations"))
-#                     )
-#                     author_section.click()
-
-#                     # Wait for the "Show all" button
-#                     show_all = self.wait.until(
-#                         EC.element_to_be_clickable((By.CSS_SELECTOR, 'div.expand-all-wrapper > button[data-label-expand="Show all"]'))
-#                     )
-
-#                     # Scroll into view and click
-#                     self.driver.execute_script("arguments[0].scrollIntoView();", show_all)
-#                     time.sleep(1)  # Small delay before clicking
-
-#                     try:
-#                         show_all.click()
-#                         time.sleep(2)
-#                     except:
-#                         self.driver.execute_script("arguments[0].click();", show_all)
-
-#                     self.logger.info("Sage ==> Show All button clicked.")
-
-#                     # Find all authors
-#                     authors = self.driver.find_elements(By.CSS_SELECTOR, "section.core-authors div[property='author']")
-                    
-#                     for author in authors:
-#                         # Extract given name and family name
-#                         given_name = author.find_element(By.CSS_SELECTOR, "span[property='givenName']").text
-#                         family_name = author.find_element(By.CSS_SELECTOR, "span[property='familyName']").text
-#                         full_name = f"{given_name} {family_name}"
-                        
-#                         # Extract email if available
-#                         try:
-#                             email = author.find_element(By.CSS_SELECTOR, "div.core-email > a[property='email']")
-#                             email = email.get_attribute("href").replace("mailto:", "")
-#                         except:
-#                             email = None  # If no email found
-                        
-#                         # Save data immediately to CSV
-#                         if email is not None:
-#                             self.save_to_csv([[article_url, full_name, email]], self.authors_csv, header=["Article_URL", "Author_Name", "Email"])
-#                             self.logger.info(f"Sage ==> Extracted: {full_name} - {email}")
-#                         else:
-#                             pass
-
-#                 except Exception as e:
-#                     self.logger.error(f"Sage ==> Failed to extract author info from {article_url}: {e}")
-#                     self.save_to_csv([[article_url, "N/A", "N/A"]], self.authors_csv, header=["Article_URL", "Author_Name", "Email"])
-#     def run(self):
-#         try:
-#             query_params = {
-#                 "field1":"AllField",
-#                 "text1":self.keyword,
-#                 "AfterMonth":self.start_year.split("/")[0],
-#                 "AfterYear":self.start_year.split("/")[-1],
-#                 "BeforeMonth":self.end_year.split("/")[0],
-#                 "BeforeYear":self.end_year.split("/")[-1],
-#                 "pageSize":100,
-#                 "startPage":0
-#             }
-#             base_url = "https://journals.sagepub.com/action/doSearch"
-#             search_url = f"{base_url}?{urlencode(query_params)}"
-#             self.driver.get("https://journals.sagepub.com")
-#             time.sleep(30)
-#             cookie_section = self.wait.until(
-#                     EC.presence_of_element_located((By.ID, "onetrust-accept-btn-handler"))
-#                 )
-            
-#             cookie_section.click()
-#             self.driver.get(search_url)
-#             time.sleep(20)
-#             total_pages = self.get_total_pages()
-#             if total_pages > 0:
-                    
-#                 self.extract_article_links(total_pages, base_url, query_params)
-#                 self.extract_author_info()  # Extracts author info after collecting URLs
-
-#         finally:
-#             self.driver.quit()
-
-
-# # if __name__ == "__main__":
-# #     parser = argparse.ArgumentParser(description="Scrape article links and author details from Emrald Insights.")
-# #     parser.add_argument("--keyword", type=str, required=True, help="Keyword for the search query.")
-# #     parser.add_argument("--start_year", type=str, required=True, help="Start date in MM/DD/YYYY format.")
-# #     parser.add_argument("--end_year", type=str, required=True, help="End date in MM/DD/YYYY format.")
-# #     args = parser.parse_args()
-# #     # Set a global cache path for WebDriverManager
-# #     os.environ["WDM_CACHE_PATH"] = "C:/shared_drivers"  # Custom shared directory
-
-# # #   Install ChromeDriver once and get its path
-# #     driver_path = ChromeDriverManager().install()
-# #     scraper = SageScraper(args.keyword, args.start_year, args.end_year, driver_path)
-# #     #scraper.run()
-
-
 # Fix for Python 3.12+ distutils compatibility
 try:
     import setuptools
@@ -607,20 +332,115 @@ class SageScraper:
     # Phase 1 — collect article URLs
     # ─────────────────────────────────────────────────────────────────────
 
-    def get_total_pages(self) -> int:
+    def _debug_screenshot(self, label: str):
+        """Save a screenshot to help diagnose page-loading issues."""
         try:
-            el = self.wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "span.result__count"))
-            )
-            total_results = int(el.text.split()[-1].replace(",", ""))
-            total_pages   = math.ceil(total_results / 100)
-            self.logger.info(
-                f"Sage ==> Total results: {total_results}, pages: {total_pages}"
-            )
-            return total_pages
+            screenshot_dir = "logs"
+            os.makedirs(screenshot_dir, exist_ok=True)
+            path = os.path.join(screenshot_dir, f"sage_debug_{label}.png")
+            self.driver.save_screenshot(path)
+            self.logger.info(f"Sage ==> Debug screenshot saved → {path}")
         except Exception as e:
-            self.logger.error(f"Sage ==> Failed to get total pages: {e}")
-            return 0
+            self.logger.warning(f"Sage ==> Could not save screenshot: {e}")
+
+    def _wait_for_results_page(self, timeout: int = 45):
+        """
+        Wait for the Sage results page to fully load.
+        Detects CAPTCHA / bot-detection pages and logs a clear warning.
+        """
+        import time as _time
+        deadline = _time.monotonic() + timeout
+
+        while _time.monotonic() < deadline:
+            try:
+                title = self.driver.title.lower()
+                url   = self.driver.current_url.lower()
+
+                # Detected bot-challenge pages
+                if any(kw in title for kw in ["captcha", "access denied", "blocked", "robot"]):
+                    self.logger.error(
+                        f"Sage ==> Bot/CAPTCHA page detected: title='{self.driver.title}'"
+                    )
+                    self._debug_screenshot("captcha")
+                    return False
+
+                # Check if results count element exists
+                try:
+                    el = self.driver.find_element(By.CSS_SELECTOR, "span.result__count")
+                    if el and el.text.strip():
+                        return True
+                except Exception:
+                    pass
+
+                # Try alternative selectors
+                for sel in [
+                    "span.result__count",
+                    "div[class*='result-count']",
+                    "span[class*='result-count']",
+                    "div[class*='results-count']",
+                    "[data-test='results-count']",
+                ]:
+                    try:
+                        el = self.driver.find_element(By.CSS_SELECTOR, sel)
+                        if el and el.text.strip():
+                            return True
+                    except Exception:
+                        pass
+
+                _time.sleep(1)
+            except Exception:
+                _time.sleep(1)
+
+        return False
+
+    def get_total_pages(self) -> int:
+        """
+        Get total result count with multi-selector fallback.
+        Saves a debug screenshot if nothing is found so you can see
+        exactly what Sage returned.
+        """
+        # All known selectors for Sage result count across layout versions
+        COUNT_SELECTORS = [
+            ("span.result__count",              lambda t: t.split()[-1]),
+            ("div[class*='result-count']",      lambda t: t.strip().split()[-1]),
+            ("span[class*='result-count']",     lambda t: t.strip().split()[-1]),
+            ("div[class*='results-count']",     lambda t: t.strip().split()[-1]),
+            ("[data-test='results-count']",     lambda t: t.strip().split()[-1]),
+            ("p.results-desc",                  lambda t: t.strip().split()[0]),
+        ]
+
+        for selector, extractor in COUNT_SELECTORS:
+            try:
+                el = WebDriverWait(self.driver, 5).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                )
+                raw_text = el.text.strip()
+                if not raw_text:
+                    continue
+                num_str = extractor(raw_text).replace(",", "").replace(".", "")
+                total_results = int(num_str)
+                total_pages   = math.ceil(total_results / 100)
+                self.logger.info(
+                    f"Sage ==> [{selector}] Total results: {total_results}, "
+                    f"pages: {total_pages}"
+                )
+                return total_pages
+            except Exception:
+                continue
+
+        # Nothing found — save debug screenshot + page source snippet
+        self.logger.error(
+            "Sage ==> Could not find result count with any known selector. "
+            f"Current URL: {self.driver.current_url}"
+        )
+        self._debug_screenshot("no_results")
+        try:
+            # Log first 2000 chars of page source for debugging
+            src = self.driver.page_source[:2000]
+            self.logger.error("Sage ==> Page source snippet:\n" + src)
+        except Exception:
+            pass
+        return 0
 
     def extract_article_links(self, total_pages: int, base_url: str, query_params: dict):
         """
@@ -827,18 +647,31 @@ class SageScraper:
         authors_path = os.path.join(self._work_dir(), self.authors_csv)
 
         try:
+            # Sage date format: AfterMonth/AfterYear, BeforeMonth/BeforeYear
+            # Input format is MM/DD/YYYY — split accordingly
+            start_parts = self.start_year.split("/")   # ["MM", "DD", "YYYY"]
+            end_parts   = self.end_year.split("/")
+            after_month  = start_parts[0] if len(start_parts) >= 3 else start_parts[0]
+            after_year   = start_parts[-1]
+            before_month = end_parts[0] if len(end_parts) >= 3 else end_parts[0]
+            before_year  = end_parts[-1]
+
             query_params = {
                 "field1":      "AllField",
                 "text1":       self.keyword,
-                "AfterMonth":  self.start_year.split("/")[0],
-                "AfterYear":   self.start_year.split("/")[-1],
-                "BeforeMonth": self.end_year.split("/")[0],
-                "BeforeYear":  self.end_year.split("/")[-1],
+                "AfterMonth":  after_month,
+                "AfterYear":   after_year,
+                "BeforeMonth": before_month,
+                "BeforeYear":  before_year,
                 "pageSize":    100,
                 "startPage":   0,
             }
             base_url   = "https://journals.sagepub.com/action/doSearch"
             search_url = f"{base_url}?{urlencode(query_params)}"
+            self.logger.info(
+                f"Sage ==> Search params: keyword={self.keyword}, "
+                f"dates={after_month}/{after_year} → {before_month}/{before_year}"
+            )
 
             # Initialise CSV files
             self._init_csv(self.url_csv,     ["Article_URL"])
@@ -846,15 +679,37 @@ class SageScraper:
 
             # ── Navigate to Sage and dismiss cookie banner ────────────────
             self._progress(2, "Opening Sage Journals homepage...")
+            self.logger.info("Sage ==> Loading homepage (this takes ~20s)...")
             self.driver.get("https://journals.sagepub.com")
-            time.sleep(15)   # Sage loads slowly — give it time before cookie click
+            # Sage loads a lot of JS — wait for body to be present before cookie click
+            try:
+                WebDriverWait(self.driver, 25).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "body"))
+                )
+            except Exception:
+                pass
+            time.sleep(8)   # extra buffer for JS rendering
             self._accept_cookies()
             time.sleep(3)
 
             # ── Phase 1: collect article URLs ─────────────────────────────
             self._progress(5, "PHASE 1: Collecting article URLs...")
+            self.logger.info(f"Sage ==> Loading search URL: {search_url}")
             self.driver.get(search_url)
-            time.sleep(8)   # let results load fully
+
+            # Wait for the results page to fully render (up to 45s)
+            # This catches CAPTCHA, slow loads, and layout shifts.
+            page_loaded = self._wait_for_results_page(timeout=45)
+            if not page_loaded:
+                # Page didn't render results — try one scroll + extra wait
+                self.logger.warning("Sage ==> Results not detected after 45s, scrolling and retrying...")
+                try:
+                    self.driver.execute_script("window.scrollTo(0, 300);")
+                    time.sleep(5)
+                    self.driver.execute_script("window.scrollTo(0, 0);")
+                    time.sleep(3)
+                except Exception:
+                    pass
 
             total_pages = self.get_total_pages()
             if total_pages == 0:
