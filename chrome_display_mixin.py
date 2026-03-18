@@ -372,11 +372,10 @@ class ChromeDisplayMixin:
         os.environ.pop('XAUTHORITY', None)           # Xvfb -ac needs no auth
 
         logger.info("%s Retrying Chrome on Xvfb %s (no XAUTHORITY)", tag, xvfb_display)
-        # uc.Chrome mutates the opts object on first use — cloning prevents
-        # "you cannot reuse the ChromeOptions object" on the fallback attempt.
-        fresh_opts = self._clone_chrome_options(opts)
+        # NOTE: _try_launch_chrome_on_display always builds fresh ChromeOptions
+        # internally — no need to clone opts here.
         try:
-            self._try_launch_chrome_on_display(fresh_opts, driver_path, xvfb_display)
+            self._try_launch_chrome_on_display(opts, driver_path, xvfb_display)
             logger.info("%s Chrome launched on Xvfb %s ✓", tag, xvfb_display)
         except Exception as e2:
             logger.error(
@@ -395,7 +394,7 @@ class ChromeDisplayMixin:
 
     def _try_launch_chrome_on_display(
         self,
-        opts: uc.ChromeOptions,
+        opts: uc.ChromeOptions,    # kept for API compat — IGNORED; always rebuilt fresh
         driver_path: Optional[str],
         display: Optional[str],
     ) -> None:
@@ -403,56 +402,89 @@ class ChromeDisplayMixin:
         Attempt uc.Chrome() on *display*.  Raises on failure so the caller
         can retry on a different display.
 
-        MUST MATCH MDPI EXACTLY — DO NOT ADD EXTRA KWARGS
-        ──────────────────────────────────────────────────
-        MDPI (the only working reference on this server) calls:
+        WHY opts IS REBUILT FRESH INSIDE THIS METHOD
+        ─────────────────────────────────────────────
+        MDPI (the only working scraper on this server) does:
 
-            uc.Chrome(options=fresh_opts)   # ← nothing else
+            def _try_launch_chrome_on_display(self, display):
+                opts = uc.ChromeOptions()        # ← FRESH every call
+                for arg in [...]: opts.add_argument(arg)
+                self._driver = uc.Chrome(options=opts)
 
-        Chrome 145 + uc 3.5.5 triggers a fatal:
+        This method replicates that pattern exactly.
+
+        Every OTHER approach tried causes:
 
             "JavaScript code failed from unknown command:
              'Runtime.evaluate' wasn't found"
 
-        whenever uc.Chrome() is given extra keyword arguments that alter how
-        it patches the browser's anti-detection JS.  Specifically:
+        on Chrome 145 + uc 3.5.5:
 
-          • user_data_dir=<path>  ← BREAKS Chrome 145: uc switches to a
-                                    CDP-based Runtime.evaluate injection path
-                                    that Chrome 145 no longer supports.
-                                    uc already creates its own unique temp dir
-                                    per instance when user_data_dir is omitted,
-                                    so worker isolation is not lost.
+          • Passing in pre-built opts  → uc detects prior internal state,
+            switches to CDP Runtime.evaluate injection, Chrome 145 rejects it.
 
-          • use_subprocess=True   ← BREAKS Chrome 145: changes the chromedriver
-                                    subprocess model in a way that triggers the
-                                    same Runtime.evaluate failure.
+          • Cloning opts              → Same problem; clone carries enough
+            internal state to trigger the CDP path.
 
-          • version_main=<N>      ← BREAKS Chrome 145: disables uc's built-in
-                                    driver-version reconciliation; the downloaded
-                                    driver ends up mismatched.
+          • user_data_dir=<path>      → Forces uc onto the CDP injection path.
 
-        Only safe extra kwarg: driver_executable_path (explicit binary path),
-        which MDPI also supports.
+          • use_subprocess=True       → Same trigger.
 
-        Concurrent-worker isolation
-        ──────────────────────────
-        uc automatically calls tempfile.mkdtemp() for user_data_dir when none
-        is provided — every uc.Chrome() instance gets its own isolated profile
-        directory without any help from us.  There is no concurrent lock conflict.
+          • version_main=<N>          → Breaks driver-version matching.
 
-        After success waits up to 15 s for the first window handle to appear
-        (same guard as MDPI).
+        Building a brand-new uc.ChromeOptions() inside this method on every
+        call (including the Xvfb retry) guarantees uc uses the safe
+        Page.addScriptToEvaluateOnNewDocument patching path that works on
+        Chrome 145.
+
+        Args match MDPI's arg list exactly — no extras, no user-agent override,
+        no duplicates.  Download prefs added when self.output_dir is set.
         """
         logger = getattr(self, 'logger', _log)
         tag    = getattr(self, '_diag_tag', '[ChromeMixin]')
 
-        # ── MATCH MDPI EXACTLY: only options + optional explicit driver path ──
-        kwargs: dict = dict(options=opts)
+        # ── ALWAYS build a brand-new ChromeOptions — never reuse or clone ────
+        fresh = uc.ChromeOptions()
+
+        # Download prefs — only when the scraper exposes an output directory
+        out_dir = getattr(self, 'output_dir', None)
+        if out_dir:
+            fresh.add_experimental_option("prefs", {
+                "download.default_directory":        out_dir,
+                "download.prompt_for_download":       False,
+                "download.directory_upgrade":         True,
+                "safebrowsing.enabled":               False,
+                "plugins.always_open_pdf_externally": True,
+            })
+
+        # Standard Chrome flags — identical to MDPI's working arg list
+        for arg in [
+            "--disable-lazy-loading",
+            "--remote-allow-origins=*",
+            "--disable-print-preview",
+            "--disable-stack-profiler",
+            "--disable-background-networking",
+            "--no-sandbox",
+            "--disable-infobars",
+            "--disable-browser-side-navigation",
+            "--disable-notifications",
+            "--disable-blink-features=AutomationControlled",
+            "--disable-popup-blocking",
+            "--disable-gpu",
+            "--disable-dev-shm-usage",
+            "--window-size=1400,900",
+            "--start-maximized",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+        ]:
+            fresh.add_argument(arg)
+
+        # Match MDPI kwargs exactly — options + optional explicit driver path only
+        # DO NOT ADD: user_data_dir, use_subprocess, version_main — all break Chrome 145
+        kwargs: dict = dict(options=fresh)
         if driver_path:
             kwargs['driver_executable_path'] = driver_path
-        # DO NOT ADD: user_data_dir, use_subprocess, version_main
-        # Any of those break Chrome 145 + uc 3.5.5
 
         logger.info("%s uc.Chrome() DISPLAY=%s", tag, os.environ.get('DISPLAY'))
         self.driver = uc.Chrome(**kwargs)
