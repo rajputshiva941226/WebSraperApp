@@ -1,3 +1,4 @@
+from chrome_display_mixin import ChromeDisplayMixin
 # Fix for Python 3.12+ distutils compatibility
 try:
     import setuptools
@@ -31,8 +32,10 @@ from datetime import datetime
 import undetected_chromedriver as uc
 import tempfile
 from utils import sanitize_filename, safe_log_file_path
-class EmeraldInsights:
+class EmeraldInsights(ChromeDisplayMixin):
     def __init__(self, keyword, start_year, end_year,driver_path):
+        self._vdisplay = None
+        self.driver = None
         # Configure logging
         logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
         self.logger = logging.getLogger(__name__)
@@ -62,12 +65,7 @@ class EmeraldInsights:
 
         self.uc_temp_dir = tempfile.mkdtemp(prefix="Emerald_")
          
-        self.driver = uc.Chrome(
-                options=self.options,
-                driver_executable_path=driver_path,
-                version_main=None,  # Auto-detect Chrome version
-                use_subprocess=False  # Critical for multiprocessing
-            )
+        # [REMOVED uc.Chrome INIT — replaced by mixin]
         self.wait = WebDriverWait(self.driver, 20)
         self.directory = sanitize_filename(keyword)
         self.keyword = keyword
@@ -465,6 +463,8 @@ class EmeraldInsights:
 
 
     def run(self):
+        opts = self._build_default_chrome_options(download_dir=getattr(self, 'output_dir', None))
+        self._launch_chrome(opts, driver_path=getattr(self, 'driver_path', None))
         try:
             # Convert MM/DD/YYYY → YYYY-MM-DD
             start_iso = datetime.strptime(self.start_year, "%m/%d/%Y").strftime("%Y-%m-%d")
@@ -498,6 +498,9 @@ class EmeraldInsights:
 
             self.extract_article_links(total_pages, base_url, query_params)
             self.extract_author_info()
+        finally:
+            self._quit_chrome()
+
 
         except Exception as e:
             self.logger.error(f"Emerald ==> Error in run(): {e}")

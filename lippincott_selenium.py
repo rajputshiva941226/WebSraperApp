@@ -1,3 +1,4 @@
+from chrome_display_mixin import ChromeDisplayMixin
 # Fix for Python 3.12+ distutils compatibility
 try:
     import setuptools
@@ -35,8 +36,10 @@ from datetime import datetime
 import tempfile
 
 
-class LippincottScraper:
+class LippincottScraper(ChromeDisplayMixin):
     def __init__(self, keyword, start_year, end_year,driver_path):
+        self._vdisplay = None
+        self.driver = None
         # Configure logging
         logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
         self.logger = logging.getLogger(__name__)
@@ -56,12 +59,7 @@ class LippincottScraper:
         self.options.add_argument("--disable-logging")
         self.options.add_argument("--disable-blink-features=AutomationControlled")
         self.uc_temp_dir = tempfile.mkdtemp(prefix="Lippincott_")
-        self.driver = uc.Chrome(
-                options=self.options,
-                driver_executable_path=driver_path,
-                version_main=None,  # Auto-detect Chrome version
-                use_subprocess=False  # Critical for multiprocessing
-            )
+        # [REMOVED uc.Chrome INIT — replaced by mixin]
         self.wait = WebDriverWait(self.driver, 60)
         self.directory = keyword.replace(" ","-")
         self.keyword = keyword
@@ -357,7 +355,7 @@ class LippincottScraper:
                 except WebDriverException as e:
                     self.logger.error(f"Lippincot ==> Failed to navigate to {article_url}.info: {e}")
                     self.driver.quit()
-                    self.driver = uc.Chrome(options=self.options)
+                    # [REMOVED uc.Chrome INIT — replaced by mixin]
                     self.wait = WebDriverWait(self.driver, 10)
                     self.driver.get("https://journals.lww.com/environepidem/fulltext/2022/06000/exposomic_determinants_of_immune_mediated.6.aspx")
                     time.sleep(5)
@@ -369,6 +367,8 @@ class LippincottScraper:
                     self.save_to_csv([[article_url, "N/A", "N/A"]], self.authors_csv, header=["Article_URL", "Author_Name", "Email"])
             
     def run(self):
+        opts = self._build_default_chrome_options(download_dir=getattr(self, 'output_dir', None))
+        self._launch_chrome(opts, driver_path=getattr(self, 'driver_path', None))
         try:
             query_params = {
                 "base_url": f"https://lww.com/pages/results.aspx?txtKeywords={self.keyword}",
@@ -385,6 +385,9 @@ class LippincottScraper:
                 reject_cookies.click()
                 #self.driver.save_screenshot("cookies.png")
                 self.logger.info("Lippincott ==> ✅ Rejected cookies.")
+        finally:
+            self._quit_chrome()
+
             except:
                 self.logger.warning("Lippincott ==> ℹ️ No cookie popup found.")
             self.driver.implicitly_wait(5)

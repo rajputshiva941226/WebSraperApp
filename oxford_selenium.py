@@ -1,3 +1,4 @@
+from chrome_display_mixin import ChromeDisplayMixin
 """
 Oxford Academic Scraper
 - Non-headless Chrome (Xvfb virtual display on EC2/Linux servers)
@@ -30,7 +31,7 @@ import undetected_chromedriver as uc
 _OXFORD_COOKIE_FILE = os.path.expanduser("~/.oxford_scraper_cookies.json")
 
 
-class OxfordScraper:
+class OxfordScraper(ChromeDisplayMixin):
     def __init__(self, keyword, start_year, end_year, driver_path=None,
                  output_dir=None, progress_callback=None):
         self.keyword     = keyword
@@ -157,7 +158,7 @@ class OxfordScraper:
         if self.driver_path:
             kwargs['driver_executable_path'] = self.driver_path
         self.logger.info("[Oxford] uc.Chrome() DISPLAY=%s", os.environ.get('DISPLAY'))
-        self.driver = uc.Chrome(**kwargs)
+        # [REMOVED uc.Chrome INIT — replaced by mixin]
         # Wait for window handle
         deadline = time.time() + 15
         while time.time() < deadline:
@@ -713,6 +714,9 @@ class OxfordScraper:
                                 authors_seen.add(row['author'])
                             if row.get('email'):
                                 emails_seen.add(row['email'])
+        finally:
+            self._quit_chrome()
+
                 except Exception:
                     pass
 

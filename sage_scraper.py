@@ -1,3 +1,4 @@
+from chrome_display_mixin import ChromeDisplayMixin
 # Fix for Python 3.12+ distutils compatibility
 try:
     import setuptools
@@ -21,7 +22,7 @@ from selenium.webdriver.support import expected_conditions as EC
 import undetected_chromedriver as uc
 
 
-class SageScraper:
+class SageScraper(ChromeDisplayMixin):
     """
     Sage Journals scraper — Celery-compatible.
 
@@ -52,6 +53,8 @@ class SageScraper:
         output_dir:        Optional[str]      = None,
         progress_callback: Optional[Callable] = None,
     ):
+        self._vdisplay = None
+        self.driver = None
         self.keyword           = keyword
         self.start_year        = start_year
         self.end_year          = end_year
@@ -220,12 +223,7 @@ class SageScraper:
         self.uc_temp_dir = tempfile.mkdtemp(prefix="Sage_")
 
         try:
-            self.driver = uc.Chrome(
-                options=options,
-                driver_executable_path=self.driver_path,
-                version_main=None,
-                use_subprocess=False,
-            )
+            # [REMOVED uc.Chrome INIT — replaced by mixin]
             self.driver.set_page_load_timeout(120)
             self.driver.set_script_timeout(60)
             self.wait = WebDriverWait(self.driver, 30)
@@ -640,6 +638,8 @@ class SageScraper:
     # ─────────────────────────────────────────────────────────────────────
 
     def run(self):
+        opts = self._build_default_chrome_options(download_dir=getattr(self, 'output_dir', None))
+        self._launch_chrome(opts, driver_path=getattr(self, 'driver_path', None))
         """
         Execute full scrape: Phase 1 (URL collection) → Phase 2 (email extraction).
         Returns (output_file_path, summary_string).
@@ -686,6 +686,9 @@ class SageScraper:
                 WebDriverWait(self.driver, 25).until(
                     EC.presence_of_element_located((By.TAG_NAME, "body"))
                 )
+        finally:
+            self._quit_chrome()
+
             except Exception:
                 pass
             time.sleep(8)   # extra buffer for JS rendering

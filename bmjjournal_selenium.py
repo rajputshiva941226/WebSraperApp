@@ -1,3 +1,4 @@
+from chrome_display_mixin import ChromeDisplayMixin
 # import os, argparse, csv, logging, time, math, re, sys
 # import selenium
 # from selenium import webdriver
@@ -15,8 +16,10 @@
 # import tempfile
 
 
-# class BMJJournalScraper:
+# class BMJJournalScraper(ChromeDisplayMixin):
 #     def __init__(self, keyword, start_year, end_year, driver_path):
+        self._vdisplay = None
+        self.driver = None
 #         # Configure logging
 #         logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 #         self.logger = logging.getLogger(__name__)
@@ -36,11 +39,7 @@
 #         self.options.add_argument("--disable-logging")
 
 #         self.uc_temp_dir = tempfile.mkdtemp(prefix="BMJ_")
-#         self.driver = uc.Chrome(
-#             options=self.options,
-#             driver_executable_path=driver_path,  # Shared driver path
-#             use_subprocess=False  # Critical for multiprocessing
-#         )
+#         # [REMOVED uc.Chrome INIT — replaced by mixin]
 #         self.wait = WebDriverWait(self.driver, 20)
 #         self.directory = keyword.replace(" ","-")
 #         self.keyword = keyword
@@ -256,7 +255,7 @@
 #                     except WebDriverException as e:
 #                         self.logger.error(f"Failed to navigate to {article_url}.info: {e}")
 #                         self.driver.quit()
-#                         self.driver = uc.Chrome()
+#                         # [REMOVED uc.Chrome INIT — replaced by mixin]
 #                         self.wait = WebDriverWait(self.driver, 10)
 #                         self.driver.get("http://jitc.bmj.com/content/12/10/e009721.info")
 #                         cookie_section = self.wait.until(EC.presence_of_element_located((By.ID, "onetrust-reject-all-handler")))
@@ -269,6 +268,8 @@
 #                     self.logger.error("BMJJournalScraper ==> INVALID URL with domain as veterinaryrecord.bmj.com")
 #                     continue
 #     def run(self):
+        opts = self._build_default_chrome_options(download_dir=getattr(self, 'output_dir', None))
+        self._launch_chrome(opts, driver_path=getattr(self, 'driver_path', None))
 #         try:
 #             query_params = {
 #                 "base_url": f"https://journals.bmj.com/search/{self.keyword}%20limit_from%3A{self.start_year}%20limit_to%3A{self.end_year}%20exclude_meeting_abstracts%3A1%20numresults%3A100%20sort%3Arelevance-rank%20format_result%3Astandard%20button%3ASubmit",
@@ -314,6 +315,9 @@ try:
         spec = importlib.util.find_spec('setuptools._distutils')
         if spec:
             sys.modules['distutils'] = importlib.import_module('setuptools._distutils')
+        finally:
+            self._quit_chrome()
+
 except ImportError:
     pass
 
@@ -334,8 +338,10 @@ from datetime import datetime
 import tempfile
 
 
-class BMJJournalScraper:
+class BMJJournalScraper(ChromeDisplayMixin):
     def __init__(self, keyword, start_year, end_year, driver_path):
+        self._vdisplay = None
+        self.driver = None
         # Configure logging
         logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
         self.logger = logging.getLogger(__name__)
@@ -372,12 +378,7 @@ class BMJJournalScraper:
     def _initialize_driver(self):
         """Initialize the Chrome driver"""
         try:
-            self.driver = uc.Chrome(
-                options=self.options,
-                driver_executable_path=self.driver_path,
-                version_main=None,  # Auto-detect Chrome version
-                use_subprocess=False
-            )
+            # [REMOVED uc.Chrome INIT — replaced by mixin]
             self.wait = WebDriverWait(self.driver, 20)
             self.driver.maximize_window()
             self.logger.info("Driver initialized successfully")
@@ -656,6 +657,9 @@ class BMJJournalScraper:
                 )
                 cookie_section.click()
                 time.sleep(2)
+        finally:
+            self._quit_chrome()
+
             except TimeoutException:
                 self.logger.info("Cookie banner not found, continuing...")
 
