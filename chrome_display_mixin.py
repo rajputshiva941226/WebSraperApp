@@ -390,53 +390,40 @@ class ChromeDisplayMixin:
             raise
 
     # =========================================================================
-    # SECTION 3a — Chrome version detection
+    # SECTION 3a — unique temp dir for each Chrome instance
     # =========================================================================
 
-    @staticmethod
-    def _detect_chrome_major_version() -> Optional[int]:
+    def _ensure_uc_temp_dir(self) -> str:
         """
-        Return the installed Chrome's major version number, or None.
+        Return a unique temporary directory for this Chrome instance's
+        user-data-dir, creating it if necessary.
 
         WHY THIS EXISTS
         ───────────────
-        undetected_chromedriver (uc) tries to auto-detect the Chrome version
-        and download a matching chromedriver.  Starting with Chrome 115+, and
-        especially Chrome 145, this auto-detection can go wrong and causes:
+        undetected_chromedriver uses a fixed default user-data-dir path when
+        none is specified.  When two Celery workers launch Chrome at the same
+        time (e.g. Emerald + Lippincott + BMJ all starting simultaneously),
+        they all try to lock the same Chrome profile directory.  The second
+        and third instance fail with:
 
-            'Runtime.evaluate' wasn't found
+            "JavaScript code failed from unknown command:
+             'Runtime.evaluate' wasn't found"
 
-        Passing `version_main` explicitly bypasses the broken auto-detection
-        and forces uc to download the correct chromedriver for the installed
-        Chrome binary.
+        because the locked profile prevents the CDP patcher from injecting
+        its hook.  Giving each worker its own temp dir completely avoids the
+        race.
+
+        Each scraper already creates self.uc_temp_dir in __init__ — this
+        method reuses that value and falls back to mkdtemp() if it wasn't set.
         """
-        import shutil
-        candidates = [
-            '/usr/bin/google-chrome',
-            '/usr/bin/google-chrome-stable',
-            '/usr/bin/chromium-browser',
-            '/usr/bin/chromium',
-            '/snap/bin/chromium',
-        ]
-        chrome_bin = next(
-            (p for p in candidates if os.path.isfile(p)),
-            shutil.which('google-chrome') or shutil.which('chromium-browser'),
-        )
-        if not chrome_bin:
-            return None
-        try:
-            r = subprocess.run(
-                [chrome_bin, '--version'],
-                capture_output=True, text=True, timeout=10,
-            )
-            # Output: "Google Chrome 145.0.7632.159"
-            parts = r.stdout.strip().split()
-            for part in parts:
-                if part[0].isdigit():
-                    return int(part.split('.')[0])
-        except Exception:
-            pass
-        return None
+        import tempfile
+        existing = getattr(self, 'uc_temp_dir', None)
+        if existing and os.path.isdir(existing):
+            return existing
+
+        new_dir = tempfile.mkdtemp(prefix='uc_chrome_')
+        self.uc_temp_dir = new_dir
+        return new_dir
 
     def _try_launch_chrome_on_display(
         self,
@@ -448,24 +435,21 @@ class ChromeDisplayMixin:
         Attempt uc.Chrome() on *display*.  Raises on failure so the caller
         can retry on a different display.
 
-        Chrome 115+ / 145 fix
-        ─────────────────────
-        Chrome 145 introduced a regression where undetected_chromedriver's
-        internal CDP patcher fails to inject its hook, causing:
+        Matches MDPI exactly
+        ────────────────────
+        MDPI (the working reference) calls:
+            uc.Chrome(options=fresh_opts)          # no extra kwargs
+        and it works on Chrome 145.  This method replicates that pattern.
 
-            "JavaScript code failed from unknown command:
-             'Runtime.evaluate' wasn't found"
+        DO NOT add use_subprocess=True or version_main here — MDPI does not
+        use them and adding them breaks Chrome 145.
 
-        Two mitigations applied here (both are needed together):
-
-          1. use_subprocess=True  — launches chromedriver as a real child
-             process instead of in-process, bypassing the broken CDP hook
-             injection path.
-
-          2. version_main=<N>     — skips uc's broken auto-detection logic
-             and tells it exactly which chromedriver to fetch.  Without this,
-             uc sometimes downloads a driver for the wrong Chrome major version
-             and the subprocess still fails.
+        Concurrent-worker isolation
+        ──────────────────────────
+        The only extra kwarg vs MDPI is user_data_dir — a unique temp dir
+        per scraper instance.  Without this, multiple Celery workers sharing
+        the default uc user-data-dir will lock each other's Chrome profile
+        and produce the 'Runtime.evaluate wasn't found' CDP error.
 
         After success waits up to 15 s for the first window handle to appear
         (same guard as MDPI).
@@ -473,23 +457,21 @@ class ChromeDisplayMixin:
         logger = getattr(self, 'logger', _log)
         tag    = getattr(self, '_diag_tag', '[ChromeMixin]')
 
+        # Unique profile dir per worker — prevents concurrent-launch conflicts
+        udd = self._ensure_uc_temp_dir()
+
+        # Match MDPI kwargs exactly: options + optional driver path + user_data_dir
         kwargs: dict = dict(
             options=opts,
-            use_subprocess=False,   # ← Chrome 145 CDP fix (key mitigation)
+            user_data_dir=udd,          # isolation fix for concurrent workers
         )
         if driver_path:
             kwargs['driver_executable_path'] = driver_path
 
-        # Detect and pass version_main to avoid broken auto-detection
-        chrome_ver = self._detect_chrome_major_version()
-        if chrome_ver:
-            kwargs['version_main'] = chrome_ver
-            logger.info("%s Chrome major version detected: %d", tag, chrome_ver)
-        else:
-            logger.warning("%s Could not detect Chrome version — uc will auto-detect", tag)
-
-        logger.info("%s uc.Chrome(use_subprocess=True, version_main=%s) DISPLAY=%s",
-                    tag, chrome_ver, os.environ.get('DISPLAY'))
+        logger.info(
+            "%s uc.Chrome(user_data_dir=%s) DISPLAY=%s",
+            tag, udd, os.environ.get('DISPLAY'),
+        )
         self.driver = uc.Chrome(**kwargs)
         logger.info("%s uc.Chrome() succeeded", tag)
 
@@ -635,6 +617,18 @@ class ChromeDisplayMixin:
                 logger.debug("%s Error stopping Xvfb: %s", tag, e)
             finally:
                 self._vdisplay = None
+
+        # ── Clean up the per-instance Chrome temp dir ─────────────────────────
+        udd = getattr(self, 'uc_temp_dir', None)
+        if udd and os.path.isdir(udd):
+            import shutil as _shutil
+            try:
+                _shutil.rmtree(udd, ignore_errors=True)
+                logger.info("%s Cleaned up Chrome temp dir: %s", tag, udd)
+            except Exception as e:
+                logger.debug("%s Could not clean temp dir %s: %s", tag, udd, e)
+            finally:
+                self.uc_temp_dir = None
 
     # =========================================================================
     # SECTION 6 — Debug log dump on Chrome failure
