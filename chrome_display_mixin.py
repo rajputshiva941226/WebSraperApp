@@ -475,7 +475,7 @@ class ChromeDisplayMixin:
 
         kwargs: dict = dict(
             options=opts,
-            use_subprocess=True,   # ← Chrome 145 CDP fix (key mitigation)
+            use_subprocess=False,   # ← Chrome 145 CDP fix (key mitigation)
         )
         if driver_path:
             kwargs['driver_executable_path'] = driver_path
