@@ -223,7 +223,7 @@ class SageScraper(ChromeDisplayMixin):
         self.uc_temp_dir = tempfile.mkdtemp(prefix="Sage_")
 
         try:
-            self._launch_chrome(self._build_default_chrome_options(), driver_path=driver_path)
+            self._launch_chrome(self._build_default_chrome_options(), driver_path=self.driver_path)
             self.driver.set_page_load_timeout(120)
             self.driver.set_script_timeout(60)
             self.wait = WebDriverWait(self.driver, 30)

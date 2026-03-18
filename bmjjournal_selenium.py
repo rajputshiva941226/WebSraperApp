@@ -29,9 +29,12 @@ import tempfile
 
 
 class BMJJournalScraper(ChromeDisplayMixin):
-    def __init__(self, keyword, start_year, end_year, driver_path):
+    def __init__(self, keyword, start_year, end_year, driver_path,
+             output_dir=None, progress_callback=None):
         self._vdisplay = None
         self.driver = None
+        self.output_dir = output_dir
+        self.progress_callback = progress_callback
         # Configure logging
         logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
         self.logger = logging.getLogger(__name__)
@@ -68,7 +71,7 @@ class BMJJournalScraper(ChromeDisplayMixin):
     def _initialize_driver(self):
         """Initialize the Chrome driver"""
         try:
-            self._launch_chrome(self._build_default_chrome_options(), driver_path=driver_path)
+            self._launch_chrome(self._build_default_chrome_options(), driver_path=self.driver_path)
             self.wait = WebDriverWait(self.driver, 20)
             self.driver.maximize_window()
             self.logger.info("Driver initialized successfully")

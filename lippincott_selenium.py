@@ -37,9 +37,12 @@ import tempfile
 
 
 class LippincottScraper(ChromeDisplayMixin):
-    def __init__(self, keyword, start_year, end_year,driver_path):
+    def __init__(self, keyword, start_year, end_year, driver_path,
+             output_dir=None, progress_callback=None):
         self._vdisplay = None
         self.driver = None
+        self.output_dir = output_dir
+        self.progress_callback = progress_callback
         # Configure logging
         logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
         self.logger = logging.getLogger(__name__)
@@ -59,7 +62,7 @@ class LippincottScraper(ChromeDisplayMixin):
         self.options.add_argument("--disable-logging")
         self.options.add_argument("--disable-blink-features=AutomationControlled")
         self.uc_temp_dir = tempfile.mkdtemp(prefix="Lippincott_")
-        self._launch_chrome(self._build_default_chrome_options(), driver_path=driver_path)
+        self._launch_chrome(self._build_default_chrome_options(), driver_path=self.driver_path)
         self.wait = WebDriverWait(self.driver, 60)
         self.directory = keyword.replace(" ","-")
         self.keyword = keyword
@@ -355,7 +358,7 @@ class LippincottScraper(ChromeDisplayMixin):
                 except WebDriverException as e:
                     self.logger.error(f"Lippincot ==> Failed to navigate to {article_url}.info: {e}")
                     self.driver.quit()
-                    self._launch_chrome(self._build_default_chrome_options(), driver_path=driver_path)
+                    self._launch_chrome(self._build_default_chrome_options(), driver_path=self.driver_path)
                     self.wait = WebDriverWait(self.driver, 10)
                     self.driver.get("https://journals.lww.com/environepidem/fulltext/2022/06000/exposomic_determinants_of_immune_mediated.6.aspx")
                     time.sleep(5)

@@ -33,7 +33,8 @@ import undetected_chromedriver as uc
 import tempfile
 from utils import sanitize_filename, safe_log_file_path
 class EmeraldInsights(ChromeDisplayMixin):
-    def __init__(self, keyword, start_year, end_year,driver_path):
+    def __init__(self, keyword, start_year, end_year, driver_path,
+             output_dir=None, progress_callback=None):
         self._vdisplay = None
         self.driver = None
         # Configure logging
@@ -65,9 +66,11 @@ class EmeraldInsights(ChromeDisplayMixin):
 
         self.uc_temp_dir = tempfile.mkdtemp(prefix="Emerald_")
          
-        self._launch_chrome(self._build_default_chrome_options(), driver_path=driver_path)
+        self._launch_chrome(self._build_default_chrome_options(), driver_path=self.driver_path)
         self.wait = WebDriverWait(self.driver, 20)
         self.directory = sanitize_filename(keyword)
+        self.output_dir = output_dir
+        self.progress_callback = progress_callback
         self.keyword = keyword
         self.start_year = start_year
         self.end_year = end_year
