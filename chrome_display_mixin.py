@@ -372,8 +372,11 @@ class ChromeDisplayMixin:
         os.environ.pop('XAUTHORITY', None)           # Xvfb -ac needs no auth
 
         logger.info("%s Retrying Chrome on Xvfb %s (no XAUTHORITY)", tag, xvfb_display)
+        # uc.Chrome mutates the opts object on first use — cloning prevents
+        # "you cannot reuse the ChromeOptions object" on the fallback attempt.
+        fresh_opts = self._clone_chrome_options(opts)
         try:
-            self._try_launch_chrome_on_display(opts, driver_path, xvfb_display)
+            self._try_launch_chrome_on_display(fresh_opts, driver_path, xvfb_display)
             logger.info("%s Chrome launched on Xvfb %s ✓", tag, xvfb_display)
         except Exception as e2:
             logger.error(
@@ -422,6 +425,57 @@ class ChromeDisplayMixin:
                 pass
             time.sleep(0.5)
         logger.warning("%s Chrome window handle not ready within 15 s — continuing anyway", tag)
+
+    # =========================================================================
+    # SECTION 3b — ChromeOptions clone helper
+    # =========================================================================
+
+    def _clone_chrome_options(self, opts: uc.ChromeOptions) -> uc.ChromeOptions:
+        """
+        Return a **brand-new** uc.ChromeOptions that carries the same
+        arguments and experimental_options as *opts*.
+
+        WHY THIS EXISTS
+        ───────────────
+        undetected_chromedriver mutates a ChromeOptions object the first
+        time uc.Chrome() consumes it (it writes internal keys into
+        _experimental_options and/or _caps).  Passing the same object to a
+        second uc.Chrome() call — e.g. when the :0 attempt fails and we
+        fall back to Xvfb — raises:
+
+            "you cannot reuse the ChromeOptions object"
+
+        Calling this before the Xvfb retry gives uc.Chrome() a pristine
+        object and avoids the error entirely.
+
+        Parameters
+        ----------
+        opts : uc.ChromeOptions
+            The options object that was (or may have been) passed to a
+            previous uc.Chrome() call.
+
+        Returns
+        -------
+        uc.ChromeOptions
+            A fresh object with the same --flags and experimental prefs.
+        """
+        new_opts = uc.ChromeOptions()
+
+        # Copy --flag arguments
+        for arg in getattr(opts, 'arguments', []):
+            try:
+                new_opts.add_argument(arg)
+            except Exception:
+                pass
+
+        # Copy experimental options (e.g. download prefs)
+        for key, val in (getattr(opts, '_experimental_options', {}) or {}).items():
+            try:
+                new_opts.add_experimental_option(key, val)
+            except Exception:
+                pass
+
+        return new_opts
 
     # =========================================================================
     # SECTION 4 — Xvfb helpers
