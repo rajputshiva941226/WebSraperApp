@@ -390,40 +390,8 @@ class ChromeDisplayMixin:
             raise
 
     # =========================================================================
-    # SECTION 3a — unique temp dir for each Chrome instance
+    # SECTION 3a — Chrome launch helper
     # =========================================================================
-
-    def _ensure_uc_temp_dir(self) -> str:
-        """
-        Return a unique temporary directory for this Chrome instance's
-        user-data-dir, creating it if necessary.
-
-        WHY THIS EXISTS
-        ───────────────
-        undetected_chromedriver uses a fixed default user-data-dir path when
-        none is specified.  When two Celery workers launch Chrome at the same
-        time (e.g. Emerald + Lippincott + BMJ all starting simultaneously),
-        they all try to lock the same Chrome profile directory.  The second
-        and third instance fail with:
-
-            "JavaScript code failed from unknown command:
-             'Runtime.evaluate' wasn't found"
-
-        because the locked profile prevents the CDP patcher from injecting
-        its hook.  Giving each worker its own temp dir completely avoids the
-        race.
-
-        Each scraper already creates self.uc_temp_dir in __init__ — this
-        method reuses that value and falls back to mkdtemp() if it wasn't set.
-        """
-        import tempfile
-        existing = getattr(self, 'uc_temp_dir', None)
-        if existing and os.path.isdir(existing):
-            return existing
-
-        new_dir = tempfile.mkdtemp(prefix='uc_chrome_')
-        self.uc_temp_dir = new_dir
-        return new_dir
 
     def _try_launch_chrome_on_display(
         self,
@@ -435,21 +403,43 @@ class ChromeDisplayMixin:
         Attempt uc.Chrome() on *display*.  Raises on failure so the caller
         can retry on a different display.
 
-        Matches MDPI exactly
-        ────────────────────
-        MDPI (the working reference) calls:
-            uc.Chrome(options=fresh_opts)          # no extra kwargs
-        and it works on Chrome 145.  This method replicates that pattern.
+        MUST MATCH MDPI EXACTLY — DO NOT ADD EXTRA KWARGS
+        ──────────────────────────────────────────────────
+        MDPI (the only working reference on this server) calls:
 
-        DO NOT add use_subprocess=True or version_main here — MDPI does not
-        use them and adding them breaks Chrome 145.
+            uc.Chrome(options=fresh_opts)   # ← nothing else
+
+        Chrome 145 + uc 3.5.5 triggers a fatal:
+
+            "JavaScript code failed from unknown command:
+             'Runtime.evaluate' wasn't found"
+
+        whenever uc.Chrome() is given extra keyword arguments that alter how
+        it patches the browser's anti-detection JS.  Specifically:
+
+          • user_data_dir=<path>  ← BREAKS Chrome 145: uc switches to a
+                                    CDP-based Runtime.evaluate injection path
+                                    that Chrome 145 no longer supports.
+                                    uc already creates its own unique temp dir
+                                    per instance when user_data_dir is omitted,
+                                    so worker isolation is not lost.
+
+          • use_subprocess=True   ← BREAKS Chrome 145: changes the chromedriver
+                                    subprocess model in a way that triggers the
+                                    same Runtime.evaluate failure.
+
+          • version_main=<N>      ← BREAKS Chrome 145: disables uc's built-in
+                                    driver-version reconciliation; the downloaded
+                                    driver ends up mismatched.
+
+        Only safe extra kwarg: driver_executable_path (explicit binary path),
+        which MDPI also supports.
 
         Concurrent-worker isolation
         ──────────────────────────
-        The only extra kwarg vs MDPI is user_data_dir — a unique temp dir
-        per scraper instance.  Without this, multiple Celery workers sharing
-        the default uc user-data-dir will lock each other's Chrome profile
-        and produce the 'Runtime.evaluate wasn't found' CDP error.
+        uc automatically calls tempfile.mkdtemp() for user_data_dir when none
+        is provided — every uc.Chrome() instance gets its own isolated profile
+        directory without any help from us.  There is no concurrent lock conflict.
 
         After success waits up to 15 s for the first window handle to appear
         (same guard as MDPI).
@@ -457,21 +447,14 @@ class ChromeDisplayMixin:
         logger = getattr(self, 'logger', _log)
         tag    = getattr(self, '_diag_tag', '[ChromeMixin]')
 
-        # Unique profile dir per worker — prevents concurrent-launch conflicts
-        udd = self._ensure_uc_temp_dir()
-
-        # Match MDPI kwargs exactly: options + optional driver path + user_data_dir
-        kwargs: dict = dict(
-            options=opts,
-            user_data_dir=udd,          # isolation fix for concurrent workers
-        )
+        # ── MATCH MDPI EXACTLY: only options + optional explicit driver path ──
+        kwargs: dict = dict(options=opts)
         if driver_path:
             kwargs['driver_executable_path'] = driver_path
+        # DO NOT ADD: user_data_dir, use_subprocess, version_main
+        # Any of those break Chrome 145 + uc 3.5.5
 
-        logger.info(
-            "%s uc.Chrome(user_data_dir=%s) DISPLAY=%s",
-            tag, udd, os.environ.get('DISPLAY'),
-        )
+        logger.info("%s uc.Chrome() DISPLAY=%s", tag, os.environ.get('DISPLAY'))
         self.driver = uc.Chrome(**kwargs)
         logger.info("%s uc.Chrome() succeeded", tag)
 
@@ -617,18 +600,6 @@ class ChromeDisplayMixin:
                 logger.debug("%s Error stopping Xvfb: %s", tag, e)
             finally:
                 self._vdisplay = None
-
-        # ── Clean up the per-instance Chrome temp dir ─────────────────────────
-        udd = getattr(self, 'uc_temp_dir', None)
-        if udd and os.path.isdir(udd):
-            import shutil as _shutil
-            try:
-                _shutil.rmtree(udd, ignore_errors=True)
-                logger.info("%s Cleaned up Chrome temp dir: %s", tag, udd)
-            except Exception as e:
-                logger.debug("%s Could not clean temp dir %s: %s", tag, udd, e)
-            finally:
-                self.uc_temp_dir = None
 
     # =========================================================================
     # SECTION 6 — Debug log dump on Chrome failure
