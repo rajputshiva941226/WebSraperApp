@@ -62,7 +62,7 @@ class LippincottScraper(ChromeDisplayMixin):
         self.options.add_argument("--disable-logging")
         self.options.add_argument("--disable-blink-features=AutomationControlled")
         self.uc_temp_dir = tempfile.mkdtemp(prefix="Lippincott_")
-        self._launch_chrome(self._build_default_chrome_options(), driver_path=self.driver_path)
+        self._launch_chrome(self._build_default_chrome_options(), driver_path=driver_path)
         self.wait = WebDriverWait(self.driver, 60)
         self.directory = keyword.replace(" ","-")
         self.keyword = keyword
