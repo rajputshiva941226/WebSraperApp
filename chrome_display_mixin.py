@@ -389,6 +389,55 @@ class ChromeDisplayMixin:
             self._save_chrome_log()
             raise
 
+    # =========================================================================
+    # SECTION 3a — Chrome version detection
+    # =========================================================================
+
+    @staticmethod
+    def _detect_chrome_major_version() -> Optional[int]:
+        """
+        Return the installed Chrome's major version number, or None.
+
+        WHY THIS EXISTS
+        ───────────────
+        undetected_chromedriver (uc) tries to auto-detect the Chrome version
+        and download a matching chromedriver.  Starting with Chrome 115+, and
+        especially Chrome 145, this auto-detection can go wrong and causes:
+
+            'Runtime.evaluate' wasn't found
+
+        Passing `version_main` explicitly bypasses the broken auto-detection
+        and forces uc to download the correct chromedriver for the installed
+        Chrome binary.
+        """
+        import shutil
+        candidates = [
+            '/usr/bin/google-chrome',
+            '/usr/bin/google-chrome-stable',
+            '/usr/bin/chromium-browser',
+            '/usr/bin/chromium',
+            '/snap/bin/chromium',
+        ]
+        chrome_bin = next(
+            (p for p in candidates if os.path.isfile(p)),
+            shutil.which('google-chrome') or shutil.which('chromium-browser'),
+        )
+        if not chrome_bin:
+            return None
+        try:
+            r = subprocess.run(
+                [chrome_bin, '--version'],
+                capture_output=True, text=True, timeout=10,
+            )
+            # Output: "Google Chrome 145.0.7632.159"
+            parts = r.stdout.strip().split()
+            for part in parts:
+                if part[0].isdigit():
+                    return int(part.split('.')[0])
+        except Exception:
+            pass
+        return None
+
     def _try_launch_chrome_on_display(
         self,
         opts: uc.ChromeOptions,
@@ -399,17 +448,48 @@ class ChromeDisplayMixin:
         Attempt uc.Chrome() on *display*.  Raises on failure so the caller
         can retry on a different display.
 
+        Chrome 115+ / 145 fix
+        ─────────────────────
+        Chrome 145 introduced a regression where undetected_chromedriver's
+        internal CDP patcher fails to inject its hook, causing:
+
+            "JavaScript code failed from unknown command:
+             'Runtime.evaluate' wasn't found"
+
+        Two mitigations applied here (both are needed together):
+
+          1. use_subprocess=True  — launches chromedriver as a real child
+             process instead of in-process, bypassing the broken CDP hook
+             injection path.
+
+          2. version_main=<N>     — skips uc's broken auto-detection logic
+             and tells it exactly which chromedriver to fetch.  Without this,
+             uc sometimes downloads a driver for the wrong Chrome major version
+             and the subprocess still fails.
+
         After success waits up to 15 s for the first window handle to appear
         (same guard as MDPI).
         """
         logger = getattr(self, 'logger', _log)
         tag    = getattr(self, '_diag_tag', '[ChromeMixin]')
 
-        kwargs: dict = dict(options=opts)
+        kwargs: dict = dict(
+            options=opts,
+            use_subprocess=True,   # ← Chrome 145 CDP fix (key mitigation)
+        )
         if driver_path:
             kwargs['driver_executable_path'] = driver_path
 
-        logger.info("%s uc.Chrome() DISPLAY=%s", tag, os.environ.get('DISPLAY'))
+        # Detect and pass version_main to avoid broken auto-detection
+        chrome_ver = self._detect_chrome_major_version()
+        if chrome_ver:
+            kwargs['version_main'] = chrome_ver
+            logger.info("%s Chrome major version detected: %d", tag, chrome_ver)
+        else:
+            logger.warning("%s Could not detect Chrome version — uc will auto-detect", tag)
+
+        logger.info("%s uc.Chrome(use_subprocess=True, version_main=%s) DISPLAY=%s",
+                    tag, chrome_ver, os.environ.get('DISPLAY'))
         self.driver = uc.Chrome(**kwargs)
         logger.info("%s uc.Chrome() succeeded", tag)
 
