@@ -65,7 +65,7 @@ class EmeraldInsights(ChromeDisplayMixin):
 
         self.uc_temp_dir = tempfile.mkdtemp(prefix="Emerald_")
          
-        # [REMOVED uc.Chrome INIT — replaced by mixin]
+        self._launch_chrome(self._build_default_chrome_options(), driver_path=driver_path)
         self.wait = WebDriverWait(self.driver, 20)
         self.directory = sanitize_filename(keyword)
         self.keyword = keyword
@@ -463,8 +463,6 @@ class EmeraldInsights(ChromeDisplayMixin):
 
 
     def run(self):
-        opts = self._build_default_chrome_options(download_dir=getattr(self, 'output_dir', None))
-        self._launch_chrome(opts, driver_path=getattr(self, 'driver_path', None))
         try:
             # Convert MM/DD/YYYY → YYYY-MM-DD
             start_iso = datetime.strptime(self.start_year, "%m/%d/%Y").strftime("%Y-%m-%d")
@@ -498,9 +496,6 @@ class EmeraldInsights(ChromeDisplayMixin):
 
             self.extract_article_links(total_pages, base_url, query_params)
             self.extract_author_info()
-        finally:
-            self._quit_chrome()
-
 
         except Exception as e:
             self.logger.error(f"Emerald ==> Error in run(): {e}")

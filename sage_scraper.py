@@ -223,7 +223,7 @@ class SageScraper(ChromeDisplayMixin):
         self.uc_temp_dir = tempfile.mkdtemp(prefix="Sage_")
 
         try:
-            # [REMOVED uc.Chrome INIT — replaced by mixin]
+            self._launch_chrome(self._build_default_chrome_options(), driver_path=driver_path)
             self.driver.set_page_load_timeout(120)
             self.driver.set_script_timeout(60)
             self.wait = WebDriverWait(self.driver, 30)
@@ -638,8 +638,6 @@ class SageScraper(ChromeDisplayMixin):
     # ─────────────────────────────────────────────────────────────────────
 
     def run(self):
-        opts = self._build_default_chrome_options(download_dir=getattr(self, 'output_dir', None))
-        self._launch_chrome(opts, driver_path=getattr(self, 'driver_path', None))
         """
         Execute full scrape: Phase 1 (URL collection) → Phase 2 (email extraction).
         Returns (output_file_path, summary_string).
@@ -686,9 +684,6 @@ class SageScraper(ChromeDisplayMixin):
                 WebDriverWait(self.driver, 25).until(
                     EC.presence_of_element_located((By.TAG_NAME, "body"))
                 )
-        finally:
-            self._quit_chrome()
-
             except Exception:
                 pass
             time.sleep(8)   # extra buffer for JS rendering
