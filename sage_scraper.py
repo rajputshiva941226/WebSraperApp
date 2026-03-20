@@ -308,45 +308,156 @@ class SageScraper(ChromeDisplayMixin):
     # Cookie / page helpers
     # ─────────────────────────────────────────────────────────────────────
 
-    def _wait_for_cloudflare(self, timeout: int = 30) -> bool:
+    def _bypass_cloudflare(self, timeout: int = 60) -> bool:
         """
-        Wait for Cloudflare Turnstile / bot-check to auto-pass.
+        Bypass Cloudflare Turnstile / bot-check using JavaScript clicks.
 
-        Cloudflare shows "Verifying you are human" or "Performing security
-        verification" while it checks the browser fingerprint.  With real
-        undetected Chrome the check passes automatically within ~5-10s.
+        Strategy (in order):
+          1. Wait for page to fully load (document.readyState == 'complete')
+          2. Check if we're even on a Cloudflare challenge page
+          3. Find the Turnstile iframe and switch into it
+          4. Use JS dispatchEvent (mousedown → mouseup → click) to click
+             the checkbox — JS-synthesised events bypass uc's input guards
+          5. Switch back to main frame and poll until challenge clears
+          6. If no iframe found, try clicking any visible checkbox directly
 
-        Returns True once the page is past the challenge, False on timeout.
+        Returns True when challenge is cleared, False on timeout.
         """
-        import time as _time
+        import random
+
         CHALLENGE_PHRASES = [
             "just a moment",
             "verifying you are human",
             "performing security verification",
             "checking your browser",
-            "please wait",
             "cf-browser-verification",
+            "ray id",
         ]
-        deadline = _time.monotonic() + timeout
-        while _time.monotonic() < deadline:
+
+        def _is_on_challenge() -> bool:
             try:
                 title = self.driver.title.lower()
-                src   = self.driver.page_source.lower()[:500]
-                on_challenge = any(p in title or p in src for p in CHALLENGE_PHRASES)
-                if not on_challenge:
-                    self.logger.info("Sage ==> Cloudflare check passed ✓")
-                    return True
-                remaining = int(deadline - _time.monotonic())
-                self.logger.info(
-                    f"Sage ==> Waiting for Cloudflare verification… ({remaining}s left)"
-                )
+                src   = self.driver.page_source.lower()[:1000]
+                return any(p in title or p in src for p in CHALLENGE_PHRASES)
             except Exception:
-                pass
-            _time.sleep(2)
+                return False
 
-        self.logger.warning(
-            "Sage ==> Cloudflare check did not pass within %ds — continuing anyway", timeout
-        )
+        def _wait_for_load(max_wait: int = 15):
+            """Wait for document.readyState == complete."""
+            deadline = time.time() + max_wait
+            while time.time() < deadline:
+                try:
+                    state = self.driver.execute_script("return document.readyState")
+                    if state == "complete":
+                        return
+                except Exception:
+                    pass
+                time.sleep(0.5)
+
+        def _js_click(element):
+            """
+            Fire mousedown → mouseup → click via JS dispatchEvent.
+            More convincing than .click() — bypasses most anti-bot guards.
+            """
+            self.driver.execute_script("""
+                var el = arguments[0];
+                var rect = el.getBoundingClientRect();
+                var cx = rect.left + rect.width  / 2 + (Math.random() - 0.5) * 4;
+                var cy = rect.top  + rect.height / 2 + (Math.random() - 0.5) * 4;
+                ['mousedown','mouseup','click'].forEach(function(etype) {
+                    el.dispatchEvent(new MouseEvent(etype, {
+                        bubbles: true, cancelable: true, view: window,
+                        clientX: cx, clientY: cy
+                    }));
+                });
+            """, element)
+
+        # ── Step 1: wait for page to load ────────────────────────────────────
+        _wait_for_load()
+        time.sleep(2)   # extra settle time
+
+        if not _is_on_challenge():
+            self.logger.info("Sage ==> No Cloudflare challenge — page loaded ✓")
+            return True
+
+        self.logger.info("Sage ==> Cloudflare challenge detected — attempting JS bypass...")
+        deadline = time.time() + timeout
+
+        while time.time() < deadline:
+            _wait_for_load(max_wait=10)
+
+            if not _is_on_challenge():
+                self.logger.info("Sage ==> Cloudflare challenge cleared ✓")
+                return True
+
+            # ── Try finding the Turnstile iframe and clicking its checkbox ────
+            clicked = False
+            try:
+                # Cloudflare Turnstile renders inside a nested iframe
+                # Outer iframe: src contains "challenges.cloudflare.com" or "cdn-cgi"
+                iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
+                for iframe in iframes:
+                    src = (iframe.get_attribute("src") or "").lower()
+                    if "cloudflare" in src or "cdn-cgi" in src or "turnstile" in src:
+                        self.logger.info(f"Sage ==> Switching to Cloudflare iframe: {src[:80]}")
+                        self.driver.switch_to.frame(iframe)
+                        time.sleep(1)
+
+                        # Inside the iframe, find the checkbox input or clickable div
+                        for sel in [
+                            "input[type='checkbox']",
+                            "div.ctp-checkbox-label",
+                            "label[for='cf-stage']",
+                            "div[id*='challenge']",
+                            "span[id*='challenge']",
+                            ".mark",   # Turnstile inner mark
+                        ]:
+                            try:
+                                el = WebDriverWait(self.driver, 3).until(
+                                    EC.presence_of_element_located((By.CSS_SELECTOR, sel))
+                                )
+                                time.sleep(random.uniform(0.5, 1.2))   # human-like delay
+                                _js_click(el)
+                                self.logger.info(f"Sage ==> JS-clicked Cloudflare element: {sel}")
+                                clicked = True
+                                break
+                            except Exception:
+                                continue
+
+                        self.driver.switch_to.default_content()
+                        if clicked:
+                            break
+
+            except Exception as e:
+                self.logger.debug(f"Sage ==> iframe click attempt failed: {e}")
+                try:
+                    self.driver.switch_to.default_content()
+                except Exception:
+                    pass
+
+            # ── Fallback: click any checkbox visible on main page ─────────────
+            if not clicked:
+                try:
+                    checkboxes = self.driver.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
+                    for cb in checkboxes:
+                        if cb.is_displayed():
+                            time.sleep(random.uniform(0.3, 0.8))
+                            _js_click(cb)
+                            self.logger.info("Sage ==> JS-clicked fallback checkbox")
+                            clicked = True
+                            break
+                except Exception:
+                    pass
+
+            remaining = int(deadline - time.time())
+            self.logger.info(
+                f"Sage ==> Cloudflare challenge still active — "
+                f"{'clicked, waiting for result' if clicked else 'no element found, retrying'} "
+                f"({remaining}s left)"
+            )
+            time.sleep(3)
+
+        self.logger.warning("Sage ==> Cloudflare bypass timed out after %ds", timeout)
         self._debug_screenshot("cloudflare_timeout")
         return False
 
@@ -695,13 +806,11 @@ class SageScraper(ChromeDisplayMixin):
         authors_path = os.path.join(self._work_dir(), self.authors_csv)
 
         try:
-            # Sage date format: AfterMonth/AfterYear, BeforeMonth/BeforeYear
-            # Input format is MM/DD/YYYY — split accordingly
-            start_parts = self.start_year.split("/")   # ["MM", "DD", "YYYY"]
-            end_parts   = self.end_year.split("/")
-            after_month  = start_parts[0] if len(start_parts) >= 3 else start_parts[0]
+            start_parts  = self.start_year.split("/")
+            end_parts    = self.end_year.split("/")
+            after_month  = start_parts[0]
             after_year   = start_parts[-1]
-            before_month = end_parts[0] if len(end_parts) >= 3 else end_parts[0]
+            before_month = end_parts[0]
             before_year  = end_parts[-1]
 
             query_params = {
@@ -721,50 +830,32 @@ class SageScraper(ChromeDisplayMixin):
                 f"dates={after_month}/{after_year} → {before_month}/{before_year}"
             )
 
-            # Initialise CSV files
             self._init_csv(self.url_csv,     ["Article_URL"])
             self._init_csv(self.authors_csv, ["Article_URL", "Author_Name", "Email"])
 
-            # ── Navigate to Sage and dismiss cookie banner ────────────────
+            # ── Step 1: homepage — bypass Cloudflare with JS clicks ──────────
             self._progress(2, "Opening Sage Journals homepage...")
-            self.logger.info("Sage ==> Loading homepage (this takes ~20s)...")
+            self.logger.info("Sage ==> Loading homepage...")
             self.driver.get("https://journals.sagepub.com")
+            self._bypass_cloudflare(timeout=60)
 
-            # Wait for Cloudflare / bot-check to auto-pass.
-            # Sage uses Cloudflare Turnstile — it auto-verifies real Chrome
-            # within ~10s if the TLS fingerprint passes.  We give it up to 30s.
-            self._wait_for_cloudflare(timeout=30)
-
-            # Sage loads a lot of JS — wait for body before cookie click
+            # Accept cookie banner after challenge clears
             try:
-                WebDriverWait(self.driver, 15).until(
-                    EC.presence_of_element_located((By.TAG_NAME, "body"))
+                cookie_btn = WebDriverWait(self.driver, 10).until(
+                    EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))
                 )
+                time.sleep(1)
+                self.driver.execute_script("arguments[0].click();", cookie_btn)
+                self.logger.info("Sage ==> Cookie banner accepted (JS click)")
+                time.sleep(2)
             except Exception:
-                pass
-            time.sleep(5)   # extra buffer for JS rendering
-            self._accept_cookies()
-            time.sleep(2)
+                self.logger.info("Sage ==> No cookie banner found")
 
-            # ── Phase 1: collect article URLs ─────────────────────────────
+            # ── Step 2: search URL — bypass Cloudflare again ─────────────────
             self._progress(5, "PHASE 1: Collecting article URLs...")
             self.logger.info(f"Sage ==> Loading search URL: {search_url}")
             self.driver.get(search_url)
-
-            # Wait for Cloudflare again on the search URL
-            self._wait_for_cloudflare(timeout=30)
-
-            # Wait for the results page to fully render (up to 60s)
-            page_loaded = self._wait_for_results_page(timeout=60)
-            if not page_loaded:
-                self.logger.warning("Sage ==> Results not detected after 60s, scrolling and retrying...")
-                try:
-                    self.driver.execute_script("window.scrollTo(0, 300);")
-                    time.sleep(5)
-                    self.driver.execute_script("window.scrollTo(0, 0);")
-                    time.sleep(3)
-                except Exception:
-                    pass
+            self._bypass_cloudflare(timeout=60)
 
             total_pages = self.get_total_pages()
             if total_pages == 0:
@@ -773,7 +864,6 @@ class SageScraper(ChromeDisplayMixin):
 
             self.extract_article_links(total_pages, base_url, query_params)
 
-            # ── Phase 2: extract emails ───────────────────────────────────
             self._progress(40, "PHASE 2: Extracting author emails...")
             self.extract_author_info()
 
@@ -782,10 +872,4 @@ class SageScraper(ChromeDisplayMixin):
             return authors_path, f"Sage scrape complete: {total_pages} pages"
 
         finally:
-            # Always quit Chrome and stop the virtual display
-            try:
-                if self.driver:
-                    self.driver.quit()
-            except Exception:
-                pass
-            self._stop_virtual_display()
+            self._quit_chrome()

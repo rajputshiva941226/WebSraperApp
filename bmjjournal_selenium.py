@@ -63,7 +63,8 @@ class BMJJournalScraper(ChromeDisplayMixin):
         try:
             self._launch_chrome(self._build_default_chrome_options(), driver_path=self.driver_path)
             self.wait = WebDriverWait(self.driver, 20)
-            self.driver.maximize_window()
+            # maximize_window() removed — triggers Runtime.evaluate on Chrome 145+uc 3.5.5
+            # Window size is already set via --window-size=1400,900 in the mixin
             self.logger.info("Driver initialized successfully")
         except Exception as e:
             self.logger.error(f"Failed to initialize driver: {e}")
@@ -84,7 +85,145 @@ class BMJJournalScraper(ChromeDisplayMixin):
             self.logger.error(f"Failed to restart driver: {e}")
             raise
 
-    def _setup_logger(self):
+    def _bypass_cloudflare(self, timeout: int = 60) -> bool:
+        """
+        Bypass Cloudflare Turnstile / bot-check using JavaScript clicks.
+        Identical logic to SageScraper._bypass_cloudflare.
+
+        Strategy:
+          1. Wait for document.readyState == complete
+          2. If not on a challenge page, return immediately
+          3. Find Turnstile iframe → switch into it → JS dispatchEvent click
+          4. Poll until challenge clears or timeout
+        """
+        import random
+
+        CHALLENGE_PHRASES = [
+            "just a moment", "verifying you are human",
+            "performing security verification", "checking your browser",
+            "cf-browser-verification", "ray id",
+        ]
+
+        def _is_on_challenge() -> bool:
+            try:
+                title = self.driver.title.lower()
+                src   = self.driver.page_source.lower()[:1000]
+                return any(p in title or p in src for p in CHALLENGE_PHRASES)
+            except Exception:
+                return False
+
+        def _wait_for_load(max_wait: int = 15):
+            deadline = time.time() + max_wait
+            while time.time() < deadline:
+                try:
+                    if self.driver.execute_script("return document.readyState") == "complete":
+                        return
+                except Exception:
+                    pass
+                time.sleep(0.5)
+
+        def _js_click(element):
+            self.driver.execute_script("""
+                var el = arguments[0];
+                var rect = el.getBoundingClientRect();
+                var cx = rect.left + rect.width  / 2 + (Math.random() - 0.5) * 4;
+                var cy = rect.top  + rect.height / 2 + (Math.random() - 0.5) * 4;
+                ['mousedown','mouseup','click'].forEach(function(etype) {
+                    el.dispatchEvent(new MouseEvent(etype, {
+                        bubbles: true, cancelable: true, view: window,
+                        clientX: cx, clientY: cy
+                    }));
+                });
+            """, element)
+
+        _wait_for_load()
+        time.sleep(2)
+
+        if not _is_on_challenge():
+            self.logger.info("BMJ ==> No Cloudflare challenge — page loaded ✓")
+            return True
+
+        self.logger.info("BMJ ==> Cloudflare challenge detected — attempting JS bypass...")
+        deadline = time.time() + timeout
+
+        while time.time() < deadline:
+            _wait_for_load(max_wait=10)
+
+            if not _is_on_challenge():
+                self.logger.info("BMJ ==> Cloudflare challenge cleared ✓")
+                return True
+
+            clicked = False
+            try:
+                iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
+                for iframe in iframes:
+                    src = (iframe.get_attribute("src") or "").lower()
+                    if "cloudflare" in src or "cdn-cgi" in src or "turnstile" in src:
+                        self.logger.info(f"BMJ ==> Switching to Cloudflare iframe: {src[:80]}")
+                        self.driver.switch_to.frame(iframe)
+                        time.sleep(1)
+
+                        for sel in [
+                            "input[type='checkbox']",
+                            "div.ctp-checkbox-label",
+                            "label[for='cf-stage']",
+                            "div[id*='challenge']",
+                            "span[id*='challenge']",
+                            ".mark",
+                        ]:
+                            try:
+                                el = WebDriverWait(self.driver, 3).until(
+                                    EC.presence_of_element_located((By.CSS_SELECTOR, sel))
+                                )
+                                time.sleep(random.uniform(0.5, 1.2))
+                                _js_click(el)
+                                self.logger.info(f"BMJ ==> JS-clicked Cloudflare element: {sel}")
+                                clicked = True
+                                break
+                            except Exception:
+                                continue
+
+                        self.driver.switch_to.default_content()
+                        if clicked:
+                            break
+            except Exception as e:
+                self.logger.debug(f"BMJ ==> iframe click attempt failed: {e}")
+                try:
+                    self.driver.switch_to.default_content()
+                except Exception:
+                    pass
+
+            if not clicked:
+                try:
+                    for cb in self.driver.find_elements(By.CSS_SELECTOR, "input[type='checkbox']"):
+                        if cb.is_displayed():
+                            time.sleep(random.uniform(0.3, 0.8))
+                            _js_click(cb)
+                            self.logger.info("BMJ ==> JS-clicked fallback checkbox")
+                            clicked = True
+                            break
+                except Exception:
+                    pass
+
+            remaining = int(deadline - time.time())
+            self.logger.info(
+                f"BMJ ==> Cloudflare still active — "
+                f"{'clicked, waiting' if clicked else 'no element, retrying'} "
+                f"({remaining}s left)"
+            )
+            time.sleep(3)
+
+        self.logger.warning("BMJ ==> Cloudflare bypass timed out after %ds", timeout)
+        try:
+            path = os.path.join("logs", "bmj_debug_cloudflare_timeout.png")
+            os.makedirs("logs", exist_ok=True)
+            self.driver.save_screenshot(path)
+            self.logger.info(f"BMJ ==> Screenshot saved → {path}")
+        except Exception:
+            pass
+        return False
+
+
         """Configure the logger with both file and stdout handlers (UTF-8 safe)."""
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.setLevel(logging.INFO)
@@ -325,28 +464,53 @@ class BMJJournalScraper(ChromeDisplayMixin):
     def run(self):
         """Main execution method — called by SeleniumScraperWrapper."""
         try:
-            # Start Chrome here (not in __init__) so it only runs during the job
             self._initialize_driver()
 
-            # BMJ search URL uses YYYY-MM-DD format (self.start_year is already converted)
-            query_params = {
-                "base_url": f"https://journals.bmj.com/search/{self.keyword}%20limit_from%3A{self.start_year}%20limit_to%3A{self.end_year}%20exclude_meeting_abstracts%3A1%20numresults%3A100%20sort%3Arelevance-rank%20format_result%3Astandard%20button%3ASubmit",
-                "page": 0
-            }
+            # BMJ search URL — YYYY-MM-DD format (self.start_year already converted)
+            search_url = (
+                f"https://journals.bmj.com/search/{self.keyword}"
+                f"%20limit_from%3A{self.start_year}"
+                f"%20limit_to%3A{self.end_year}"
+                f"%20exclude_meeting_abstracts%3A1"
+                f"%20numresults%3A100"
+                f"%20sort%3Arelevance-rank"
+                f"%20format_result%3Astandard"
+                f"%20button%3ASubmit"
+            )
+            query_params = {"base_url": search_url, "page": 0}
 
-            search_url = query_params["base_url"]
-            self.logger.info(f"BMJ ==> Loading: {search_url}")
-            self.driver.get(search_url)
-            time.sleep(5)   # BMJ is slow to load JS
+            # ── Step 1: Load BMJ homepage first to get cookies/session ────────
+            self.logger.info("BMJ ==> Loading homepage for session setup...")
+            self.driver.get("https://journals.bmj.com")
+            self._bypass_cloudflare(timeout=60)
 
+            # Accept cookie banner on homepage
             try:
-                cookie_section = WebDriverWait(self.driver, 10).until(
+                cookie_btn = WebDriverWait(self.driver, 10).until(
                     EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))
                 )
-                cookie_section.click()
+                time.sleep(1)
+                self.driver.execute_script("arguments[0].click();", cookie_btn)
+                self.logger.info("BMJ ==> Cookie banner accepted (JS click)")
                 time.sleep(2)
             except TimeoutException:
-                self.logger.info("BMJ ==> Cookie banner not found, continuing...")
+                self.logger.info("BMJ ==> No cookie banner on homepage")
+
+            # ── Step 2: Load search URL ───────────────────────────────────────
+            self.logger.info(f"BMJ ==> Loading search URL: {search_url[:100]}...")
+            self.driver.get(search_url)
+            self._bypass_cloudflare(timeout=60)
+
+            # Accept cookie banner again if shown on search page
+            try:
+                cookie_btn = WebDriverWait(self.driver, 5).until(
+                    EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))
+                )
+                self.driver.execute_script("arguments[0].click();", cookie_btn)
+                self.logger.info("BMJ ==> Cookie banner accepted on search page")
+                time.sleep(2)
+            except Exception:
+                pass
 
             total_pages = self.get_total_pages()
             if total_pages > 0:
@@ -358,7 +522,6 @@ class BMJJournalScraper(ChromeDisplayMixin):
         except Exception as e:
             self.logger.error(f"BMJ ==> Error in run method: {e}", exc_info=True)
         finally:
-            # Always clean up Chrome AND Xvfb via mixin
             self._quit_chrome()
 
 
