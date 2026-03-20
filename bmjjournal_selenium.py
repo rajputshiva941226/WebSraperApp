@@ -33,39 +33,24 @@ class BMJJournalScraper(ChromeDisplayMixin):
              output_dir=None, progress_callback=None):
         self._vdisplay = None
         self.driver = None
+        self.wait = None
         self.output_dir = output_dir
         self.progress_callback = progress_callback
-        # Configure logging
+        self.driver_path = driver_path
+        self.directory = keyword.replace(" ", "-")
+        self.keyword = keyword
+
+        # Logger MUST be set up before convert_date_format which may log errors
         logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
         self.logger = logging.getLogger(__name__)
+        self._setup_logger()
 
-        self.options = Options()
-        self.options.add_argument("--headless")
-        self.options.add_argument("--window-size=1920,1080")
-        self.options.add_argument("--disable-notifications")
-        self.options.add_argument("--disable-background-timer-throttling")
-        self.options.add_argument("--disable-backgrounding-occluded-windows")
-        self.options.add_argument("--disable-renderer-backgrounding")
-        self.options.add_argument("--no-sandbox")
-        self.options.add_argument("--disable-dev-shm-usage")
-        self.options.add_argument("excludeSwitches=enable-automation")
-        self.options.add_argument("--disable-logging")
-        self.options.add_argument("--disable-blink-features=AutomationControlled")
-
-        self.uc_temp_dir = tempfile.mkdtemp(prefix="BMJ_")
-        self.driver = None
-        self.wait = None
-        self.driver_path = driver_path
-        
-        self.directory = keyword.replace(" ","-")
-        self.keyword = keyword
         self.start_year = self.convert_date_format(start_year)
         self.end_year = self.convert_date_format(end_year)
         self.url_csv = f"BMJ_{self.directory}-{self.start_year}-{self.end_year}_urls.csv"
         self.authors_csv = f"BMJ_{self.directory}-{self.start_year}-{self.end_year}_authors.csv"
-
-        self._setup_logger()  # Initialize logger for the subclass
-        
+        # NOTE: _initialize_driver() and run() are NOT called here.
+        # SeleniumScraperWrapper calls run() which calls _initialize_driver() first.
 
     def _initialize_driver(self):
         """Initialize the Chrome driver"""
@@ -332,18 +317,22 @@ class BMJJournalScraper(ChromeDisplayMixin):
                         break
 
     def run(self):
-        """Main execution method"""
+        """Main execution method — called by SeleniumScraperWrapper."""
         try:
+            # Start Chrome here (not in __init__) so it only runs during the job
             self._initialize_driver()
+
+            # BMJ search URL uses YYYY-MM-DD format (self.start_year is already converted)
             query_params = {
                 "base_url": f"https://journals.bmj.com/search/{self.keyword}%20limit_from%3A{self.start_year}%20limit_to%3A{self.end_year}%20exclude_meeting_abstracts%3A1%20numresults%3A100%20sort%3Arelevance-rank%20format_result%3Astandard%20button%3ASubmit",
                 "page": 0
             }
-            
+
             search_url = query_params["base_url"]
+            self.logger.info(f"BMJ ==> Loading: {search_url}")
             self.driver.get(search_url)
-            time.sleep(3)
-            
+            time.sleep(5)   # BMJ is slow to load JS
+
             try:
                 cookie_section = WebDriverWait(self.driver, 10).until(
                     EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))
@@ -351,24 +340,20 @@ class BMJJournalScraper(ChromeDisplayMixin):
                 cookie_section.click()
                 time.sleep(2)
             except TimeoutException:
-                self.logger.info("Cookie banner not found, continuing...")
+                self.logger.info("BMJ ==> Cookie banner not found, continuing...")
 
             total_pages = self.get_total_pages()
             if total_pages > 0:
                 self.extract_article_links(total_pages, query_params)
                 self.extract_author_info()
             else:
-                self.logger.error("No pages found to scrape")
+                self.logger.error("BMJ ==> No pages found to scrape")
 
         except Exception as e:
-            self.logger.error(f"Error in run method: {e}")
+            self.logger.error(f"BMJ ==> Error in run method: {e}", exc_info=True)
         finally:
-            if self.driver:
-                try:
-                    self.driver.quit()
-                    self.logger.info("Driver closed successfully")
-                except Exception as e:
-                    self.logger.error(f"Error closing driver: {e}")
+            # Always clean up Chrome AND Xvfb via mixin
+            self._quit_chrome()
 
 
 # if __name__ == "__main__":

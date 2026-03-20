@@ -74,7 +74,11 @@ class SageScraper(ChromeDisplayMixin):
 
         # ── Logger MUST come before uc.Chrome() so init errors are captured ──
         self._setup_logger()
-        self._start_virtual_display()
+        # NOTE: Do NOT call _start_virtual_display() here.
+        # The ChromeDisplayMixin._launch_chrome() handles display selection:
+        #   • If DISPLAY=:99 is set (via Celery systemd env), Chrome goes there directly.
+        #   • If DISPLAY is unset, mixin defaults to :99 (our persistent Xvfb).
+        # This guarantees x11vnc always sees Chrome since x11vnc watches :99.
         self._init_driver()
         # NOTE: run() is NOT called here — SeleniumScraperWrapper calls it.
 
@@ -127,60 +131,58 @@ class SageScraper(ChromeDisplayMixin):
 
     def _start_virtual_display(self):
         """
-        Start a Xvfb virtual display so Chrome can run in non-headless mode
-        on a headless server (EC2).  Two backends tried in order:
-          1. pyvirtualdisplay (preferred — cleaner Python API)
-          2. Raw subprocess Xvfb on display :99 (fallback)
-
-        Install: pip install pyvirtualdisplay
-                 apt-get install -y xvfb
+        DEPRECATED — no longer called from __init__.
+        ChromeDisplayMixin handles display selection and always uses :99.
+        Kept only for backwards compatibility if called externally.
         """
-        # Try pyvirtualdisplay first
+        # If :99 is already running (persistent systemd service), reuse it
+        if os.path.exists('/tmp/.X99-lock'):
+            os.environ['DISPLAY'] = ':99'
+            self.logger.info("Sage ==> Reusing persistent Xvfb on :99")
+            return
+
+        # Start Xvfb on :99 specifically — never use a random display number
         try:
             from pyvirtualdisplay import Display
-            self._display = Display(visible=False, size=(1920, 1080), backend='xvfb')
-            self._display.start()
-            self.logger.info(
-                f"Sage ==> Virtual display started via pyvirtualdisplay "
-                f"(DISPLAY={os.environ.get('DISPLAY', 'unset')})"
+            self._display = Display(
+                visible=False, size=(1920, 1080), backend='xvfb',
+                display=99,    # ← ALWAYS :99, never random
             )
+            self._display.start()
+            os.environ['DISPLAY'] = ':99'
+            self.logger.info("Sage ==> Virtual display started on :99 via pyvirtualdisplay")
             return
         except ImportError:
-            self.logger.warning(
-                "Sage ==> pyvirtualdisplay not installed — "
-                "falling back to raw Xvfb on :99"
-            )
+            self.logger.warning("Sage ==> pyvirtualdisplay not installed — using raw Xvfb on :99")
         except Exception as e:
             self.logger.warning(f"Sage ==> pyvirtualdisplay failed: {e} — trying raw Xvfb")
 
-        # Fallback: raw Xvfb subprocess on display :99
+        # Fallback: raw Xvfb on :99
         try:
             import subprocess
-            # Kill any stale Xvfb on :99
             subprocess.run(["pkill", "-f", "Xvfb :99"], capture_output=True)
             time.sleep(0.5)
             self._xvfb_proc = subprocess.Popen(
-                ["Xvfb", ":99", "-screen", "0", "1920x1080x24"],
+                ["Xvfb", ":99", "-screen", "0", "1920x1080x24", "-ac"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
             os.environ["DISPLAY"] = ":99"
-            time.sleep(1)   # give Xvfb time to start
-            self.logger.info("Sage ==> Raw Xvfb started on display :99")
-        except FileNotFoundError:
-            self.logger.error(
-                "Sage ==> Xvfb not found. Install with: sudo apt-get install -y xvfb\n"
-                "Sage ==> Chrome will run WITHOUT a display — may fail on Sage."
-            )
+            time.sleep(1)
+            self.logger.info("Sage ==> Raw Xvfb started on :99")
         except Exception as e:
             self.logger.error(f"Sage ==> Could not start Xvfb: {e}")
 
     def _stop_virtual_display(self):
-        """Cleanly stop the virtual display."""
+        """
+        Stop the virtual display IF we started it ourselves.
+        Never kills the persistent :99 managed by systemd.
+        """
         try:
             if self._display is not None:
                 self._display.stop()
                 self._display = None
+                self.logger.info("Sage ==> pyvirtualdisplay stopped")
         except Exception:
             pass
         try:
