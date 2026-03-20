@@ -87,143 +87,144 @@ class BMJJournalScraper(ChromeDisplayMixin):
 
     def _bypass_cloudflare(self, timeout: int = 60) -> bool:
         """
-        Bypass Cloudflare Turnstile / bot-check using JavaScript clicks.
-        Identical logic to SageScraper._bypass_cloudflare.
+        Handle Cloudflare managed challenge + Turnstile using JS human simulation.
 
-        Strategy:
-          1. Wait for document.readyState == complete
-          2. If not on a challenge page, return immediately
-          3. Find Turnstile iframe → switch into it → JS dispatchEvent click
-          4. Poll until challenge clears or timeout
+        TYPE 1 - Managed challenge (no visible checkbox, auto-resolves on fingerprint):
+            Simulate human mouse-moves + scrolls every 2s to keep page active
+            and trigger Cloudflare fingerprint verification.
+
+        TYPE 2 - Turnstile interactive (visible checkbox):
+            Find iframe → switch in → JS dispatchEvent click on checkbox.
         """
         import random
 
         CHALLENGE_PHRASES = [
             "just a moment", "verifying you are human",
             "performing security verification", "checking your browser",
-            "cf-browser-verification", "ray id",
+            "cf-browser-verification",
         ]
+        tag = "BMJ ==>"
 
-        def _is_on_challenge() -> bool:
+        def _on_challenge():
             try:
-                title = self.driver.title.lower()
-                src   = self.driver.page_source.lower()[:1000]
-                return any(p in title or p in src for p in CHALLENGE_PHRASES)
+                t = self.driver.title.lower()
+                s = self.driver.page_source.lower()[:800]
+                return any(p in t or p in s for p in CHALLENGE_PHRASES)
             except Exception:
                 return False
 
-        def _wait_for_load(max_wait: int = 15):
-            deadline = time.time() + max_wait
-            while time.time() < deadline:
+        def _wait_ready(sec=10):
+            end = time.time() + sec
+            while time.time() < end:
                 try:
                     if self.driver.execute_script("return document.readyState") == "complete":
                         return
                 except Exception:
                     pass
-                time.sleep(0.5)
+                time.sleep(0.4)
 
-        def _js_click(element):
-            self.driver.execute_script("""
-                var el = arguments[0];
-                var rect = el.getBoundingClientRect();
-                var cx = rect.left + rect.width  / 2 + (Math.random() - 0.5) * 4;
-                var cy = rect.top  + rect.height / 2 + (Math.random() - 0.5) * 4;
-                ['mousedown','mouseup','click'].forEach(function(etype) {
-                    el.dispatchEvent(new MouseEvent(etype, {
-                        bubbles: true, cancelable: true, view: window,
-                        clientX: cx, clientY: cy
-                    }));
-                });
-            """, element)
+        def _human_activity():
+            try:
+                self.driver.execute_script("""
+                    (function(){
+                        var x=200+Math.floor(Math.random()*600);
+                        var y=150+Math.floor(Math.random()*400);
+                        document.dispatchEvent(new MouseEvent('mousemove',{bubbles:true,cancelable:true,clientX:x,clientY:y}));
+                        window.scrollBy(0,Math.floor(Math.random()*60+10));
+                        setTimeout(function(){window.scrollBy(0,-30);},300);
+                        document.body&&document.body.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
+                    })();
+                """)
+            except Exception:
+                pass
 
-        _wait_for_load()
-        time.sleep(2)
+        def _js_click(el):
+            try:
+                self.driver.execute_script("""
+                    var el=arguments[0],r=el.getBoundingClientRect();
+                    var cx=r.left+r.width/2+(Math.random()-0.5)*3;
+                    var cy=r.top+r.height/2+(Math.random()-0.5)*3;
+                    ['mousedown','mouseup','click'].forEach(function(t){
+                        el.dispatchEvent(new MouseEvent(t,{bubbles:true,cancelable:true,clientX:cx,clientY:cy,view:window}));
+                    });
+                """, el)
+            except Exception:
+                pass
 
-        if not _is_on_challenge():
-            self.logger.info("BMJ ==> No Cloudflare challenge — page loaded ✓")
+        _wait_ready()
+        time.sleep(1.5)
+
+        if not _on_challenge():
+            self.logger.info(f"{tag} No Cloudflare challenge — page ready \u2713")
             return True
 
-        self.logger.info("BMJ ==> Cloudflare challenge detected — attempting JS bypass...")
+        self.logger.info(f"{tag} Cloudflare challenge detected — JS human-sim bypass...")
         deadline = time.time() + timeout
+        last_click = 0
 
         while time.time() < deadline:
-            _wait_for_load(max_wait=10)
-
-            if not _is_on_challenge():
-                self.logger.info("BMJ ==> Cloudflare challenge cleared ✓")
+            _wait_ready(sec=8)
+            if not _on_challenge():
+                self.logger.info(f"{tag} Cloudflare challenge cleared \u2713")
                 return True
 
-            clicked = False
-            try:
-                iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
-                for iframe in iframes:
-                    src = (iframe.get_attribute("src") or "").lower()
-                    if "cloudflare" in src or "cdn-cgi" in src or "turnstile" in src:
-                        self.logger.info(f"BMJ ==> Switching to Cloudflare iframe: {src[:80]}")
-                        self.driver.switch_to.frame(iframe)
-                        time.sleep(1)
+            _human_activity()
 
-                        for sel in [
-                            "input[type='checkbox']",
-                            "div.ctp-checkbox-label",
-                            "label[for='cf-stage']",
-                            "div[id*='challenge']",
-                            "span[id*='challenge']",
-                            ".mark",
-                        ]:
-                            try:
-                                el = WebDriverWait(self.driver, 3).until(
-                                    EC.presence_of_element_located((By.CSS_SELECTOR, sel))
-                                )
-                                time.sleep(random.uniform(0.5, 1.2))
-                                _js_click(el)
-                                self.logger.info(f"BMJ ==> JS-clicked Cloudflare element: {sel}")
+            if time.time() - last_click > 6:
+                last_click = time.time()
+                clicked = False
+                try:
+                    for iframe in self.driver.find_elements(By.TAG_NAME, "iframe"):
+                        src = (iframe.get_attribute("src") or "").lower()
+                        if any(k in src for k in ["cloudflare","cdn-cgi","turnstile","challenge"]):
+                            self.driver.switch_to.frame(iframe)
+                            time.sleep(0.8)
+                            for sel in ["input[type='checkbox']","div.ctp-checkbox-label",
+                                        "label[for='cf-stage']",".mark","div[id*='challenge']"]:
+                                try:
+                                    el = self.driver.find_element(By.CSS_SELECTOR, sel)
+                                    if el.is_displayed():
+                                        time.sleep(random.uniform(0.4, 0.9))
+                                        _js_click(el)
+                                        self.logger.info(f"{tag} JS-clicked: {sel}")
+                                        clicked = True
+                                        break
+                                except Exception:
+                                    continue
+                            self.driver.switch_to.default_content()
+                            if clicked:
+                                break
+                except Exception:
+                    try:
+                        self.driver.switch_to.default_content()
+                    except Exception:
+                        pass
+
+                if not clicked:
+                    try:
+                        for cb in self.driver.find_elements(By.CSS_SELECTOR, "input[type='checkbox']"):
+                            if cb.is_displayed():
+                                time.sleep(random.uniform(0.3, 0.7))
+                                _js_click(cb)
+                                self.logger.info(f"{tag} JS-clicked main-page checkbox")
                                 clicked = True
                                 break
-                            except Exception:
-                                continue
-
-                        self.driver.switch_to.default_content()
-                        if clicked:
-                            break
-            except Exception as e:
-                self.logger.debug(f"BMJ ==> iframe click attempt failed: {e}")
-                try:
-                    self.driver.switch_to.default_content()
-                except Exception:
-                    pass
-
-            if not clicked:
-                try:
-                    for cb in self.driver.find_elements(By.CSS_SELECTOR, "input[type='checkbox']"):
-                        if cb.is_displayed():
-                            time.sleep(random.uniform(0.3, 0.8))
-                            _js_click(cb)
-                            self.logger.info("BMJ ==> JS-clicked fallback checkbox")
-                            clicked = True
-                            break
-                except Exception:
-                    pass
+                    except Exception:
+                        pass
 
             remaining = int(deadline - time.time())
-            self.logger.info(
-                f"BMJ ==> Cloudflare still active — "
-                f"{'clicked, waiting' if clicked else 'no element, retrying'} "
-                f"({remaining}s left)"
-            )
-            time.sleep(3)
+            self.logger.info(f"{tag} Cloudflare active — simulating human ({remaining}s left)...")
+            time.sleep(2)
 
-        self.logger.warning("BMJ ==> Cloudflare bypass timed out after %ds", timeout)
+        self.logger.warning(f"{tag} Cloudflare bypass timed out after {timeout}s")
         try:
-            path = os.path.join("logs", "bmj_debug_cloudflare_timeout.png")
             os.makedirs("logs", exist_ok=True)
-            self.driver.save_screenshot(path)
-            self.logger.info(f"BMJ ==> Screenshot saved → {path}")
+            self.driver.save_screenshot(os.path.join("logs", "bmj_debug_cloudflare_timeout.png"))
         except Exception:
             pass
         return False
 
-
+    def _setup_logger(self):
         """Configure the logger with both file and stdout handlers (UTF-8 safe)."""
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.setLevel(logging.INFO)

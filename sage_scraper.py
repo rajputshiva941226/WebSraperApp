@@ -310,155 +310,183 @@ class SageScraper(ChromeDisplayMixin):
 
     def _bypass_cloudflare(self, timeout: int = 60) -> bool:
         """
-        Bypass Cloudflare Turnstile / bot-check using JavaScript clicks.
+        Handle Cloudflare bot-check using JS human simulation + JS clicks.
 
-        Strategy (in order):
-          1. Wait for page to fully load (document.readyState == 'complete')
-          2. Check if we're even on a Cloudflare challenge page
-          3. Find the Turnstile iframe and switch into it
-          4. Use JS dispatchEvent (mousedown → mouseup → click) to click
-             the checkbox — JS-synthesised events bypass uc's input guards
-          5. Switch back to main frame and poll until challenge clears
-          6. If no iframe found, try clicking any visible checkbox directly
+        Cloudflare has TWO challenge types — both are handled:
 
-        Returns True when challenge is cleared, False on timeout.
+        TYPE 1 — Managed challenge (what Sage uses on the SEARCH URL):
+            /cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1
+            Title: "Just a moment..."
+            NO visible checkbox. Resolves automatically when Chrome's
+            fingerprint passes Cloudflare's JS checks.
+            Fix: simulate human mouse-movement + scroll via JS every 2s
+            to keep the page "active" and trigger the fingerprint check.
+
+        TYPE 2 — Turnstile interactive challenge:
+            Shows "Verify you are human" with a checkbox.
+            Fix: find the Turnstile iframe → switch into it →
+            JS dispatchEvent(mousedown+mouseup+click) on the checkbox.
+
+        Both types share the same polling loop — the right action is
+        taken based on what's found on the page each iteration.
         """
         import random
 
         CHALLENGE_PHRASES = [
-            "just a moment",
-            "verifying you are human",
-            "performing security verification",
-            "checking your browser",
+            "just a moment", "verifying you are human",
+            "performing security verification", "checking your browser",
             "cf-browser-verification",
-            "ray id",
         ]
 
-        def _is_on_challenge() -> bool:
+        tag = "Sage ==>"
+
+        def _on_challenge() -> bool:
             try:
                 title = self.driver.title.lower()
-                src   = self.driver.page_source.lower()[:1000]
+                src   = self.driver.page_source.lower()[:800]
                 return any(p in title or p in src for p in CHALLENGE_PHRASES)
             except Exception:
                 return False
 
-        def _wait_for_load(max_wait: int = 15):
-            """Wait for document.readyState == complete."""
-            deadline = time.time() + max_wait
-            while time.time() < deadline:
+        def _wait_ready(max_sec: int = 10):
+            end = time.time() + max_sec
+            while time.time() < end:
                 try:
-                    state = self.driver.execute_script("return document.readyState")
-                    if state == "complete":
+                    if self.driver.execute_script("return document.readyState") == "complete":
                         return
                 except Exception:
                     pass
-                time.sleep(0.5)
+                time.sleep(0.4)
 
-        def _js_click(element):
+        def _human_activity():
             """
-            Fire mousedown → mouseup → click via JS dispatchEvent.
-            More convincing than .click() — bypasses most anti-bot guards.
+            Simulate human behaviour via JS to satisfy Cloudflare's
+            managed-challenge fingerprint checks:
+              • random mouse-move events at varying coordinates
+              • small scroll + scroll back
+              • brief focus on the document
             """
-            self.driver.execute_script("""
-                var el = arguments[0];
-                var rect = el.getBoundingClientRect();
-                var cx = rect.left + rect.width  / 2 + (Math.random() - 0.5) * 4;
-                var cy = rect.top  + rect.height / 2 + (Math.random() - 0.5) * 4;
-                ['mousedown','mouseup','click'].forEach(function(etype) {
-                    el.dispatchEvent(new MouseEvent(etype, {
-                        bubbles: true, cancelable: true, view: window,
-                        clientX: cx, clientY: cy
-                    }));
-                });
-            """, element)
+            try:
+                self.driver.execute_script("""
+                    (function() {
+                        var x = 200 + Math.floor(Math.random() * 600);
+                        var y = 150 + Math.floor(Math.random() * 400);
+                        document.dispatchEvent(new MouseEvent('mousemove', {
+                            bubbles: true, cancelable: true,
+                            clientX: x, clientY: y
+                        }));
+                        window.scrollBy(0, Math.floor(Math.random() * 60 + 10));
+                        setTimeout(function(){window.scrollBy(0,-30);}, 300);
+                        document.body && document.body.dispatchEvent(
+                            new MouseEvent('mouseover', {bubbles:true})
+                        );
+                    })();
+                """)
+            except Exception:
+                pass
 
-        # ── Step 1: wait for page to load ────────────────────────────────────
-        _wait_for_load()
-        time.sleep(2)   # extra settle time
+        def _js_click(el):
+            try:
+                self.driver.execute_script("""
+                    var el = arguments[0];
+                    var r = el.getBoundingClientRect();
+                    var cx = r.left + r.width/2  + (Math.random()-0.5)*3;
+                    var cy = r.top  + r.height/2 + (Math.random()-0.5)*3;
+                    ['mousedown','mouseup','click'].forEach(function(t){
+                        el.dispatchEvent(new MouseEvent(t,{
+                            bubbles:true,cancelable:true,
+                            clientX:cx,clientY:cy,view:window
+                        }));
+                    });
+                """, el)
+            except Exception:
+                pass
 
-        if not _is_on_challenge():
-            self.logger.info("Sage ==> No Cloudflare challenge — page loaded ✓")
+        # ── initial page-load wait ────────────────────────────────────────────
+        _wait_ready()
+        time.sleep(1.5)
+
+        if not _on_challenge():
+            self.logger.info(f"{tag} No Cloudflare challenge — page ready ✓")
             return True
 
-        self.logger.info("Sage ==> Cloudflare challenge detected — attempting JS bypass...")
+        self.logger.info(f"{tag} Cloudflare challenge detected — JS human-sim bypass...")
         deadline = time.time() + timeout
+        last_click_attempt = 0
 
         while time.time() < deadline:
-            _wait_for_load(max_wait=10)
+            _wait_ready(max_sec=8)
 
-            if not _is_on_challenge():
-                self.logger.info("Sage ==> Cloudflare challenge cleared ✓")
+            if not _on_challenge():
+                self.logger.info(f"{tag} Cloudflare challenge cleared ✓")
                 return True
 
-            # ── Try finding the Turnstile iframe and clicking its checkbox ────
-            clicked = False
-            try:
-                # Cloudflare Turnstile renders inside a nested iframe
-                # Outer iframe: src contains "challenges.cloudflare.com" or "cdn-cgi"
-                iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
-                for iframe in iframes:
-                    src = (iframe.get_attribute("src") or "").lower()
-                    if "cloudflare" in src or "cdn-cgi" in src or "turnstile" in src:
-                        self.logger.info(f"Sage ==> Switching to Cloudflare iframe: {src[:80]}")
-                        self.driver.switch_to.frame(iframe)
-                        time.sleep(1)
+            # ── Always: simulate human activity (keeps managed challenge alive) ─
+            _human_activity()
 
-                        # Inside the iframe, find the checkbox input or clickable div
-                        for sel in [
-                            "input[type='checkbox']",
-                            "div.ctp-checkbox-label",
-                            "label[for='cf-stage']",
-                            "div[id*='challenge']",
-                            "span[id*='challenge']",
-                            ".mark",   # Turnstile inner mark
-                        ]:
-                            try:
-                                el = WebDriverWait(self.driver, 3).until(
-                                    EC.presence_of_element_located((By.CSS_SELECTOR, sel))
-                                )
-                                time.sleep(random.uniform(0.5, 1.2))   # human-like delay
-                                _js_click(el)
-                                self.logger.info(f"Sage ==> JS-clicked Cloudflare element: {sel}")
+            # ── Every 6s: try interactive Turnstile checkbox (Type 2) ──────────
+            if time.time() - last_click_attempt > 6:
+                last_click_attempt = time.time()
+                clicked = False
+
+                # Try inside Turnstile/Cloudflare iframes
+                try:
+                    iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
+                    for iframe in iframes:
+                        src = (iframe.get_attribute("src") or "").lower()
+                        if any(k in src for k in ["cloudflare", "cdn-cgi", "turnstile", "challenge"]):
+                            self.logger.info(f"{tag} Entering Cloudflare iframe...")
+                            self.driver.switch_to.frame(iframe)
+                            time.sleep(0.8)
+                            for sel in [
+                                "input[type='checkbox']",
+                                "div.ctp-checkbox-label",
+                                "label[for='cf-stage']",
+                                ".mark", "span.mark",
+                                "div[id*='challenge']",
+                                "div[class*='checkbox']",
+                            ]:
+                                try:
+                                    el = self.driver.find_element(By.CSS_SELECTOR, sel)
+                                    if el.is_displayed():
+                                        time.sleep(random.uniform(0.4, 0.9))
+                                        _js_click(el)
+                                        self.logger.info(f"{tag} JS-clicked: {sel}")
+                                        clicked = True
+                                        break
+                                except Exception:
+                                    continue
+                            self.driver.switch_to.default_content()
+                            if clicked:
+                                break
+                except Exception:
+                    try:
+                        self.driver.switch_to.default_content()
+                    except Exception:
+                        pass
+
+                # Also try any visible checkbox on main page
+                if not clicked:
+                    try:
+                        for cb in self.driver.find_elements(By.CSS_SELECTOR, "input[type='checkbox']"):
+                            if cb.is_displayed():
+                                time.sleep(random.uniform(0.3, 0.7))
+                                _js_click(cb)
+                                self.logger.info(f"{tag} JS-clicked main-page checkbox")
                                 clicked = True
                                 break
-                            except Exception:
-                                continue
-
-                        self.driver.switch_to.default_content()
-                        if clicked:
-                            break
-
-            except Exception as e:
-                self.logger.debug(f"Sage ==> iframe click attempt failed: {e}")
-                try:
-                    self.driver.switch_to.default_content()
-                except Exception:
-                    pass
-
-            # ── Fallback: click any checkbox visible on main page ─────────────
-            if not clicked:
-                try:
-                    checkboxes = self.driver.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
-                    for cb in checkboxes:
-                        if cb.is_displayed():
-                            time.sleep(random.uniform(0.3, 0.8))
-                            _js_click(cb)
-                            self.logger.info("Sage ==> JS-clicked fallback checkbox")
-                            clicked = True
-                            break
-                except Exception:
-                    pass
+                    except Exception:
+                        pass
 
             remaining = int(deadline - time.time())
-            self.logger.info(
-                f"Sage ==> Cloudflare challenge still active — "
-                f"{'clicked, waiting for result' if clicked else 'no element found, retrying'} "
-                f"({remaining}s left)"
-            )
-            time.sleep(3)
+            self.logger.info(f"{tag} Cloudflare active — simulating human ({remaining}s left)...")
+            time.sleep(2)
 
-        self.logger.warning("Sage ==> Cloudflare bypass timed out after %ds", timeout)
-        self._debug_screenshot("cloudflare_timeout")
+        self.logger.warning(f"{tag} Cloudflare bypass timed out after {timeout}s")
+        try:
+            self.driver.save_screenshot(os.path.join("logs", "sage_debug_cloudflare_timeout.png"))
+        except Exception:
+            pass
         return False
 
     def _accept_cookies(self):
