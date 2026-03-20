@@ -895,10 +895,15 @@ class SageScraper(ChromeDisplayMixin):
             except Exception:
                 self.logger.info("Sage ==> No cookie banner found")
 
-            # ── Step 2: search URL — bypass Cloudflare again ─────────────────
+            # ── Step 2: Navigate to search URL via JS (keeps trusted session) ──
+            # driver.get() on the search URL triggers Cloudflare's managed challenge
+            # because it starts a fresh navigation from an EC2 IP.
+            # window.location.href from within the already-verified homepage session
+            # inherits the trust token Cloudflare issued for this session.
             self._progress(5, "PHASE 1: Collecting article URLs...")
-            self.logger.info(f"Sage ==> Loading search URL: {search_url}")
-            self.driver.get(search_url)
+            self.logger.info(f"Sage ==> Navigating to search via JS: {search_url[:80]}...")
+            self.driver.execute_script(f"window.location.href = '{search_url}';")
+            time.sleep(8)   # wait for page to load after JS navigation
             self._bypass_cloudflare(timeout=60)
 
             total_pages = self.get_total_pages()

@@ -549,11 +549,10 @@ class BMJJournalScraper(ChromeDisplayMixin):
         try:
             self._initialize_driver()
 
-            # BMJ search URL — confirmed working format from live site inspection.
-            # Keyword encoding: spaces → "+" → "%252B" (double-encoded plus sign)
-            # Example: "cancer metastasis" → "cancer%252Bmetastasis"
-            # This matches: https://journals.bmj.com/search/cancer%252Bmetastasis%20...
-            keyword_encoded = self.keyword.replace(" ", "%252B")
+            # BMJ search URL — spaces encoded as %20 (simple, no double-encoding)
+            # Format confirmed working: /search/cancer%20metastasis%20limit_from%3A...
+            from urllib.parse import quote
+            keyword_encoded = quote(self.keyword, safe="")  # spaces → %20
             search_url = (
                 f"https://journals.bmj.com/search/{keyword_encoded}"
                 f"%20limit_from%3A{self.start_year}"
@@ -562,9 +561,6 @@ class BMJJournalScraper(ChromeDisplayMixin):
                 f"%20numresults%3A100"
                 f"%20sort%3Arelevance-rank"
                 f"%20format_result%3Astandard"
-                f"%20button%3ASubmit"
-                f"%20button2%3ASubmit"
-                f"%20button3%3ASubmit"
             )
             query_params = {"base_url": search_url, "page": 0}
 
@@ -585,9 +581,13 @@ class BMJJournalScraper(ChromeDisplayMixin):
             except TimeoutException:
                 self.logger.info("BMJ ==> No cookie banner on homepage")
 
-            # ── Step 2: Load search URL ───────────────────────────────────────
-            self.logger.info(f"BMJ ==> Loading search URL: {search_url[:100]}...")
-            self.driver.get(search_url)
+            # ── Step 2: Navigate to search URL via JS (keeps trusted session) ──
+            # Using driver.get() for the search URL triggers Cloudflare again
+            # because it creates a new navigation event. Using window.location.href
+            # from within the already-trusted homepage session avoids this.
+            self.logger.info(f"BMJ ==> Navigating to search via JS: {search_url[:80]}...")
+            self.driver.execute_script(f"window.location.href = '{search_url}';")
+            time.sleep(8)   # wait for page load after JS navigation
             self._bypass_cloudflare(timeout=60)
 
             # Accept cookie banner again if shown on search page
