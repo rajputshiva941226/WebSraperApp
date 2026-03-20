@@ -31,6 +31,11 @@ import tempfile
 class BMJJournalScraper(ChromeDisplayMixin):
     def __init__(self, keyword, start_year, end_year, driver_path,
              output_dir=None, progress_callback=None):
+        # ── MATCH SAGE PATTERN EXACTLY ────────────────────────────────────────
+        # 1. Set all attributes first (raw strings, no conversion yet)
+        # 2. Set up logger (_setup_logger uses self.start_year for log filename)
+        # 3. Convert dates
+        # 4. DO NOT call _initialize_driver() or run() — SeleniumScraperWrapper does it
         self._vdisplay = None
         self.driver = None
         self.wait = None
@@ -40,17 +45,18 @@ class BMJJournalScraper(ChromeDisplayMixin):
         self.directory = keyword.replace(" ", "-")
         self.keyword = keyword
 
-        # Logger MUST be set up before convert_date_format which may log errors
-        logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-        self.logger = logging.getLogger(__name__)
+        # Store RAW date strings first — _setup_logger uses them for the log filename
+        self.start_year = start_year
+        self.end_year = end_year
+
+        # Now logger is safe to set up (self.start_year and self.end_year exist)
         self._setup_logger()
 
+        # Now convert dates for use in URLs and CSV filenames
         self.start_year = self.convert_date_format(start_year)
         self.end_year = self.convert_date_format(end_year)
         self.url_csv = f"BMJ_{self.directory}-{self.start_year}-{self.end_year}_urls.csv"
         self.authors_csv = f"BMJ_{self.directory}-{self.start_year}-{self.end_year}_authors.csv"
-        # NOTE: _initialize_driver() and run() are NOT called here.
-        # SeleniumScraperWrapper calls run() which calls _initialize_driver() first.
 
     def _initialize_driver(self):
         """Initialize the Chrome driver"""

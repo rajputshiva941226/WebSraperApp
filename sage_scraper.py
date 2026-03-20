@@ -308,6 +308,48 @@ class SageScraper(ChromeDisplayMixin):
     # Cookie / page helpers
     # ─────────────────────────────────────────────────────────────────────
 
+    def _wait_for_cloudflare(self, timeout: int = 30) -> bool:
+        """
+        Wait for Cloudflare Turnstile / bot-check to auto-pass.
+
+        Cloudflare shows "Verifying you are human" or "Performing security
+        verification" while it checks the browser fingerprint.  With real
+        undetected Chrome the check passes automatically within ~5-10s.
+
+        Returns True once the page is past the challenge, False on timeout.
+        """
+        import time as _time
+        CHALLENGE_PHRASES = [
+            "just a moment",
+            "verifying you are human",
+            "performing security verification",
+            "checking your browser",
+            "please wait",
+            "cf-browser-verification",
+        ]
+        deadline = _time.monotonic() + timeout
+        while _time.monotonic() < deadline:
+            try:
+                title = self.driver.title.lower()
+                src   = self.driver.page_source.lower()[:500]
+                on_challenge = any(p in title or p in src for p in CHALLENGE_PHRASES)
+                if not on_challenge:
+                    self.logger.info("Sage ==> Cloudflare check passed ✓")
+                    return True
+                remaining = int(deadline - _time.monotonic())
+                self.logger.info(
+                    f"Sage ==> Waiting for Cloudflare verification… ({remaining}s left)"
+                )
+            except Exception:
+                pass
+            _time.sleep(2)
+
+        self.logger.warning(
+            "Sage ==> Cloudflare check did not pass within %ds — continuing anyway", timeout
+        )
+        self._debug_screenshot("cloudflare_timeout")
+        return False
+
     def _accept_cookies(self):
         """Accept OneTrust cookie banner if present."""
         selectors = [
@@ -356,13 +398,19 @@ class SageScraper(ChromeDisplayMixin):
                 title = self.driver.title.lower()
                 url   = self.driver.current_url.lower()
 
-                # Detected bot-challenge pages
+                # Detected bot-challenge pages — wait for them to pass, don't abort
                 if any(kw in title for kw in ["captcha", "access denied", "blocked", "robot"]):
                     self.logger.error(
-                        f"Sage ==> Bot/CAPTCHA page detected: title='{self.driver.title}'"
+                        f"Sage ==> Hard bot block detected: title='{self.driver.title}'"
                     )
                     self._debug_screenshot("captcha")
                     return False
+
+                # Cloudflare auto-challenge — keep waiting, don't abort
+                if any(kw in title for kw in ["just a moment", "verifying", "security verification"]):
+                    self.logger.info("Sage ==> Cloudflare challenge in progress — waiting...")
+                    _time.sleep(2)
+                    continue
 
                 # Check if results count element exists
                 try:
@@ -681,28 +729,35 @@ class SageScraper(ChromeDisplayMixin):
             self._progress(2, "Opening Sage Journals homepage...")
             self.logger.info("Sage ==> Loading homepage (this takes ~20s)...")
             self.driver.get("https://journals.sagepub.com")
-            # Sage loads a lot of JS — wait for body to be present before cookie click
+
+            # Wait for Cloudflare / bot-check to auto-pass.
+            # Sage uses Cloudflare Turnstile — it auto-verifies real Chrome
+            # within ~10s if the TLS fingerprint passes.  We give it up to 30s.
+            self._wait_for_cloudflare(timeout=30)
+
+            # Sage loads a lot of JS — wait for body before cookie click
             try:
-                WebDriverWait(self.driver, 25).until(
+                WebDriverWait(self.driver, 15).until(
                     EC.presence_of_element_located((By.TAG_NAME, "body"))
                 )
             except Exception:
                 pass
-            time.sleep(8)   # extra buffer for JS rendering
+            time.sleep(5)   # extra buffer for JS rendering
             self._accept_cookies()
-            time.sleep(3)
+            time.sleep(2)
 
             # ── Phase 1: collect article URLs ─────────────────────────────
             self._progress(5, "PHASE 1: Collecting article URLs...")
             self.logger.info(f"Sage ==> Loading search URL: {search_url}")
             self.driver.get(search_url)
 
-            # Wait for the results page to fully render (up to 45s)
-            # This catches CAPTCHA, slow loads, and layout shifts.
-            page_loaded = self._wait_for_results_page(timeout=45)
+            # Wait for Cloudflare again on the search URL
+            self._wait_for_cloudflare(timeout=30)
+
+            # Wait for the results page to fully render (up to 60s)
+            page_loaded = self._wait_for_results_page(timeout=60)
             if not page_loaded:
-                # Page didn't render results — try one scroll + extra wait
-                self.logger.warning("Sage ==> Results not detected after 45s, scrolling and retrying...")
+                self.logger.warning("Sage ==> Results not detected after 60s, scrolling and retrying...")
                 try:
                     self.driver.execute_script("window.scrollTo(0, 300);")
                     time.sleep(5)
