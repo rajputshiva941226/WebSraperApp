@@ -87,14 +87,9 @@ class BMJJournalScraper(ChromeDisplayMixin):
 
     def _bypass_cloudflare(self, timeout: int = 60) -> bool:
         """
-        Handle Cloudflare managed challenge + Turnstile using JS human simulation.
-
-        TYPE 1 - Managed challenge (no visible checkbox, auto-resolves on fingerprint):
-            Simulate human mouse-moves + scrolls every 2s to keep page active
-            and trigger Cloudflare fingerprint verification.
-
-        TYPE 2 - Turnstile interactive (visible checkbox):
-            Find iframe → switch in → JS dispatchEvent click on checkbox.
+        Bypass Cloudflare Turnstile using nested-iframe JS click + human simulation.
+        Handles both managed challenge (auto-resolve) and interactive Turnstile checkbox.
+        Walks ALL iframes up to 3 levels deep — Turnstile outer frame often has blank src.
         """
         import random
 
@@ -129,10 +124,10 @@ class BMJJournalScraper(ChromeDisplayMixin):
                     (function(){
                         var x=200+Math.floor(Math.random()*600);
                         var y=150+Math.floor(Math.random()*400);
-                        document.dispatchEvent(new MouseEvent('mousemove',{bubbles:true,cancelable:true,clientX:x,clientY:y}));
-                        window.scrollBy(0,Math.floor(Math.random()*60+10));
-                        setTimeout(function(){window.scrollBy(0,-30);},300);
-                        document.body&&document.body.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
+                        document.dispatchEvent(new MouseEvent('mousemove',
+                            {bubbles:true,cancelable:true,clientX:x,clientY:y}));
+                        window.scrollBy(0,Math.floor(Math.random()*50+5));
+                        setTimeout(function(){window.scrollBy(0,-25);},400);
                     })();
                 """)
             except Exception:
@@ -142,75 +137,102 @@ class BMJJournalScraper(ChromeDisplayMixin):
             try:
                 self.driver.execute_script("""
                     var el=arguments[0],r=el.getBoundingClientRect();
-                    var cx=r.left+r.width/2+(Math.random()-0.5)*3;
-                    var cy=r.top+r.height/2+(Math.random()-0.5)*3;
+                    var cx=r.left+r.width/2+(Math.random()-0.5)*2;
+                    var cy=r.top+r.height/2+(Math.random()-0.5)*2;
                     ['mousedown','mouseup','click'].forEach(function(t){
-                        el.dispatchEvent(new MouseEvent(t,{bubbles:true,cancelable:true,clientX:cx,clientY:cy,view:window}));
+                        el.dispatchEvent(new MouseEvent(t,{
+                            bubbles:true,cancelable:true,clientX:cx,clientY:cy,view:window
+                        }));
                     });
                 """, el)
+                return True
+            except Exception:
+                return False
+
+        CF_SELECTORS = [
+            "input[type='checkbox']",
+            "div.ctp-checkbox-label",
+            ".mark", "span.mark",
+            "label[for='cf-stage']",
+            "div[id*='challenge']",
+            "div[class*='checkbox']",
+            "label",
+        ]
+
+        def _try_click_in_frame():
+            # Level 0: main page
+            for sel in CF_SELECTORS:
+                try:
+                    for el in self.driver.find_elements(By.CSS_SELECTOR, sel):
+                        if el.is_displayed():
+                            time.sleep(random.uniform(0.3, 0.7))
+                            if _js_click(el):
+                                self.logger.info(f"{tag} JS-clicked main-page: {sel}")
+                                return True
+                except Exception:
+                    pass
+
+            def _walk(depth=0):
+                if depth > 2:
+                    return False
+                try:
+                    for frame in self.driver.find_elements(By.TAG_NAME, "iframe"):
+                        try:
+                            self.driver.switch_to.frame(frame)
+                            time.sleep(0.5)
+                            for sel in CF_SELECTORS:
+                                try:
+                                    for el in self.driver.find_elements(By.CSS_SELECTOR, sel):
+                                        if el.is_displayed():
+                                            time.sleep(random.uniform(0.3, 0.7))
+                                            if _js_click(el):
+                                                self.logger.info(f"{tag} JS-clicked depth={depth+1}: {sel}")
+                                                self.driver.switch_to.default_content()
+                                                return True
+                                except Exception:
+                                    pass
+                            if _walk(depth + 1):
+                                return True
+                            self.driver.switch_to.parent_frame()
+                        except Exception:
+                            try:
+                                self.driver.switch_to.default_content()
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                return False
+
+            result = _walk()
+            try:
+                self.driver.switch_to.default_content()
             except Exception:
                 pass
+            return result
 
         _wait_ready()
         time.sleep(1.5)
-
         if not _on_challenge():
-            self.logger.info(f"{tag} No Cloudflare challenge — page ready \u2713")
+            self.logger.info(f"{tag} No Cloudflare challenge — page ready ✓")
             return True
 
-        self.logger.info(f"{tag} Cloudflare challenge detected — JS human-sim bypass...")
+        self.logger.info(f"{tag} Cloudflare detected — nested-iframe JS bypass...")
         deadline = time.time() + timeout
         last_click = 0
 
         while time.time() < deadline:
-            _wait_ready(sec=8)
+            _wait_ready(sec=6)
             if not _on_challenge():
-                self.logger.info(f"{tag} Cloudflare challenge cleared \u2713")
+                self.logger.info(f"{tag} Cloudflare cleared ✓")
                 return True
 
             _human_activity()
 
             if time.time() - last_click > 6:
                 last_click = time.time()
-                clicked = False
-                try:
-                    for iframe in self.driver.find_elements(By.TAG_NAME, "iframe"):
-                        src = (iframe.get_attribute("src") or "").lower()
-                        if any(k in src for k in ["cloudflare","cdn-cgi","turnstile","challenge"]):
-                            self.driver.switch_to.frame(iframe)
-                            time.sleep(0.8)
-                            for sel in ["input[type='checkbox']","div.ctp-checkbox-label",
-                                        "label[for='cf-stage']",".mark","div[id*='challenge']"]:
-                                try:
-                                    el = self.driver.find_element(By.CSS_SELECTOR, sel)
-                                    if el.is_displayed():
-                                        time.sleep(random.uniform(0.4, 0.9))
-                                        _js_click(el)
-                                        self.logger.info(f"{tag} JS-clicked: {sel}")
-                                        clicked = True
-                                        break
-                                except Exception:
-                                    continue
-                            self.driver.switch_to.default_content()
-                            if clicked:
-                                break
-                except Exception:
-                    try:
-                        self.driver.switch_to.default_content()
-                    except Exception:
-                        pass
-
-                if not clicked:
-                    try:
-                        for cb in self.driver.find_elements(By.CSS_SELECTOR, "input[type='checkbox']"):
-                            if cb.is_displayed():
-                                time.sleep(random.uniform(0.3, 0.7))
-                                _js_click(cb)
-                                self.logger.info(f"{tag} JS-clicked main-page checkbox")
-                                clicked = True
-                                break
-                    except Exception:
-                        pass
+                if _try_click_in_frame():
+                    time.sleep(3)
+                    continue
 
             remaining = int(deadline - time.time())
             self.logger.info(f"{tag} Cloudflare active — simulating human ({remaining}s left)...")
@@ -219,10 +241,11 @@ class BMJJournalScraper(ChromeDisplayMixin):
         self.logger.warning(f"{tag} Cloudflare bypass timed out after {timeout}s")
         try:
             os.makedirs("logs", exist_ok=True)
-            self.driver.save_screenshot(os.path.join("logs", "bmj_debug_cloudflare_timeout.png"))
+            self.driver.save_screenshot("logs/bmj_debug_cloudflare_timeout.png")
         except Exception:
             pass
         return False
+
 
     def _setup_logger(self):
         """Configure the logger with both file and stdout handlers (UTF-8 safe)."""
@@ -287,32 +310,91 @@ class BMJJournalScraper(ChromeDisplayMixin):
             self.logger.error(f"Failed to save data to CSV: {e}")
 
     def get_total_pages(self):
-        """Retrieve the total number of pages from the search results."""
+        """
+        Retrieve total result count from BMJ search results.
+
+        Confirmed HTML structure (from live page inspection):
+            <div class="highwire-search-summary" id="search-summary-wrapper">
+                228 results
+            </div>
+
+        Primary selectors target this element. Fallbacks cover layout changes.
+        """
+        import re
+
+        # Primary: confirmed selectors from live page — try in order
+        PRIMARY_SELECTORS = [
+            "div.highwire-search-summary#search-summary-wrapper",  # exact confirmed
+            "#search-summary-wrapper",                             # by id
+            "div.highwire-search-summary",                        # by class
+        ]
+        # Fallbacks for future layout changes
+        FALLBACK_SELECTORS = [
+            "div.search-summary",
+            "span.result-count",
+            "[data-test='search-summary']",
+            "span[class*='result']",
+            "h2[class*='result']",
+            "p.results-number",
+        ]
+
+        # Wait for page body to settle before looking for result count
+        time.sleep(3)
+
+        for sel in PRIMARY_SELECTORS + FALLBACK_SELECTORS:
+            try:
+                el = WebDriverWait(self.driver, 6).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, sel))
+                )
+                text = el.text.strip()
+                if not text:
+                    continue
+                self.logger.info(f"BMJ ==> Result element [{sel}]: '{text[:80]}'")
+                # e.g. "228 results" → extract leading number
+                nums = re.findall(r"[\d,]+", text)
+                for n in nums:
+                    n_clean = n.replace(",", "")
+                    if n_clean.isdigit() and int(n_clean) > 0:
+                        total = int(n_clean)
+                        pages = math.ceil(total / 100)
+                        self.logger.info(f"BMJ ==> {total} results → {pages} pages")
+                        return pages
+            except Exception:
+                continue
+
+        # JS fallback: walk all DOM text nodes for "N results" pattern
         try:
-            stats_element = self.wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "#search-summary-wrapper"))
-            )
-            stats_text = stats_element.text.strip()
-            
-            # Check for "No results" case
-            if "No results" in stats_text or "0 results" in stats_text:
-                self.logger.info("No results found for this search")
-                return 0
-            
-            total_results_text = stats_text.split()[0].replace(",","").strip()
-            
-            # Validate it's a digit before parsing
-            if not total_results_text.isdigit():
-                self.logger.warning(f"Could not parse total results from: {stats_text}")
-                return 0
-            
-            total_results = int(total_results_text)
-            total_pages = math.ceil(total_results / 100)
-            self.logger.info(f"Total results: {total_results}, Total pages: {total_pages}")
-            return total_pages
+            found = self.driver.execute_script("""
+                var all = document.querySelectorAll('*');
+                for (var i = 0; i < all.length; i++) {
+                    var el = all[i];
+                    if (el.children.length > 0) continue;
+                    var t = (el.innerText || el.textContent || '').trim();
+                    if (/^\\d[\\d,]* results?$/i.test(t)) return t;
+                }
+                return null;
+            """)
+            if found:
+                nums = re.findall(r"[\d,]+", found)
+                for n in nums:
+                    n_clean = n.replace(",", "")
+                    if n_clean.isdigit() and int(n_clean) > 0:
+                        total = int(n_clean)
+                        pages = math.ceil(total / 100)
+                        self.logger.info(f"BMJ ==> JS text-scan found: '{found}' → {pages} pages")
+                        return pages
         except Exception as e:
-            self.logger.error(f"Failed to get total pages: {e}")
-            return 0
+            self.logger.debug(f"BMJ ==> JS fallback failed: {e}")
+
+        # Debug info when nothing found
+        try:
+            self.logger.error(f"BMJ ==> No result count found. URL: {self.driver.current_url}")
+            os.makedirs("logs", exist_ok=True)
+            self.driver.save_screenshot("logs/bmj_debug_no_results.png")
+            self.logger.info("BMJ ==> Screenshot saved → logs/bmj_debug_no_results.png")
+        except Exception:
+            pass
+        return 0
 
     def extract_article_links(self, total_pages, query_params):
         """Extract article links from each page and save them to a CSV file."""
@@ -467,9 +549,13 @@ class BMJJournalScraper(ChromeDisplayMixin):
         try:
             self._initialize_driver()
 
-            # BMJ search URL — YYYY-MM-DD format (self.start_year already converted)
+            # BMJ search URL — confirmed working format from live site inspection.
+            # Keyword encoding: spaces → "+" → "%252B" (double-encoded plus sign)
+            # Example: "cancer metastasis" → "cancer%252Bmetastasis"
+            # This matches: https://journals.bmj.com/search/cancer%252Bmetastasis%20...
+            keyword_encoded = self.keyword.replace(" ", "%252B")
             search_url = (
-                f"https://journals.bmj.com/search/{self.keyword}"
+                f"https://journals.bmj.com/search/{keyword_encoded}"
                 f"%20limit_from%3A{self.start_year}"
                 f"%20limit_to%3A{self.end_year}"
                 f"%20exclude_meeting_abstracts%3A1"
@@ -477,6 +563,8 @@ class BMJJournalScraper(ChromeDisplayMixin):
                 f"%20sort%3Arelevance-rank"
                 f"%20format_result%3Astandard"
                 f"%20button%3ASubmit"
+                f"%20button2%3ASubmit"
+                f"%20button3%3ASubmit"
             )
             query_params = {"base_url": search_url, "page": 0}
 
