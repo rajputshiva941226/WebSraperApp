@@ -333,13 +333,22 @@ class ChromeDisplayMixin:
             self._try_launch_chrome_on_display(opts, driver_path, display=None)
             return
 
-        # ── Step 1: try real GNOME3 display :0 ───────────────────────────────
-        if not os.environ.get('DISPLAY'):
-            os.environ['DISPLAY'] = ':0'
-        display = os.environ['DISPLAY']
+        # ── Use DISPLAY from environment if already set (e.g. DISPLAY=:99
+        #    injected by the Celery systemd service).  Only default to :0 when
+        #    nothing is set at all — :0 is almost always wrong on a headless
+        #    EC2 server and wastes 60 s on a doomed SessionNotCreatedException.
+        current_display = os.environ.get('DISPLAY', '')
+        if current_display:
+            logger.info("%s DISPLAY already set to %s — skipping :0 attempt", tag, current_display)
+            display = current_display
+        else:
+            # No DISPLAY at all — default to :99 (our persistent Xvfb),
+            # NOT :0 which requires a live GNOME session.
+            display = ':99'
+            os.environ['DISPLAY'] = display
+            logger.info("%s No DISPLAY set — defaulting to %s", tag, display)
 
-        # XAUTHORITY probe (also done in _diagnose_environment, but kept here
-        # so the right value is in env at launch time)
+        # XAUTHORITY probe — only needed for real X sessions, harmless for Xvfb
         xauth = os.environ.get('XAUTHORITY', '')
         if not xauth or not os.path.exists(xauth):
             uid_str = str(os.getuid()) if hasattr(os, 'getuid') else '1000'
@@ -358,22 +367,20 @@ class ChromeDisplayMixin:
                     tag, os.environ.get('DISPLAY'), os.environ.get('XAUTHORITY', '<unset>'))
         try:
             self._try_launch_chrome_on_display(opts, driver_path, display)
-            logger.info("%s Chrome launched on GNOME3 display %s ✓", tag, display)
+            logger.info("%s Chrome launched on display %s ✓", tag, display)
             return
         except Exception as e1:
             logger.warning(
-                "%s Chrome failed on %s: %s — falling back to Xvfb",
+                "%s Chrome failed on %s: %s — falling back to fresh Xvfb",
                 tag, display, type(e1).__name__,
             )
 
-        # ── Step 2: Xvfb fallback ─────────────────────────────────────────────
-        xvfb_display = self._start_xvfb()           # populates self._vdisplay
-        os.environ['DISPLAY']    = xvfb_display
-        os.environ.pop('XAUTHORITY', None)           # Xvfb -ac needs no auth
+        # ── Fallback: start a fresh Xvfb on :99 ──────────────────────────────
+        xvfb_display = self._start_xvfb()
+        os.environ['DISPLAY'] = xvfb_display
+        os.environ.pop('XAUTHORITY', None)   # Xvfb -ac needs no auth
 
         logger.info("%s Retrying Chrome on Xvfb %s (no XAUTHORITY)", tag, xvfb_display)
-        # NOTE: _try_launch_chrome_on_display always builds fresh ChromeOptions
-        # internally — no need to clone opts here.
         try:
             self._try_launch_chrome_on_display(opts, driver_path, xvfb_display)
             logger.info("%s Chrome launched on Xvfb %s ✓", tag, xvfb_display)
@@ -382,7 +389,7 @@ class ChromeDisplayMixin:
                 "%s Chrome ALSO failed on Xvfb: %s\n"
                 "  Install Xvfb  : sudo apt install xvfb\n"
                 "  Install lib   : pip install pyvirtualdisplay\n"
-                "  Or allow xhost: DISPLAY=:0 xhost +local:",
+                "  Or allow xhost: DISPLAY=:99 xhost +local:",
                 tag, e2,
             )
             self._save_chrome_log()
@@ -560,29 +567,48 @@ class ChromeDisplayMixin:
 
     def _start_xvfb(self) -> str:
         """
-        Start a virtual framebuffer and return the display string (e.g. ':99').
-        Sets self._vdisplay to either a pyvirtualdisplay.Display or a
-        subprocess.Popen so _quit_chrome() can clean up either.
+        Ensure a Xvfb virtual display is running on :99 and return ':99'.
+
+        ALWAYS uses display :99 — never lets pyvirtualdisplay pick a random
+        number like :1 or :2.  This guarantees that x11vnc (which watches :99)
+        will always show Chrome, regardless of which scraper started it.
+
+        If :99 is already running (persistent systemd Xvfb service), this is
+        a no-op and just returns ':99' immediately.
         """
         logger = getattr(self, 'logger', _log)
         tag    = getattr(self, '_diag_tag', '[ChromeMixin]')
 
-        logger.info("%s Starting Xvfb virtual display…", tag)
+        TARGET = ':99'
 
-        # Preferred: pyvirtualdisplay (Python API, cleaner lifecycle)
+        # Check if :99 is already running — if so, reuse it (no-op)
+        lock = '/tmp/.X99-lock'
+        if os.path.exists(lock):
+            logger.info("%s Xvfb %s already running (lock exists) — reusing", tag, TARGET)
+            os.environ['DISPLAY'] = TARGET
+            return TARGET
+
+        logger.info("%s Starting Xvfb on %s…", tag, TARGET)
+
+        # Try pyvirtualdisplay but FORCE display number 99
         try:
             from pyvirtualdisplay import Display as VDisplay
-            self._vdisplay = VDisplay(visible=False, size=(1400, 900), backend='xvfb')
+            self._vdisplay = VDisplay(
+                visible=False,
+                size=(1400, 900),
+                backend='xvfb',
+                display=99,        # ← ALWAYS :99, never random
+            )
             self._vdisplay.start()
-            xvfb_display = f":{self._vdisplay.display}"
-            logger.info("%s pyvirtualdisplay on %s", tag, xvfb_display)
-            return xvfb_display
+            logger.info("%s pyvirtualdisplay started on %s", tag, TARGET)
+            os.environ['DISPLAY'] = TARGET
+            return TARGET
         except ImportError:
-            logger.info("%s pyvirtualdisplay not installed — using raw Xvfb on :99", tag)
+            logger.info("%s pyvirtualdisplay not installed — using raw Xvfb", tag)
         except Exception as e:
-            logger.warning("%s pyvirtualdisplay failed (%s) — using raw Xvfb on :99", tag, e)
+            logger.warning("%s pyvirtualdisplay failed (%s) — using raw Xvfb", tag, e)
 
-        # Fallback: raw Xvfb subprocess on :99
+        # Fallback: raw Xvfb subprocess — always on :99
         subprocess.run(['pkill', '-f', 'Xvfb :99'], capture_output=True)
         time.sleep(0.5)
         proc = subprocess.Popen(
@@ -592,8 +618,9 @@ class ChromeDisplayMixin:
         )
         self._vdisplay = proc
         time.sleep(1.5)
-        logger.info("%s Raw Xvfb PID=%d on :99", tag, proc.pid)
-        return ':99'
+        logger.info("%s Raw Xvfb PID=%d on %s", tag, proc.pid, TARGET)
+        os.environ['DISPLAY'] = TARGET
+        return TARGET
 
     # =========================================================================
     # SECTION 5 — Teardown

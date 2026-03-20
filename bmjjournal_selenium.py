@@ -39,18 +39,18 @@ class BMJJournalScraper(ChromeDisplayMixin):
         logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
         self.logger = logging.getLogger(__name__)
 
-        # self.options = Options()
-        # #self.options.add_argument("--headless")
-        # self.options.add_argument("--window-size=1920,1080")
-        # self.options.add_argument("--disable-notifications")
-        # self.options.add_argument("--disable-background-timer-throttling")
-        # self.options.add_argument("--disable-backgrounding-occluded-windows")
-        # self.options.add_argument("--disable-renderer-backgrounding")
-        # self.options.add_argument("--no-sandbox")
-        # self.options.add_argument("--disable-dev-shm-usage")
-        # self.options.add_argument("excludeSwitches=enable-automation")
-        # self.options.add_argument("--disable-logging")
-        # self.options.add_argument("--disable-blink-features=AutomationControlled")
+        self.options = Options()
+        self.options.add_argument("--headless")
+        self.options.add_argument("--window-size=1920,1080")
+        self.options.add_argument("--disable-notifications")
+        self.options.add_argument("--disable-background-timer-throttling")
+        self.options.add_argument("--disable-backgrounding-occluded-windows")
+        self.options.add_argument("--disable-renderer-backgrounding")
+        self.options.add_argument("--no-sandbox")
+        self.options.add_argument("--disable-dev-shm-usage")
+        self.options.add_argument("excludeSwitches=enable-automation")
+        self.options.add_argument("--disable-logging")
+        self.options.add_argument("--disable-blink-features=AutomationControlled")
 
         self.uc_temp_dir = tempfile.mkdtemp(prefix="BMJ_")
         self.driver = None
@@ -65,8 +65,7 @@ class BMJJournalScraper(ChromeDisplayMixin):
         self.authors_csv = f"BMJ_{self.directory}-{self.start_year}-{self.end_year}_authors.csv"
 
         self._setup_logger()  # Initialize logger for the subclass
-        self._initialize_driver()
-        self.run()
+        
 
     def _initialize_driver(self):
         """Initialize the Chrome driver"""
@@ -335,6 +334,7 @@ class BMJJournalScraper(ChromeDisplayMixin):
     def run(self):
         """Main execution method"""
         try:
+            self._initialize_driver()
             query_params = {
                 "base_url": f"https://journals.bmj.com/search/{self.keyword}%20limit_from%3A{self.start_year}%20limit_to%3A{self.end_year}%20exclude_meeting_abstracts%3A1%20numresults%3A100%20sort%3Arelevance-rank%20format_result%3Astandard%20button%3ASubmit",
                 "page": 0
