@@ -47,9 +47,16 @@ class LippincottScraper(ChromeDisplayMixin):
         # Convert dates for URLs / CSV names
         self.start_year = self.convert_date_format(start_year)
         self.end_year   = self.convert_date_format(end_year)
-        conf = f"_{conference_name}" if conference_name else ""
-        self.url_csv     = f"Lippincott_{self.directory}-{self.start_year}-{self.end_year}{conf}_urls.csv"
-        self.authors_csv = f"Lippincott_{self.directory}-{self.start_year}-{self.end_year}{conf}_authors.csv"
+
+        from datetime import datetime as _dt
+        _ts = _dt.now().strftime("%H-%M-%S")
+        _conf  = f"_{conference_name}" if conference_name else ""
+        _kw    = self.directory
+        _sd    = self.start_year.replace("/", "-").replace(":", "-")
+        _ed    = self.end_year.replace("/", "-").replace(":", "-")
+        _base  = f"Lippincott{_conf}_{_kw}_{_sd}_{_ed}_{_ts}"
+        self.url_csv     = f"{_base}_urls.csv"
+        self.authors_csv = f"{_base}_authors.csv"
         # run() is called by SeleniumScraperWrapper — NOT here
 
     # ── Logger ────────────────────────────────────────────────────────────────
@@ -331,119 +338,53 @@ class LippincottScraper(ChromeDisplayMixin):
             )
 
 
-    def _bypass_cloudflare(self, timeout: int = 90) -> bool:
+    def _bypass_cloudflare(self, timeout: int = 120) -> bool:
         """
-        Bypass Cloudflare Turnstile. Walks ALL iframes up to 3 levels.
-        Waits up to 8s for Turnstile iframe to inject before walking.
-        Uses ActionChains (isTrusted=True) + JS fallback.
+        Wait for user to manually solve Cloudflare captcha in VNC.
+        No automated clicking — simply polls every 3 s for up to `timeout` seconds.
+        When the challenge page disappears the scraper continues automatically.
         """
-        import random
-        from selenium.webdriver.common.action_chains import ActionChains
-
-        PHRASES = ["just a moment","verifying you are human",
-                   "performing security verification","checking your browser",
-                   "cf-browser-verification"]
-        CF_SELS = ["input[type='checkbox']","div.ctp-checkbox-label",
-                   ".mark","span.mark","label[for='cf-stage']",
-                   "div[id*='challenge']","div[class*='checkbox']"]
+        PHRASES = [
+            "just a moment", "verifying you are human",
+            "performing security verification", "checking your browser",
+            "cf-browser-verification",
+        ]
 
         def _on_cf():
             try:
-                t=self.driver.title.lower(); s=self.driver.page_source.lower()[:600]
+                t = self.driver.title.lower()
+                s = self.driver.page_source.lower()[:600]
                 return any(p in t or p in s for p in PHRASES)
-            except Exception: return False
+            except Exception:
+                return False
 
-        def _wait_ready(sec=10):
-            end=time.time()+sec
-            while time.time()<end:
-                try:
-                    if self.driver.execute_script("return document.readyState")=="complete": return
-                except Exception: pass
-                time.sleep(0.5)
-
-        def _human():
-            try:
-                self.driver.execute_script("""
-                    var x=300+Math.floor(Math.random()*500),y=200+Math.floor(Math.random()*350);
-                    document.dispatchEvent(new MouseEvent('mousemove',{bubbles:true,clientX:x,clientY:y}));
-                    window.scrollBy(0,Math.floor(Math.random()*40+5));
-                    setTimeout(function(){window.scrollBy(0,-20);},300);
-                """)
-            except Exception: pass
-
-        def _click_el(el, label):
-            time.sleep(random.uniform(0.4,0.9))
-            try:
-                ActionChains(self.driver).move_to_element(el).pause(random.uniform(0.3,0.7)).click().perform()
-                self.logger.info(f"CF bypass: ActionChains clicked {label}"); return True
-            except Exception: pass
-            try:
-                self.driver.execute_script("""
-                    var el=arguments[0],r=el.getBoundingClientRect();
-                    var cx=r.left+r.width/2+(Math.random()-0.5)*3,cy=r.top+r.height/2+(Math.random()-0.5)*3;
-                    ['mousedown','mouseup','click'].forEach(function(t){
-                        el.dispatchEvent(new MouseEvent(t,{bubbles:true,cancelable:true,clientX:cx,clientY:cy,view:window}));});
-                """,el); self.logger.info(f"CF bypass: JS clicked {label}"); return True
-            except Exception: return False
-
-        def _wait_iframes(sec=8):
-            end=time.time()+sec
-            while time.time()<end:
-                if self.driver.find_elements(By.TAG_NAME,"iframe"): return True
-                time.sleep(0.5)
-            return False
-
-        def _walk(depth=0):
-            if depth==0: _wait_iframes()
-            for sel in CF_SELS:
-                try:
-                    for el in self.driver.find_elements(By.CSS_SELECTOR,sel):
-                        if el.is_displayed():
-                            if _click_el(el,f"d{depth}:{sel}"): return True
-                except Exception: pass
-            if depth>=3: return False
-            try:
-                for fr in self.driver.find_elements(By.TAG_NAME,"iframe"):
-                    try:
-                        self.driver.switch_to.frame(fr); time.sleep(0.6)
-                        if _walk(depth+1): return True
-                        self.driver.switch_to.parent_frame(); time.sleep(0.3)
-                    except Exception:
-                        try: self.driver.switch_to.default_content()
-                        except Exception: pass
-            except Exception: pass
-            return False
-
-        _wait_ready(); time.sleep(2)
         if not _on_cf():
-            self.logger.info("CF bypass: page ready (no challenge) ✓"); return True
-        self.logger.info("CF bypass: challenge detected — starting bypass...")
-        deadline=time.time()+timeout; last_click=0; attempt=0
+            self.logger.info("CF bypass: no challenge — page ready ✓")
+            return True
 
-        while time.time()<deadline:
-            _wait_ready(5)
-            if not _on_cf(): self.logger.info("CF bypass: cleared ✓"); return True
-            _human()
-            if time.time()-last_click>5:
-                last_click=time.time(); attempt+=1
-                self.logger.info(f"CF bypass: attempt #{attempt}")
-                try: self.driver.switch_to.default_content()
-                except Exception: pass
-                try: clicked=_walk()
-                except Exception: clicked=False
-                finally:
-                    try: self.driver.switch_to.default_content()
-                    except Exception: pass
-                if clicked: time.sleep(4); continue
-            self.logger.info(f"CF bypass: active ({int(deadline-time.time())}s left)...")
-            time.sleep(2)
+        self.logger.warning(
+            f"CF bypass: Cloudflare challenge detected. "
+            f"Please solve the captcha in VNC within {timeout}s..."
+        )
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            time.sleep(3)
+            if not _on_cf():
+                self.logger.info("CF bypass: challenge cleared by user ✓")
+                return True
+            remaining = int(deadline - time.time())
+            self.logger.info(f"CF bypass: still waiting for human solve... ({remaining}s left)")
 
-        self.logger.warning(f"CF bypass: timed out after {timeout}s")
+        self.logger.warning(f"CF bypass: timed out after {timeout}s — continuing anyway")
         try:
-            os.makedirs("logs",exist_ok=True)
-            self.driver.save_screenshot(f"logs/{self.__class__.__name__}_cf_timeout.png")
-        except Exception: pass
+            os.makedirs("logs", exist_ok=True)
+            self.driver.save_screenshot(
+                f"logs/{self.__class__.__name__}_cf_timeout.png"
+            )
+        except Exception:
+            pass
         return False
+
 
     def run(self):
         try:
