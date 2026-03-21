@@ -326,12 +326,61 @@ class SageScraper(ChromeDisplayMixin):
     # Cookie / page helpers
     # ─────────────────────────────────────────────────────────────────────
 
-    def _bypass_cloudflare(self, timeout: int = 120) -> bool:
+    # ── Cookie helpers ────────────────────────────────────────────────────────
+    _COOKIE_DIR = "/home/ubuntu/.scraper_cookies"
+
+    def _cookie_path(self, domain: str) -> str:
+        os.makedirs(self._COOKIE_DIR, exist_ok=True)
+        safe = domain.replace(".", "_").replace("/", "_")
+        return os.path.join(self._COOKIE_DIR, f"{safe}.json")
+
+    def _save_cf_cookies(self, domain: str) -> None:
+        """Persist cookies after a successful Cloudflare solve."""
+        import json
+        path = self._cookie_path(domain)
+        try:
+            cookies = self.driver.get_cookies()
+            with open(path, "w") as f:
+                json.dump(cookies, f)
+            self.logger.info(f"CF cookies saved ({len(cookies)}) → {path}")
+        except Exception as e:
+            self.logger.warning(f"CF cookie save failed: {e}")
+
+    def _load_cf_cookies(self, url: str) -> bool:
+        """Load saved cookies before navigating to *url*. Returns True if loaded."""
+        import json
+        from urllib.parse import urlparse
+        domain = urlparse(url).netloc
+        path = self._cookie_path(domain)
+        if not os.path.exists(path):
+            return False
+        try:
+            self.driver.get(f"https://{domain}")
+            time.sleep(2)
+            with open(path) as f:
+                cookies = json.load(f)
+            loaded = 0
+            for c in cookies:
+                c.pop("sameSite", None)
+                try:
+                    self.driver.add_cookie(c)
+                    loaded += 1
+                except Exception:
+                    pass
+            self.logger.info(f"CF cookies loaded ({loaded}/{len(cookies)}) from {path}")
+            return loaded > 0
+        except Exception as e:
+            self.logger.warning(f"CF cookie load failed: {e}")
+            return False
+
+    def _bypass_cloudflare(self, timeout: int = 120, target_url: str = "") -> bool:
         """
-        Wait for user to manually solve Cloudflare captcha in VNC.
-        No automated clicking — simply polls every 3 s for up to `timeout` seconds.
-        When the challenge page disappears the scraper continues automatically.
+        Wait for user to solve Cloudflare captcha in VNC.
+        Saves cookies after a successful solve.
+        RAISES RuntimeError if captcha is not solved within timeout — this marks
+        the Celery job as FAILED instead of COMPLETED with 0 results.
         """
+        from urllib.parse import urlparse
         PHRASES = [
             "just a moment", "verifying you are human",
             "performing security verification", "checking your browser",
@@ -351,19 +400,26 @@ class SageScraper(ChromeDisplayMixin):
             return True
 
         self.logger.warning(
-            f"CF bypass: Cloudflare challenge detected. "
-            f"Please solve the captcha in VNC within {timeout}s..."
+            f"⚠️  Cloudflare challenge detected — open VNC and click 'Verify you are human' "
+            f"within {timeout}s.  URL: {self.driver.current_url}"
         )
         deadline = time.time() + timeout
         while time.time() < deadline:
             time.sleep(3)
             if not _on_cf():
-                self.logger.info("CF bypass: challenge cleared by user ✓")
+                self.logger.info("CF bypass: challenge cleared ✓")
+                # Save cookies so future runs skip the captcha
+                try:
+                    domain = urlparse(self.driver.current_url).netloc or urlparse(target_url).netloc
+                    if domain:
+                        self._save_cf_cookies(domain)
+                except Exception:
+                    pass
                 return True
             remaining = int(deadline - time.time())
-            self.logger.info(f"CF bypass: still waiting for human solve... ({remaining}s left)")
+            self.logger.info(f"CF bypass: waiting for solve... ({remaining}s left)")
 
-        self.logger.warning(f"CF bypass: timed out after {timeout}s — continuing anyway")
+        # Screenshot before raising
         try:
             os.makedirs("logs", exist_ok=True)
             self.driver.save_screenshot(
@@ -371,7 +427,12 @@ class SageScraper(ChromeDisplayMixin):
             )
         except Exception:
             pass
-        return False
+
+        raise RuntimeError(
+            f"Cloudflare captcha was not solved within {timeout}s. "
+            f"Open VNC at http://3.108.210.45:6080/vnc.html, run the scraper again, "
+            f"and click the checkbox when prompted."
+        )
 
 
     def _accept_cookies(self):
@@ -749,6 +810,10 @@ class SageScraper(ChromeDisplayMixin):
             self._init_csv(self.url_csv,     ["Article_URL"])
             self._init_csv(self.authors_csv, ["Article_URL", "Author_Name", "Email"])
 
+            # ── Step 0: Pre-warm with saved CF cookies ────────────────────────
+            # Load cookies from a prior successful solve — may skip captcha entirely
+            self._load_cf_cookies("https://journals.sagepub.com")
+
             # ── Step 1: Homepage → cookie consent ────────────────────────────
             self._progress(2, "Loading Sage homepage for cookie/session...")
             self.driver.get("https://journals.sagepub.com/")
@@ -775,7 +840,7 @@ class SageScraper(ChromeDisplayMixin):
             time.sleep(15)   # give Cloudflare managed-challenge time to auto-verify
 
             # ── Step 3: Handle Cloudflare if it appears ───────────────────────
-            self._bypass_cloudflare(timeout=120)
+            self._bypass_cloudflare(timeout=120, target_url="https://journals.sagepub.com")
 
             self.logger.info(f"Sage ==> Current URL after bypass: {self.driver.current_url}")
 

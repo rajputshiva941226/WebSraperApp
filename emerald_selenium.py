@@ -306,12 +306,61 @@ class EmeraldInsights(ChromeDisplayMixin):
             )
 
 
-    def _bypass_cloudflare(self, timeout: int = 120) -> bool:
+    # ── Cookie helpers ────────────────────────────────────────────────────────
+    _COOKIE_DIR = "/home/ubuntu/.scraper_cookies"
+
+    def _cookie_path(self, domain: str) -> str:
+        os.makedirs(self._COOKIE_DIR, exist_ok=True)
+        safe = domain.replace(".", "_").replace("/", "_")
+        return os.path.join(self._COOKIE_DIR, f"{safe}.json")
+
+    def _save_cf_cookies(self, domain: str) -> None:
+        """Persist cookies after a successful Cloudflare solve."""
+        import json
+        path = self._cookie_path(domain)
+        try:
+            cookies = self.driver.get_cookies()
+            with open(path, "w") as f:
+                json.dump(cookies, f)
+            self.logger.info(f"CF cookies saved ({len(cookies)}) → {path}")
+        except Exception as e:
+            self.logger.warning(f"CF cookie save failed: {e}")
+
+    def _load_cf_cookies(self, url: str) -> bool:
+        """Load saved cookies before navigating to *url*. Returns True if loaded."""
+        import json
+        from urllib.parse import urlparse
+        domain = urlparse(url).netloc
+        path = self._cookie_path(domain)
+        if not os.path.exists(path):
+            return False
+        try:
+            self.driver.get(f"https://{domain}")
+            time.sleep(2)
+            with open(path) as f:
+                cookies = json.load(f)
+            loaded = 0
+            for c in cookies:
+                c.pop("sameSite", None)
+                try:
+                    self.driver.add_cookie(c)
+                    loaded += 1
+                except Exception:
+                    pass
+            self.logger.info(f"CF cookies loaded ({loaded}/{len(cookies)}) from {path}")
+            return loaded > 0
+        except Exception as e:
+            self.logger.warning(f"CF cookie load failed: {e}")
+            return False
+
+    def _bypass_cloudflare(self, timeout: int = 120, target_url: str = "") -> bool:
         """
-        Wait for user to manually solve Cloudflare captcha in VNC.
-        No automated clicking — simply polls every 3 s for up to `timeout` seconds.
-        When the challenge page disappears the scraper continues automatically.
+        Wait for user to solve Cloudflare captcha in VNC.
+        Saves cookies after a successful solve.
+        RAISES RuntimeError if captcha is not solved within timeout — this marks
+        the Celery job as FAILED instead of COMPLETED with 0 results.
         """
+        from urllib.parse import urlparse
         PHRASES = [
             "just a moment", "verifying you are human",
             "performing security verification", "checking your browser",
@@ -331,19 +380,26 @@ class EmeraldInsights(ChromeDisplayMixin):
             return True
 
         self.logger.warning(
-            f"CF bypass: Cloudflare challenge detected. "
-            f"Please solve the captcha in VNC within {timeout}s..."
+            f"⚠️  Cloudflare challenge detected — open VNC and click 'Verify you are human' "
+            f"within {timeout}s.  URL: {self.driver.current_url}"
         )
         deadline = time.time() + timeout
         while time.time() < deadline:
             time.sleep(3)
             if not _on_cf():
-                self.logger.info("CF bypass: challenge cleared by user ✓")
+                self.logger.info("CF bypass: challenge cleared ✓")
+                # Save cookies so future runs skip the captcha
+                try:
+                    domain = urlparse(self.driver.current_url).netloc or urlparse(target_url).netloc
+                    if domain:
+                        self._save_cf_cookies(domain)
+                except Exception:
+                    pass
                 return True
             remaining = int(deadline - time.time())
-            self.logger.info(f"CF bypass: still waiting for human solve... ({remaining}s left)")
+            self.logger.info(f"CF bypass: waiting for solve... ({remaining}s left)")
 
-        self.logger.warning(f"CF bypass: timed out after {timeout}s — continuing anyway")
+        # Screenshot before raising
         try:
             os.makedirs("logs", exist_ok=True)
             self.driver.save_screenshot(
@@ -351,7 +407,12 @@ class EmeraldInsights(ChromeDisplayMixin):
             )
         except Exception:
             pass
-        return False
+
+        raise RuntimeError(
+            f"Cloudflare captcha was not solved within {timeout}s. "
+            f"Open VNC at http://3.108.210.45:6080/vnc.html, run the scraper again, "
+            f"and click the checkbox when prompted."
+        )
 
 
     def run(self):
@@ -382,10 +443,11 @@ class EmeraldInsights(ChromeDisplayMixin):
             end_date_form   = self.end_year     # e.g. "03/20/2025"
 
             # ── Step 1: Homepage → accept cookie banner ──────────────────────
+            self._load_cf_cookies("https://www.emerald.com")
             self.logger.info("Emerald ==> GET https://www.emerald.com")
             self.driver.get("https://www.emerald.com")
             time.sleep(5)
-            self._bypass_cloudflare(timeout=60)
+            self._bypass_cloudflare(timeout=120, target_url="https://www.emerald.com")
 
             # Cookie banner: <button id="onetrust-accept-btn-handler">Accept All Cookies</button>
             try:
@@ -404,14 +466,14 @@ class EmeraldInsights(ChromeDisplayMixin):
             self.logger.info("Emerald ==> GET https://www.emerald.com/advanced-search")
             self.driver.get("https://www.emerald.com/advanced-search")
             time.sleep(6)   # wait for form JS to load
-            self._bypass_cloudflare(timeout=60)
+            self._bypass_cloudflare(timeout=120, target_url="https://www.emerald.com")
 
             self._fill_emerald_search_form(start_date_form, end_date_form)
 
             # ── Step 3: Wait for results ──────────────────────────────────────
             self._progress(5, "Waiting for search results...")
             time.sleep(10)
-            self._bypass_cloudflare(timeout=90)
+            self._bypass_cloudflare(timeout=120, target_url="https://www.emerald.com")
 
             # Accept cookie again if shown on results page
             try:
