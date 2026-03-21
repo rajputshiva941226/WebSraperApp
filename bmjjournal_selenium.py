@@ -549,41 +549,54 @@ class BMJJournalScraper(ChromeDisplayMixin):
         try:
             self._initialize_driver()
 
-            # ── Step 1: Load homepage, bypass Cloudflare, accept cookies ─────
-            self.logger.info("BMJ ==> Loading homepage...")
+            # ── Step 1: Homepage + cookie consent ────────────────────────────
+            # <button id="onetrust-accept-btn-handler">I Accept</button>
+            self.logger.info("BMJ ==> Loading https://journals.bmj.com")
             self.driver.get("https://journals.bmj.com")
-            self._bypass_cloudflare(timeout=60)
+            time.sleep(5)
 
             try:
-                cookie_btn = WebDriverWait(self.driver, 10).until(
-                    EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))
+                btn = WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located(
+                        (By.CSS_SELECTOR, "#onetrust-accept-btn-handler")
+                    )
                 )
-                time.sleep(1)
-                self.driver.execute_script("arguments[0].click();", cookie_btn)
-                self.logger.info("BMJ ==> Cookie banner accepted")
-                time.sleep(2)
-            except TimeoutException:
-                self.logger.info("BMJ ==> No cookie banner")
+                self.driver.execute_script("arguments[0].click();", btn)
+                self.logger.info("BMJ ==> Cookie consent accepted (JS click)")
+            except Exception:
+                self.logger.info("BMJ ==> No cookie banner found")
+            time.sleep(2)
 
-            # ── Step 2: Use search form — avoids Varnish 503 on direct URL ───
-            # Varnish CDN blocks direct requests to /search/ from EC2 IPs.
-            # Submitting via the search form sends the request with proper
-            # Referer + session cookies, bypassing the CDN block.
-            self.logger.info(f"BMJ ==> Submitting search form for: {self.keyword}")
-            search_submitted = self._submit_search_form()
+            # ── Step 2: Navigate to /search form ─────────────────────────────
+            self.logger.info("BMJ ==> Navigating to https://journals.bmj.com/search")
+            self.driver.get("https://journals.bmj.com/search")
+            time.sleep(5)
 
-            if not search_submitted:
-                self.logger.error("BMJ ==> Search form submission failed — aborting")
+            # ── Step 3: Fill and submit the search form ───────────────────────
+            # Form fields confirmed from live HTML:
+            #   Search term : input[name="txtsimple"]     id="edit-txtsimple"
+            #   From date   : input[name="limit_from[date]_replacement"]  type="date"
+            #   Through date: input[name="limit_to[date]_replacement"]    type="date"
+            #   Num results : select[name="numresults"]
+            #   Submit      : #edit-button2  (below "Format Results" section)
+            submitted = self._fill_and_submit_form()
+            if not submitted:
+                self.logger.error("BMJ ==> Form submission failed — aborting")
                 return
 
+            time.sleep(8)   # wait for results page to load
+
+            # Handle Cloudflare if it appears after form submit
             self._bypass_cloudflare(timeout=60)
 
-            # Accept cookie if shown again on results page
+            # Accept cookie again if shown on results page
             try:
-                cookie_btn = WebDriverWait(self.driver, 5).until(
-                    EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))
+                btn2 = WebDriverWait(self.driver, 5).until(
+                    EC.presence_of_element_located(
+                        (By.CSS_SELECTOR, "#onetrust-accept-btn-handler")
+                    )
                 )
-                self.driver.execute_script("arguments[0].click();", cookie_btn)
+                self.driver.execute_script("arguments[0].click();", btn2)
                 time.sleep(2)
             except Exception:
                 pass
@@ -601,102 +614,96 @@ class BMJJournalScraper(ChromeDisplayMixin):
         finally:
             self._quit_chrome()
 
-    def _submit_search_form(self) -> bool:
+    def _fill_and_submit_form(self) -> bool:
         """
-        Submit the BMJ search form with the keyword and date filters.
-        Uses the search input on journals.bmj.com — avoids Varnish 503
-        that blocks direct requests to /search/ from EC2 IPs.
+        Fill the BMJ advanced search form and submit it.
 
-        Falls back to JS navigation if the form is not found.
+        Form fields (from live HTML at journals.bmj.com/search):
+          txtsimple                    — Search Term (main keyword field)
+          limit_from[date]_replacement — From date  (type="date", YYYY-MM-DD)
+          limit_to[date]_replacement   — Through date
+          numresults                   — Results per page (select, value="100")
+          #edit-button2                — Submit button below Format Results section
         """
+        import random
         from selenium.webdriver.common.keys import Keys
 
-        SEARCH_SELECTORS = [
-            "input[name='search_text']",
-            "input[type='search']",
-            "input[placeholder*='search' i]",
-            "input[placeholder*='Search' i]",
-            "#search-input",
-            "input.search-input",
-            "input[class*='search']",
-        ]
-
-        # Try to find the search box
-        search_input = None
-        for sel in SEARCH_SELECTORS:
-            try:
-                el = WebDriverWait(self.driver, 5).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, sel))
-                )
-                search_input = el
-                self.logger.info(f"BMJ ==> Found search input: {sel}")
-                break
-            except Exception:
-                continue
-
-        if search_input:
-            try:
-                # Clear and type keyword with human-like delay
-                self.driver.execute_script("arguments[0].click();", search_input)
-                time.sleep(0.5)
-                search_input.clear()
-                time.sleep(0.3)
-                # Type keyword character by character
-                for ch in self.keyword:
-                    search_input.send_keys(ch)
-                    time.sleep(random.uniform(0.05, 0.15))
-                time.sleep(0.5)
-
-                # Set date filters via JS if inputs exist
-                self._set_date_filters_js()
-
-                # Submit with Enter key
-                search_input.send_keys(Keys.RETURN)
-                self.logger.info(f"BMJ ==> Search submitted via form for '{self.keyword}'")
-                time.sleep(5)
-                return True
-            except Exception as e:
-                self.logger.warning(f"BMJ ==> Form submission failed: {e}")
-
-        # Fallback: JS navigation (works if session/cookies are established)
-        self.logger.info("BMJ ==> Search form not found — using JS navigation fallback")
-        from urllib.parse import quote
-        keyword_encoded = quote(self.keyword, safe="")
-        search_url = (
-            f"https://journals.bmj.com/search/{keyword_encoded}"
-            f"%20limit_from%3A{self.start_year}"
-            f"%20limit_to%3A{self.end_year}"
-            f"%20exclude_meeting_abstracts%3A1"
-            f"%20numresults%3A100"
-            f"%20sort%3Arelevance-rank"
-            f"%20format_result%3Astandard"
+        self.logger.info(
+            f"BMJ ==> Filling form: keyword='{self.keyword}' "
+            f"from={self.start_year} to={self.end_year}"
         )
+
         try:
-            self.driver.execute_script(f"window.location.href = arguments[0];", search_url)
-            time.sleep(8)
-            return True
+            # Wait for the search form to load
+            WebDriverWait(self.driver, 15).until(
+                EC.presence_of_element_located((By.ID, "edit-txtsimple"))
+            )
         except Exception as e:
-            self.logger.error(f"BMJ ==> JS navigation also failed: {e}")
+            self.logger.error(f"BMJ ==> Search form not found: {e}")
             return False
 
-    def _set_date_filters_js(self):
-        """Set BMJ date filter fields via JS if they exist on the page."""
         try:
-            # Common BMJ date filter field names
-            js = """
+            # ── 1. Fill keyword ───────────────────────────────────────────────
+            kw_input = self.driver.find_element(By.ID, "edit-txtsimple")
+            self.driver.execute_script("arguments[0].click();", kw_input)
+            time.sleep(0.3)
+            kw_input.clear()
+            time.sleep(0.2)
+            # Type character-by-character (human-like)
+            for ch in self.keyword:
+                kw_input.send_keys(ch)
+                time.sleep(random.uniform(0.04, 0.12))
+            self.logger.info(f"BMJ ==> Keyword typed: {self.keyword}")
+
+            # ── 2. Fill date fields via JS (type="date" inputs) ───────────────
+            # self.start_year / self.end_year are already in YYYY-MM-DD format
+            js_dates = """
                 var fromField = document.querySelector(
-                    'input[name="limit_from"], input[name="from_date"], input[id*="from"]'
+                    'input[name="limit_from[date]_replacement"]'
                 );
                 var toField = document.querySelector(
-                    'input[name="limit_to"], input[name="to_date"], input[id*="to"]'
+                    'input[name="limit_to[date]_replacement"]'
                 );
-                if (fromField) { fromField.value = arguments[0]; }
-                if (toField)   { toField.value   = arguments[1]; }
+                if (fromField) {
+                    fromField.value = arguments[0];
+                    fromField.dispatchEvent(new Event('change', {bubbles: true}));
+                }
+                if (toField) {
+                    toField.value = arguments[1];
+                    toField.dispatchEvent(new Event('change', {bubbles: true}));
+                }
+                return (fromField ? 'from_ok' : 'from_missing') +
+                       '|' +
+                       (toField ? 'to_ok' : 'to_missing');
             """
-            self.driver.execute_script(js, self.start_year, self.end_year)
-            self.logger.info(f"BMJ ==> Date filters set: {self.start_year} → {self.end_year}")
+            result = self.driver.execute_script(js_dates, self.start_year, self.end_year)
+            self.logger.info(f"BMJ ==> Date fields JS result: {result}")
+
+            # ── 3. Set results per page to 100 ───────────────────────────────
+            try:
+                from selenium.webdriver.support.ui import Select
+                numresults_el = self.driver.find_element(By.ID, "edit-numresults")
+                Select(numresults_el).select_by_value("100")
+                self.logger.info("BMJ ==> Results per page set to 100")
+            except Exception as e:
+                self.logger.warning(f"BMJ ==> Could not set numresults: {e}")
+
+            # ── 4. Click submit button (#edit-button2 — below Format Results) ─
+            time.sleep(0.5)
+            submit_btn = self.driver.find_element(By.ID, "edit-button2")
+            self.driver.execute_script("arguments[0].click();", submit_btn)
+            self.logger.info("BMJ ==> Form submitted (JS click #edit-button2)")
+            return True
+
         except Exception as e:
-            self.logger.debug(f"BMJ ==> Date filter JS failed: {e}")
+            self.logger.error(f"BMJ ==> Form fill error: {e}", exc_info=True)
+            # Take debug screenshot
+            try:
+                os.makedirs("logs", exist_ok=True)
+                self.driver.save_screenshot("logs/bmj_form_error.png")
+            except Exception:
+                pass
+            return False
 
 # if __name__ == "__main__":
 #     parser = argparse.ArgumentParser(description="Scrape article links and author details from BMJ Journal.")

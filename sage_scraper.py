@@ -870,68 +870,84 @@ class SageScraper(ChromeDisplayMixin):
         authors_path = os.path.join(self._work_dir(), self.authors_csv)
 
         try:
-            start_parts  = self.start_year.split("/")
+            # Parse date parts — Sage URL uses integer months (no leading zeros)
+            # Input format: MM/DD/YYYY
+            start_parts  = self.start_year.split("/")  # ["MM","DD","YYYY"]
             end_parts    = self.end_year.split("/")
-            after_month  = start_parts[0]
+            after_month  = str(int(start_parts[0]))    # "01" → "1"
             after_year   = start_parts[-1]
-            before_month = end_parts[0]
+            before_month = str(int(end_parts[0]))
             before_year  = end_parts[-1]
 
-            query_params = {
-                "field1":      "AllField",
-                "text1":       self.keyword,
-                "AfterMonth":  after_month,
-                "AfterYear":   after_year,
-                "BeforeMonth": before_month,
-                "BeforeYear":  before_year,
-                "pageSize":    100,
-                "startPage":   0,
-            }
-            base_url   = "https://journals.sagepub.com/action/doSearch"
-            search_url = f"{base_url}?{urlencode(query_params)}"
+            # Confirmed working Sage search URL format:
+            # field1=Keyword&text1={kw}&field2=Abstract&text2={kw}
+            # AfterMonth=1 (no leading zero)
+            from urllib.parse import quote_plus
+            kw = quote_plus(self.keyword)
+            search_url = (
+                f"https://journals.sagepub.com/action/doSearch"
+                f"?field1=Keyword&text1={kw}"
+                f"&field2=Abstract&text2={kw}"
+                f"&publication=&Ppub="
+                f"&AfterMonth={after_month}&AfterYear={after_year}"
+                f"&BeforeMonth={before_month}&BeforeYear={before_year}"
+                f"&access="
+            )
+
             self.logger.info(
-                f"Sage ==> Search params: keyword={self.keyword}, "
-                f"dates={after_month}/{after_year} → {before_month}/{before_year}"
+                f"Sage ==> Search URL: {search_url}"
             )
 
             self._init_csv(self.url_csv,     ["Article_URL"])
             self._init_csv(self.authors_csv, ["Article_URL", "Author_Name", "Email"])
 
-            # ── Step 1: homepage — bypass Cloudflare with JS clicks ──────────
+            # ── Step 1: Homepage + cookie consent ────────────────────────────
             self._progress(2, "Opening Sage Journals homepage...")
-            self.logger.info("Sage ==> Loading homepage...")
-            self.driver.get("https://journals.sagepub.com")
-            self._bypass_cloudflare(timeout=60)
+            self.logger.info("Sage ==> Loading https://journals.sagepub.com/")
+            self.driver.get("https://journals.sagepub.com/")
+            time.sleep(5)
 
-            # Accept cookie banner after challenge clears
-            try:
-                cookie_btn = WebDriverWait(self.driver, 10).until(
-                    EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))
-                )
-                time.sleep(1)
-                self.driver.execute_script("arguments[0].click();", cookie_btn)
-                self.logger.info("Sage ==> Cookie banner accepted (JS click)")
-                time.sleep(2)
-            except Exception:
-                self.logger.info("Sage ==> No cookie banner found")
+            # Accept cookies — "Accept Non-Essential Cookies" button
+            # <button id="onetrust-accept-btn-handler">Accept Non-Essential Cookies</button>
+            for cookie_sel in [
+                "#onetrust-accept-btn-handler",
+                "button#onetrust-accept-btn-handler",
+            ]:
+                try:
+                    btn = WebDriverWait(self.driver, 8).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, cookie_sel))
+                    )
+                    self.driver.execute_script("arguments[0].click();", btn)
+                    self.logger.info(f"Sage ==> Cookie consent clicked ({cookie_sel})")
+                    time.sleep(2)
+                    break
+                except Exception:
+                    continue
 
-            # ── Step 2: Navigate to search URL via JS (keeps trusted session) ──
-            # driver.get() on the search URL triggers Cloudflare's managed challenge
-            # because it starts a fresh navigation from an EC2 IP.
-            # window.location.href from within the already-verified homepage session
-            # inherits the trust token Cloudflare issued for this session.
+            # ── Step 2: Navigate to search URL via JS (keeps session trust) ───
             self._progress(5, "PHASE 1: Collecting article URLs...")
-            self.logger.info(f"Sage ==> Navigating to search via JS: {search_url[:80]}...")
-            self.driver.execute_script(f"window.location.href = '{search_url}';")
-            time.sleep(8)   # wait for page to load after JS navigation
-            self._bypass_cloudflare(timeout=60)
+            self.logger.info(f"Sage ==> Navigating to search URL via JS...")
+            self.driver.execute_script(f"window.location.href = arguments[0];", search_url)
+            time.sleep(10)   # wait for page + any Cloudflare managed challenge
+
+            # Handle Cloudflare if it appears
+            self._bypass_cloudflare(timeout=90)
 
             total_pages = self.get_total_pages()
             if total_pages == 0:
                 self.logger.warning("Sage ==> No results found — aborting.")
                 return authors_path, "No results found"
 
-            self.extract_article_links(total_pages, base_url, query_params)
+            self.extract_article_links(total_pages,
+                                       "https://journals.sagepub.com/action/doSearch",
+                                       {
+                                           "field1": "Keyword", "text1": self.keyword,
+                                           "field2": "Abstract", "text2": self.keyword,
+                                           "publication": "", "Ppub": "",
+                                           "AfterMonth": after_month, "AfterYear": after_year,
+                                           "BeforeMonth": before_month, "BeforeYear": before_year,
+                                           "access": "", "pageSize": 100,
+                                       })
 
             self._progress(40, "PHASE 2: Extracting author emails...")
             self.extract_author_info()
