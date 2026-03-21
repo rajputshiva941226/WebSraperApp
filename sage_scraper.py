@@ -936,10 +936,10 @@ class SageScraper(ChromeDisplayMixin):
             self._progress(5, f"Navigating to search: {self.keyword}...")
             self.logger.info(f"Sage ==> JS navigating to search URL...")
             self.driver.execute_script("window.location.href = arguments[0];", search_url)
-            time.sleep(10)   # give Cloudflare time to auto-verify
+            time.sleep(15)   # give Cloudflare managed-challenge time to auto-verify
 
             # ── Step 3: Handle Cloudflare if it appears ───────────────────────
-            self._bypass_cloudflare(timeout=90)
+            self._bypass_cloudflare(timeout=120)
 
             self.logger.info(f"Sage ==> Current URL after bypass: {self.driver.current_url}")
 

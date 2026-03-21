@@ -414,41 +414,93 @@ class EmeraldInsights(ChromeDisplayMixin):
         return False
 
     def run(self):
+        """
+        Emerald Insight scraper.
+
+        Navigation:
+          1. emerald.com → accept cookie banner (JS click #onetrust-accept-btn-handler)
+          2. emerald.com/advanced-search → fill search form:
+               - input#advancedSearchQueryTerm  (keyword)
+               - input#3  (Exact Phrase radio)
+               - input#startDateSemanticSearch  (MM/DD/YYYY)
+               - input#endDateSemanticSearch    (MM/DD/YYYY)
+               - button#btnAdvancedSearch       (Search button below date range)
+          3. Wait for results, bypass Cloudflare if needed
+          4. Extract article links, extract author emails
+        """
         try:
             self.logger.info("Emerald ==> Initialising Chrome via ChromeDisplayMixin...")
             self._launch_chrome(
                 self._build_default_chrome_options(), driver_path=self.driver_path
             )
             self.wait = WebDriverWait(self.driver, 20)
-            # maximize_window() OMITTED — triggers Runtime.evaluate on Chrome 145
 
-            start_iso = datetime.strptime(self.start_year, "%m/%d/%Y").strftime("%Y-%m-%d")
-            end_iso   = datetime.strptime(self.end_year,   "%m/%d/%Y").strftime("%Y-%m-%d")
-            date_range = f"{start_iso}T00:00:00 TO {end_iso}T23:59:59"
+            # Keep raw date strings in MM/DD/YYYY for the form
+            # (Emerald date inputs use MM/DD/YYYY format per placeholder)
+            start_date_form = self.start_year   # e.g. "01/01/2025"
+            end_date_form   = self.end_year     # e.g. "03/20/2025"
 
-            query_params = {
-                "q":                self.keyword,
-                "fl_SiteID":        "1",
-                "access_openaccess":"true",
-                "f_ContentType":    "Journal Articles",
-                "rg_PublicationDate": date_range,
-            }
-            base_url   = "https://www.emerald.com/search-results/"
-            search_url = f"{base_url}?{urlencode(query_params)}"
-
-            self.logger.info(f"Emerald ==> GET {search_url}")
-            self.driver.get(search_url)
+            # ── Step 1: Homepage → accept cookie banner ──────────────────────
+            self.logger.info("Emerald ==> GET https://www.emerald.com")
+            self.driver.get("https://www.emerald.com")
             time.sleep(5)
             self._bypass_cloudflare(timeout=60)
 
-            self._progress(5, "Getting result count...")
+            # Cookie banner: <button id="onetrust-accept-btn-handler">Accept All Cookies</button>
+            try:
+                btn = WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located(
+                        (By.CSS_SELECTOR, "#onetrust-accept-btn-handler")
+                    )
+                )
+                self.driver.execute_script("arguments[0].click();", btn)
+                self.logger.info("Emerald ==> Cookie consent accepted")
+                time.sleep(2)
+            except Exception:
+                self.logger.info("Emerald ==> No cookie banner found")
+
+            # ── Step 2: Advanced search form ─────────────────────────────────
+            self.logger.info("Emerald ==> GET https://www.emerald.com/advanced-search")
+            self.driver.get("https://www.emerald.com/advanced-search")
+            time.sleep(6)   # wait for form JS to load
+            self._bypass_cloudflare(timeout=60)
+
+            self._fill_emerald_search_form(start_date_form, end_date_form)
+
+            # ── Step 3: Wait for results ──────────────────────────────────────
+            self._progress(5, "Waiting for search results...")
+            time.sleep(10)
+            self._bypass_cloudflare(timeout=90)
+
+            # Accept cookie again if shown on results page
+            try:
+                btn2 = WebDriverWait(self.driver, 5).until(
+                    EC.presence_of_element_located(
+                        (By.CSS_SELECTOR, "#onetrust-accept-btn-handler")
+                    )
+                )
+                self.driver.execute_script("arguments[0].click();", btn2)
+                time.sleep(2)
+            except Exception:
+                pass
+
+            self.logger.info(f"Emerald ==> Results URL: {self.driver.current_url}")
+
+            # ── Step 4: Extract URLs then emails ─────────────────────────────
+            self._progress(8, "Getting result count...")
             total_pages = self.get_total_pages()
             if not total_pages:
                 self.logger.error("Emerald ==> No results — aborting")
                 return
 
-            self._progress(8, f"Collecting URLs from {total_pages} pages...")
-            self.extract_article_links(total_pages, base_url, query_params)
+            # Use current URL as base for pagination
+            from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+            parsed     = urlparse(self.driver.current_url)
+            flat_params = {k: v[0] for k, v in parse_qs(parsed.query, keep_blank_values=True).items()}
+            base_url   = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+
+            self._progress(10, f"Collecting URLs from {total_pages} pages...")
+            self.extract_article_links(total_pages, base_url, flat_params)
 
             self._progress(40, "PHASE 2: Extracting author emails...")
             self.extract_author_info()
@@ -460,3 +512,98 @@ class EmeraldInsights(ChromeDisplayMixin):
             self.logger.error(f"Emerald ==> run() error: {e}", exc_info=True)
         finally:
             self._quit_chrome()
+
+    def _fill_emerald_search_form(self, start_date: str, end_date: str):
+        """
+        Fill the Emerald advanced search form at /advanced-search.
+
+        Selectors from live HTML:
+          Keyword input : input#advancedSearchQueryTerm
+          Exact Phrase  : input#3  (radio, value="Exact Phrase")
+          Start date    : input#startDateSemanticSearch  (MM/DD/YYYY)
+          End date      : input#endDateSemanticSearch    (MM/DD/YYYY)
+          Search button : button#btnAdvancedSearch  (below the date range)
+        """
+        import random
+        from selenium.webdriver.common.keys import Keys
+
+        self.logger.info(
+            f"Emerald ==> Filling form: keyword='{self.keyword}' "
+            f"{start_date} → {end_date}"
+        )
+
+        try:
+            WebDriverWait(self.driver, 15).until(
+                EC.presence_of_element_located(
+                    (By.ID, "advancedSearchQueryTerm")
+                )
+            )
+        except Exception as e:
+            self.logger.error(f"Emerald ==> Search form not loaded: {e}")
+            return
+
+        try:
+            # ── 1. Type keyword ───────────────────────────────────────────────
+            time.sleep(random.uniform(0.8, 1.5))
+            kw_input = self.driver.find_element(By.ID, "advancedSearchQueryTerm")
+            self.driver.execute_script("arguments[0].click();", kw_input)
+            time.sleep(random.uniform(0.4, 0.8))
+            kw_input.clear()
+            for ch in self.keyword:
+                kw_input.send_keys(ch)
+                time.sleep(random.uniform(0.06, 0.15))
+            self.logger.info(f"Emerald ==> Keyword typed: {self.keyword}")
+            time.sleep(random.uniform(0.5, 1.0))
+
+            # ── 2. Select "Exact Phrase" radio ────────────────────────────────
+            # <input id="3" name="SearchType" type="radio" value="Exact Phrase">
+            try:
+                exact_radio = self.driver.find_element(
+                    By.CSS_SELECTOR, "input#3[value='Exact Phrase']"
+                )
+                self.driver.execute_script("arguments[0].click();", exact_radio)
+                self.logger.info("Emerald ==> Exact Phrase selected")
+            except Exception as e:
+                self.logger.warning(f"Emerald ==> Could not select Exact Phrase: {e}")
+            time.sleep(random.uniform(0.5, 0.9))
+
+            # ── 3. Fill date fields (MM/DD/YYYY) via JS + send_keys ───────────
+            for field_id, value, label in [
+                ("startDateSemanticSearch", start_date, "Start"),
+                ("endDateSemanticSearch",   end_date,   "End"),
+            ]:
+                try:
+                    field = self.driver.find_element(By.ID, field_id)
+                    self.driver.execute_script("arguments[0].value = '';", field)
+                    self.driver.execute_script("arguments[0].click();", field)
+                    time.sleep(0.3)
+                    for ch in value:
+                        field.send_keys(ch)
+                        time.sleep(random.uniform(0.04, 0.10))
+                    field.send_keys(Keys.TAB)   # trigger validation
+                    self.logger.info(f"Emerald ==> {label} date: {value}")
+                    time.sleep(0.4)
+                except Exception as e:
+                    self.logger.warning(f"Emerald ==> Date field {field_id}: {e}")
+
+            time.sleep(random.uniform(1.0, 1.8))
+
+            # ── 4. Click the Search button (below date range in Filter section) ─
+            # <button id="btnAdvancedSearch" class="btn">Search</button>
+            search_btn = WebDriverWait(self.driver, 10).until(
+                EC.element_to_be_clickable((By.ID, "btnAdvancedSearch"))
+            )
+            self.driver.execute_script(
+                "arguments[0].scrollIntoView({block:'center'});", search_btn
+            )
+            time.sleep(random.uniform(0.8, 1.5))
+            self.driver.execute_script("arguments[0].click();", search_btn)
+            self.logger.info("Emerald ==> Search submitted")
+
+        except Exception as e:
+            self.logger.error(f"Emerald ==> Form fill error: {e}", exc_info=True)
+            try:
+                os.makedirs("logs", exist_ok=True)
+                self.driver.save_screenshot("logs/emerald_form_error.png")
+            except Exception:
+                pass

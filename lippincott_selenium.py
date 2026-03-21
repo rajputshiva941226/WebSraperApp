@@ -452,28 +452,49 @@ class LippincottScraper(ChromeDisplayMixin):
                 self._build_default_chrome_options(), driver_path=self.driver_path
             )
             self.wait = WebDriverWait(self.driver, 60)
-            # maximize_window() OMITTED — triggers Runtime.evaluate on Chrome 145
 
+            from urllib.parse import quote
+            keyword_encoded = quote(self.keyword, safe="")
             search_url = (
                 f"https://lww.com/pages/results.aspx"
-                f"?txtKeywords={self.keyword}"
+                f"?txtKeywords={keyword_encoded}"
             )
-            self.logger.info(f"Lippincott ==> GET {search_url}")
-            self.driver.get(search_url)
-            time.sleep(5)
-            self._bypass_cloudflare(timeout=60)
+
+            # ── Step 1: Homepage → establish session + bypass Cloudflare ──────
+            self.logger.info("Lippincott ==> GET https://lww.com (homepage for session)")
+            self.driver.get("https://lww.com")
+            time.sleep(8)
+            self._bypass_cloudflare(timeout=90)
 
             try:
                 btn = self.wait.until(
-                    EC.element_to_be_clickable(
+                    EC.presence_of_element_located(
                         (By.CSS_SELECTOR, "#onetrust-accept-btn-handler")
                     )
                 )
                 self.driver.execute_script("arguments[0].click();", btn)
                 self.logger.info("Lippincott ==> Cookie accepted")
+                time.sleep(2)
             except Exception:
-                self.logger.info("Lippincott ==> No cookie banner")
-            time.sleep(2)
+                self.logger.info("Lippincott ==> No cookie banner on homepage")
+
+            # ── Step 2: Navigate to search via JS (inherits session trust) ────
+            self.logger.info(f"Lippincott ==> JS navigating to: {search_url}")
+            self.driver.execute_script("window.location.href = arguments[0];", search_url)
+            time.sleep(10)
+            self._bypass_cloudflare(timeout=90)
+
+            # Accept cookie if shown on results page
+            try:
+                btn2 = WebDriverWait(self.driver, 5).until(
+                    EC.presence_of_element_located(
+                        (By.CSS_SELECTOR, "#onetrust-accept-btn-handler")
+                    )
+                )
+                self.driver.execute_script("arguments[0].click();", btn2)
+                time.sleep(2)
+            except Exception:
+                pass
 
             self._progress(5, "Getting result count...")
             total_pages = self.get_total_pages()
