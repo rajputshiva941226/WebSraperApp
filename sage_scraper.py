@@ -308,24 +308,23 @@ class SageScraper(ChromeDisplayMixin):
     # Cookie / page helpers
     # ─────────────────────────────────────────────────────────────────────
 
-    def _bypass_cloudflare(self, timeout: int = 60) -> bool:
+    def _bypass_cloudflare(self, timeout: int = 90) -> bool:
         """
-        Bypass Cloudflare challenge using nested-iframe JS click + human simulation.
+        Bypass Cloudflare Turnstile using ActionChains + JS click on the checkbox.
 
-        Cloudflare Turnstile uses TWO nested iframes:
-            Main page
-             └─ Outer iframe (src often = about:blank or empty initially)
-                 └─ Inner iframe (src = challenges.cloudflare.com/...)
-                     └─ checkbox / .mark element
+        The checkbox IS visible in the browser (confirmed in VNC screenshots).
+        Problem was our click wasn't reaching it. Solution:
 
-        Strategy:
-          1. Every 2s: fire JS mouse-move + scroll (keeps managed-challenge alive)
-          2. Every 6s: walk ALL iframes up to 3 levels deep looking for the
-             Turnstile checkbox — click it with JS dispatchEvent
-          3. Poll until title/source no longer contains challenge phrases
+        1. Switch into each iframe one level at a time (not recursive — Selenium
+           loses frame context on switch_to.default_content inside recursion)
+        2. Use ActionChains.move_to_element().click() — this sends real
+           synthetic mouse events through ChromeDriver, not JS dispatchEvent
+        3. JS click as fallback if ActionChains fails
+        4. Human activity (mousemove + scroll) every 2s to keep managed
+           challenge alive while waiting for auto-verification
         """
         import random
-        from urllib.parse import quote
+        from selenium.webdriver.common.action_chains import ActionChains
 
         CHALLENGE_PHRASES = [
             "just a moment", "verifying you are human",
@@ -333,6 +332,15 @@ class SageScraper(ChromeDisplayMixin):
             "cf-browser-verification",
         ]
         tag = "Sage ==>"
+
+        CF_SELECTORS = [
+            "input[type='checkbox']",
+            "div.ctp-checkbox-label",
+            ".mark", "span.mark",
+            "label[for='cf-stage']",
+            "div[id*='challenge']",
+            "div[class*='checkbox']",
+        ]
 
         def _on_challenge():
             try:
@@ -350,29 +358,41 @@ class SageScraper(ChromeDisplayMixin):
                         return
                 except Exception:
                     pass
-                time.sleep(0.4)
+                time.sleep(0.5)
 
         def _human_activity():
+            """Fire random JS mouse events to satisfy managed-challenge fingerprint."""
             try:
                 self.driver.execute_script("""
                     (function(){
-                        var x=200+Math.floor(Math.random()*600);
-                        var y=150+Math.floor(Math.random()*400);
+                        var x=300+Math.floor(Math.random()*500);
+                        var y=200+Math.floor(Math.random()*350);
                         document.dispatchEvent(new MouseEvent('mousemove',
                             {bubbles:true,cancelable:true,clientX:x,clientY:y}));
-                        window.scrollBy(0,Math.floor(Math.random()*50+5));
-                        setTimeout(function(){window.scrollBy(0,-25);},400);
+                        window.scrollBy(0, Math.floor(Math.random()*40+5));
+                        setTimeout(function(){ window.scrollBy(0, -20); }, 300);
                     })();
                 """)
             except Exception:
                 pass
 
+        def _action_click(el):
+            """Click using ActionChains — sends real ChromeDriver mouse events."""
+            try:
+                ActionChains(self.driver).move_to_element(el).pause(
+                    random.uniform(0.3, 0.8)
+                ).click().perform()
+                return True
+            except Exception:
+                return False
+
         def _js_click(el):
+            """JS dispatchEvent fallback."""
             try:
                 self.driver.execute_script("""
-                    var el=arguments[0],r=el.getBoundingClientRect();
-                    var cx=r.left+r.width/2+(Math.random()-0.5)*2;
-                    var cy=r.top+r.height/2+(Math.random()-0.5)*2;
+                    var el=arguments[0], r=el.getBoundingClientRect();
+                    var cx=r.left+r.width/2+(Math.random()-0.5)*3;
+                    var cy=r.top+r.height/2+(Math.random()-0.5)*3;
                     ['mousedown','mouseup','click'].forEach(function(t){
                         el.dispatchEvent(new MouseEvent(t,{
                             bubbles:true,cancelable:true,
@@ -384,116 +404,116 @@ class SageScraper(ChromeDisplayMixin):
             except Exception:
                 return False
 
-        CF_SELECTORS = [
-            "input[type='checkbox']",
-            "div.ctp-checkbox-label",
-            ".mark",
-            "label[for='cf-stage']",
-            "span.mark",
-            "div[id*='challenge']",
-            "div[class*='checkbox']",
-            "label",
-        ]
+        def _click_element(el, label):
+            """Try ActionChains first, fall back to JS click."""
+            time.sleep(random.uniform(0.4, 0.9))
+            if _action_click(el):
+                self.logger.info(f"{tag} ActionChains clicked: {label}")
+                return True
+            if _js_click(el):
+                self.logger.info(f"{tag} JS clicked: {label}")
+                return True
+            return False
 
-        def _try_click_in_frame():
+        def _try_in_frame(level=0):
             """
-            Recursively walk iframes up to 3 levels deep.
-            Try ALL iframes — Turnstile outer iframe often has src=about:blank.
+            Try clicking checkbox in current frame context, then walk child iframes.
             Returns True if a click was fired.
+            IMPORTANT: always call switch_to.default_content() in the main loop
+            before calling this — frame context must be clean.
             """
-            # Level 0: try on main page first
+            # Try selectors in current frame
             for sel in CF_SELECTORS:
                 try:
-                    els = self.driver.find_elements(By.CSS_SELECTOR, sel)
-                    for el in els:
+                    for el in self.driver.find_elements(By.CSS_SELECTOR, sel):
                         if el.is_displayed():
-                            time.sleep(random.uniform(0.3, 0.7))
-                            if _js_click(el):
-                                self.logger.info(f"{tag} JS-clicked main-page: {sel}")
+                            if _click_element(el, f"depth{level}:{sel}"):
                                 return True
                 except Exception:
                     pass
 
-            # Levels 1-3: walk all iframes
-            def _walk_frames(depth=0):
-                if depth > 2:
-                    return False
-                try:
-                    frames = self.driver.find_elements(By.TAG_NAME, "iframe")
-                    for i, frame in enumerate(frames):
-                        try:
-                            self.driver.switch_to.frame(frame)
-                            time.sleep(0.5)
-                            # Try clicking in this frame
-                            for sel in CF_SELECTORS:
-                                try:
-                                    els = self.driver.find_elements(By.CSS_SELECTOR, sel)
-                                    for el in els:
-                                        if el.is_displayed():
-                                            time.sleep(random.uniform(0.3, 0.7))
-                                            if _js_click(el):
-                                                self.logger.info(
-                                                    f"{tag} JS-clicked depth={depth+1}: {sel}"
-                                                )
-                                                self.driver.switch_to.default_content()
-                                                return True
-                                except Exception:
-                                    pass
-                            # Recurse deeper
-                            if _walk_frames(depth + 1):
-                                return True
-                            self.driver.switch_to.parent_frame()
-                        except Exception:
-                            try:
-                                self.driver.switch_to.default_content()
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
+            if level >= 3:
                 return False
 
-            result = _walk_frames()
+            # Walk child iframes
             try:
-                self.driver.switch_to.default_content()
+                frames = self.driver.find_elements(By.TAG_NAME, "iframe")
+                self.logger.info(f"{tag} Found {len(frames)} iframes at depth {level}")
+                for idx, frame in enumerate(frames):
+                    try:
+                        self.driver.switch_to.frame(frame)
+                        time.sleep(0.6)
+                        src = ""
+                        try:
+                            src = self.driver.execute_script("return window.location.href") or ""
+                        except Exception:
+                            pass
+                        self.logger.info(f"{tag} Entered iframe {idx} depth={level+1} src={src[:60]}")
+                        if _try_in_frame(level + 1):
+                            return True
+                        self.driver.switch_to.parent_frame()
+                        time.sleep(0.3)
+                    except Exception as e:
+                        self.logger.debug(f"{tag} Frame {idx} error: {e}")
+                        try:
+                            self.driver.switch_to.default_content()
+                        except Exception:
+                            pass
             except Exception:
                 pass
-            return result
+            return False
 
-        # ── Main bypass loop ─────────────────────────────────────────────────
+        # ── Initial wait ─────────────────────────────────────────────────────
         _wait_ready()
-        time.sleep(1.5)
+        time.sleep(2)
 
         if not _on_challenge():
             self.logger.info(f"{tag} No Cloudflare challenge — page ready ✓")
             return True
 
-        self.logger.info(f"{tag} Cloudflare detected — nested-iframe JS bypass starting...")
+        self.logger.info(f"{tag} Cloudflare detected — ActionChains+JS bypass starting...")
         deadline = time.time() + timeout
         last_click = 0
+        attempt = 0
 
         while time.time() < deadline:
-            _wait_ready(sec=6)
+            _wait_ready(sec=5)
 
             if not _on_challenge():
                 self.logger.info(f"{tag} Cloudflare cleared ✓")
                 return True
 
-            # Always simulate human activity
+            # Always keep human activity going
             _human_activity()
 
-            # Every 6s try clicking the checkbox
-            if time.time() - last_click > 6:
+            # Every 5s: attempt to click the checkbox
+            if time.time() - last_click > 5:
                 last_click = time.time()
-                clicked = _try_click_in_frame()
+                attempt += 1
+                self.logger.info(f"{tag} Click attempt #{attempt}...")
+                try:
+                    self.driver.switch_to.default_content()
+                except Exception:
+                    pass
+                try:
+                    clicked = _try_in_frame()
+                except Exception as e:
+                    self.logger.debug(f"{tag} Click attempt error: {e}")
+                    clicked = False
+                finally:
+                    try:
+                        self.driver.switch_to.default_content()
+                    except Exception:
+                        pass
                 if clicked:
-                    self.logger.info(f"{tag} Clicked — waiting for challenge resolution...")
-                    time.sleep(3)
-                    continue
+                    self.logger.info(f"{tag} Clicked! Waiting 4s for resolution...")
+                    time.sleep(4)
+                    if not _on_challenge():
+                        self.logger.info(f"{tag} Cloudflare cleared after click ✓")
+                        return True
 
             remaining = int(deadline - time.time())
-            self.logger.info(
-                f"{tag} Cloudflare active — simulating human ({remaining}s left)..."
-            )
+            self.logger.info(f"{tag} Cloudflare active — human-sim ({remaining}s left)...")
             time.sleep(2)
 
         self.logger.warning(f"{tag} Cloudflare bypass timed out after {timeout}s")

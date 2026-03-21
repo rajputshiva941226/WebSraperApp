@@ -85,13 +85,14 @@ class BMJJournalScraper(ChromeDisplayMixin):
             self.logger.error(f"Failed to restart driver: {e}")
             raise
 
-    def _bypass_cloudflare(self, timeout: int = 60) -> bool:
+    def _bypass_cloudflare(self, timeout: int = 90) -> bool:
         """
-        Bypass Cloudflare Turnstile using nested-iframe JS click + human simulation.
-        Handles both managed challenge (auto-resolve) and interactive Turnstile checkbox.
-        Walks ALL iframes up to 3 levels deep — Turnstile outer frame often has blank src.
+        Bypass Cloudflare Turnstile using ActionChains + JS click.
+        Walks all iframes up to 3 levels. ActionChains sends real ChromeDriver
+        mouse events; JS dispatchEvent is the fallback.
         """
         import random
+        from selenium.webdriver.common.action_chains import ActionChains
 
         CHALLENGE_PHRASES = [
             "just a moment", "verifying you are human",
@@ -99,6 +100,11 @@ class BMJJournalScraper(ChromeDisplayMixin):
             "cf-browser-verification",
         ]
         tag = "BMJ ==>"
+        CF_SELECTORS = [
+            "input[type='checkbox']", "div.ctp-checkbox-label",
+            ".mark", "span.mark", "label[for='cf-stage']",
+            "div[id*='challenge']", "div[class*='checkbox']",
+        ]
 
         def _on_challenge():
             try:
@@ -116,129 +122,123 @@ class BMJJournalScraper(ChromeDisplayMixin):
                         return
                 except Exception:
                     pass
-                time.sleep(0.4)
+                time.sleep(0.5)
 
         def _human_activity():
             try:
                 self.driver.execute_script("""
                     (function(){
-                        var x=200+Math.floor(Math.random()*600);
-                        var y=150+Math.floor(Math.random()*400);
+                        var x=300+Math.floor(Math.random()*500);
+                        var y=200+Math.floor(Math.random()*350);
                         document.dispatchEvent(new MouseEvent('mousemove',
                             {bubbles:true,cancelable:true,clientX:x,clientY:y}));
-                        window.scrollBy(0,Math.floor(Math.random()*50+5));
-                        setTimeout(function(){window.scrollBy(0,-25);},400);
+                        window.scrollBy(0, Math.floor(Math.random()*40+5));
+                        setTimeout(function(){ window.scrollBy(0, -20); }, 300);
                     })();
                 """)
             except Exception:
                 pass
 
-        def _js_click(el):
+        def _click_element(el, label):
+            time.sleep(random.uniform(0.4, 0.9))
+            try:
+                ActionChains(self.driver).move_to_element(el).pause(
+                    random.uniform(0.3, 0.7)
+                ).click().perform()
+                self.logger.info(f"{tag} ActionChains clicked: {label}")
+                return True
+            except Exception:
+                pass
             try:
                 self.driver.execute_script("""
                     var el=arguments[0],r=el.getBoundingClientRect();
-                    var cx=r.left+r.width/2+(Math.random()-0.5)*2;
-                    var cy=r.top+r.height/2+(Math.random()-0.5)*2;
+                    var cx=r.left+r.width/2+(Math.random()-0.5)*3;
+                    var cy=r.top+r.height/2+(Math.random()-0.5)*3;
                     ['mousedown','mouseup','click'].forEach(function(t){
-                        el.dispatchEvent(new MouseEvent(t,{
-                            bubbles:true,cancelable:true,clientX:cx,clientY:cy,view:window
-                        }));
+                        el.dispatchEvent(new MouseEvent(t,{bubbles:true,cancelable:true,
+                            clientX:cx,clientY:cy,view:window}));
                     });
                 """, el)
+                self.logger.info(f"{tag} JS clicked: {label}")
                 return True
             except Exception:
                 return False
 
-        CF_SELECTORS = [
-            "input[type='checkbox']",
-            "div.ctp-checkbox-label",
-            ".mark", "span.mark",
-            "label[for='cf-stage']",
-            "div[id*='challenge']",
-            "div[class*='checkbox']",
-            "label",
-        ]
-
-        def _try_click_in_frame():
-            # Level 0: main page
+        def _try_in_frame(level=0):
             for sel in CF_SELECTORS:
                 try:
                     for el in self.driver.find_elements(By.CSS_SELECTOR, sel):
                         if el.is_displayed():
-                            time.sleep(random.uniform(0.3, 0.7))
-                            if _js_click(el):
-                                self.logger.info(f"{tag} JS-clicked main-page: {sel}")
+                            if _click_element(el, f"depth{level}:{sel}"):
                                 return True
                 except Exception:
                     pass
-
-            def _walk(depth=0):
-                if depth > 2:
-                    return False
-                try:
-                    for frame in self.driver.find_elements(By.TAG_NAME, "iframe"):
-                        try:
-                            self.driver.switch_to.frame(frame)
-                            time.sleep(0.5)
-                            for sel in CF_SELECTORS:
-                                try:
-                                    for el in self.driver.find_elements(By.CSS_SELECTOR, sel):
-                                        if el.is_displayed():
-                                            time.sleep(random.uniform(0.3, 0.7))
-                                            if _js_click(el):
-                                                self.logger.info(f"{tag} JS-clicked depth={depth+1}: {sel}")
-                                                self.driver.switch_to.default_content()
-                                                return True
-                                except Exception:
-                                    pass
-                            if _walk(depth + 1):
-                                return True
-                            self.driver.switch_to.parent_frame()
-                        except Exception:
-                            try:
-                                self.driver.switch_to.default_content()
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
+            if level >= 3:
                 return False
-
-            result = _walk()
             try:
-                self.driver.switch_to.default_content()
+                frames = self.driver.find_elements(By.TAG_NAME, "iframe")
+                self.logger.info(f"{tag} {len(frames)} iframes at depth {level}")
+                for idx, frame in enumerate(frames):
+                    try:
+                        self.driver.switch_to.frame(frame)
+                        time.sleep(0.6)
+                        if _try_in_frame(level + 1):
+                            return True
+                        self.driver.switch_to.parent_frame()
+                        time.sleep(0.3)
+                    except Exception:
+                        try:
+                            self.driver.switch_to.default_content()
+                        except Exception:
+                            pass
             except Exception:
                 pass
-            return result
+            return False
 
         _wait_ready()
-        time.sleep(1.5)
+        time.sleep(2)
         if not _on_challenge():
             self.logger.info(f"{tag} No Cloudflare challenge — page ready ✓")
             return True
 
-        self.logger.info(f"{tag} Cloudflare detected — nested-iframe JS bypass...")
+        self.logger.info(f"{tag} Cloudflare detected — ActionChains+JS bypass...")
         deadline = time.time() + timeout
         last_click = 0
+        attempt = 0
 
         while time.time() < deadline:
-            _wait_ready(sec=6)
+            _wait_ready(sec=5)
             if not _on_challenge():
                 self.logger.info(f"{tag} Cloudflare cleared ✓")
                 return True
-
             _human_activity()
-
-            if time.time() - last_click > 6:
+            if time.time() - last_click > 5:
                 last_click = time.time()
-                if _try_click_in_frame():
-                    time.sleep(3)
-                    continue
-
+                attempt += 1
+                self.logger.info(f"{tag} Click attempt #{attempt}...")
+                try:
+                    self.driver.switch_to.default_content()
+                except Exception:
+                    pass
+                try:
+                    clicked = _try_in_frame()
+                except Exception:
+                    clicked = False
+                finally:
+                    try:
+                        self.driver.switch_to.default_content()
+                    except Exception:
+                        pass
+                if clicked:
+                    time.sleep(4)
+                    if not _on_challenge():
+                        self.logger.info(f"{tag} Cleared after click ✓")
+                        return True
             remaining = int(deadline - time.time())
-            self.logger.info(f"{tag} Cloudflare active — simulating human ({remaining}s left)...")
+            self.logger.info(f"{tag} Cloudflare active ({remaining}s left)...")
             time.sleep(2)
 
-        self.logger.warning(f"{tag} Cloudflare bypass timed out after {timeout}s")
+        self.logger.warning(f"{tag} Bypass timed out after {timeout}s")
         try:
             os.makedirs("logs", exist_ok=True)
             self.driver.save_screenshot("logs/bmj_debug_cloudflare_timeout.png")
@@ -549,60 +549,48 @@ class BMJJournalScraper(ChromeDisplayMixin):
         try:
             self._initialize_driver()
 
-            # BMJ search URL — spaces encoded as %20 (simple, no double-encoding)
-            # Format confirmed working: /search/cancer%20metastasis%20limit_from%3A...
-            from urllib.parse import quote
-            keyword_encoded = quote(self.keyword, safe="")  # spaces → %20
-            search_url = (
-                f"https://journals.bmj.com/search/{keyword_encoded}"
-                f"%20limit_from%3A{self.start_year}"
-                f"%20limit_to%3A{self.end_year}"
-                f"%20exclude_meeting_abstracts%3A1"
-                f"%20numresults%3A100"
-                f"%20sort%3Arelevance-rank"
-                f"%20format_result%3Astandard"
-            )
-            query_params = {"base_url": search_url, "page": 0}
-
-            # ── Step 1: Load BMJ homepage first to get cookies/session ────────
-            self.logger.info("BMJ ==> Loading homepage for session setup...")
+            # ── Step 1: Load homepage, bypass Cloudflare, accept cookies ─────
+            self.logger.info("BMJ ==> Loading homepage...")
             self.driver.get("https://journals.bmj.com")
             self._bypass_cloudflare(timeout=60)
 
-            # Accept cookie banner on homepage
             try:
                 cookie_btn = WebDriverWait(self.driver, 10).until(
                     EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))
                 )
                 time.sleep(1)
                 self.driver.execute_script("arguments[0].click();", cookie_btn)
-                self.logger.info("BMJ ==> Cookie banner accepted (JS click)")
+                self.logger.info("BMJ ==> Cookie banner accepted")
                 time.sleep(2)
             except TimeoutException:
-                self.logger.info("BMJ ==> No cookie banner on homepage")
+                self.logger.info("BMJ ==> No cookie banner")
 
-            # ── Step 2: Navigate to search URL via JS (keeps trusted session) ──
-            # Using driver.get() for the search URL triggers Cloudflare again
-            # because it creates a new navigation event. Using window.location.href
-            # from within the already-trusted homepage session avoids this.
-            self.logger.info(f"BMJ ==> Navigating to search via JS: {search_url[:80]}...")
-            self.driver.execute_script(f"window.location.href = '{search_url}';")
-            time.sleep(8)   # wait for page load after JS navigation
+            # ── Step 2: Use search form — avoids Varnish 503 on direct URL ───
+            # Varnish CDN blocks direct requests to /search/ from EC2 IPs.
+            # Submitting via the search form sends the request with proper
+            # Referer + session cookies, bypassing the CDN block.
+            self.logger.info(f"BMJ ==> Submitting search form for: {self.keyword}")
+            search_submitted = self._submit_search_form()
+
+            if not search_submitted:
+                self.logger.error("BMJ ==> Search form submission failed — aborting")
+                return
+
             self._bypass_cloudflare(timeout=60)
 
-            # Accept cookie banner again if shown on search page
+            # Accept cookie if shown again on results page
             try:
                 cookie_btn = WebDriverWait(self.driver, 5).until(
                     EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))
                 )
                 self.driver.execute_script("arguments[0].click();", cookie_btn)
-                self.logger.info("BMJ ==> Cookie banner accepted on search page")
                 time.sleep(2)
             except Exception:
                 pass
 
             total_pages = self.get_total_pages()
             if total_pages > 0:
+                query_params = {"base_url": self.driver.current_url, "page": 0}
                 self.extract_article_links(total_pages, query_params)
                 self.extract_author_info()
             else:
@@ -613,6 +601,102 @@ class BMJJournalScraper(ChromeDisplayMixin):
         finally:
             self._quit_chrome()
 
+    def _submit_search_form(self) -> bool:
+        """
+        Submit the BMJ search form with the keyword and date filters.
+        Uses the search input on journals.bmj.com — avoids Varnish 503
+        that blocks direct requests to /search/ from EC2 IPs.
+
+        Falls back to JS navigation if the form is not found.
+        """
+        from selenium.webdriver.common.keys import Keys
+
+        SEARCH_SELECTORS = [
+            "input[name='search_text']",
+            "input[type='search']",
+            "input[placeholder*='search' i]",
+            "input[placeholder*='Search' i]",
+            "#search-input",
+            "input.search-input",
+            "input[class*='search']",
+        ]
+
+        # Try to find the search box
+        search_input = None
+        for sel in SEARCH_SELECTORS:
+            try:
+                el = WebDriverWait(self.driver, 5).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, sel))
+                )
+                search_input = el
+                self.logger.info(f"BMJ ==> Found search input: {sel}")
+                break
+            except Exception:
+                continue
+
+        if search_input:
+            try:
+                # Clear and type keyword with human-like delay
+                self.driver.execute_script("arguments[0].click();", search_input)
+                time.sleep(0.5)
+                search_input.clear()
+                time.sleep(0.3)
+                # Type keyword character by character
+                for ch in self.keyword:
+                    search_input.send_keys(ch)
+                    time.sleep(random.uniform(0.05, 0.15))
+                time.sleep(0.5)
+
+                # Set date filters via JS if inputs exist
+                self._set_date_filters_js()
+
+                # Submit with Enter key
+                search_input.send_keys(Keys.RETURN)
+                self.logger.info(f"BMJ ==> Search submitted via form for '{self.keyword}'")
+                time.sleep(5)
+                return True
+            except Exception as e:
+                self.logger.warning(f"BMJ ==> Form submission failed: {e}")
+
+        # Fallback: JS navigation (works if session/cookies are established)
+        self.logger.info("BMJ ==> Search form not found — using JS navigation fallback")
+        from urllib.parse import quote
+        keyword_encoded = quote(self.keyword, safe="")
+        search_url = (
+            f"https://journals.bmj.com/search/{keyword_encoded}"
+            f"%20limit_from%3A{self.start_year}"
+            f"%20limit_to%3A{self.end_year}"
+            f"%20exclude_meeting_abstracts%3A1"
+            f"%20numresults%3A100"
+            f"%20sort%3Arelevance-rank"
+            f"%20format_result%3Astandard"
+        )
+        try:
+            self.driver.execute_script(f"window.location.href = arguments[0];", search_url)
+            time.sleep(8)
+            return True
+        except Exception as e:
+            self.logger.error(f"BMJ ==> JS navigation also failed: {e}")
+            return False
+
+    def _set_date_filters_js(self):
+        """Set BMJ date filter fields via JS if they exist on the page."""
+        try:
+            # Common BMJ date filter field names
+            js = """
+                var fromField = document.querySelector(
+                    'input[name="limit_from"], input[name="from_date"], input[id*="from"]'
+                );
+                var toField = document.querySelector(
+                    'input[name="limit_to"], input[name="to_date"], input[id*="to"]'
+                );
+                if (fromField) { fromField.value = arguments[0]; }
+                if (toField)   { toField.value   = arguments[1]; }
+            """
+            self.driver.execute_script(js, self.start_year, self.end_year)
+            self.logger.info(f"BMJ ==> Date filters set: {self.start_year} → {self.end_year}")
+        except Exception as e:
+            self.logger.debug(f"BMJ ==> Date filter JS failed: {e}")
 
 # if __name__ == "__main__":
 #     parser = argparse.ArgumentParser(description="Scrape article links and author details from BMJ Journal.")
