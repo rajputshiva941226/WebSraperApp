@@ -30,7 +30,8 @@ import tempfile
 
 class BMJJournalScraper(ChromeDisplayMixin):
     def __init__(self, keyword, start_year, end_year, driver_path,
-             output_dir=None, progress_callback=None):
+             output_dir=None, progress_callback=None,
+             conference_name=""):
         # ── MATCH SAGE PATTERN EXACTLY ────────────────────────────────────────
         # 1. Set all attributes first (raw strings, no conversion yet)
         # 2. Set up logger (_setup_logger uses self.start_year for log filename)
@@ -43,7 +44,8 @@ class BMJJournalScraper(ChromeDisplayMixin):
         self.progress_callback = progress_callback
         self.driver_path = driver_path
         self.directory = keyword.replace(" ", "-")
-        self.keyword = keyword
+        self.keyword         = keyword
+        self.conference_name = conference_name
 
         # Store RAW date strings first — _setup_logger uses them for the log filename
         self.start_year = start_year
@@ -55,8 +57,9 @@ class BMJJournalScraper(ChromeDisplayMixin):
         # Now convert dates for use in URLs and CSV filenames
         self.start_year = self.convert_date_format(start_year)
         self.end_year = self.convert_date_format(end_year)
-        self.url_csv = f"BMJ_{self.directory}-{self.start_year}-{self.end_year}_urls.csv"
-        self.authors_csv = f"BMJ_{self.directory}-{self.start_year}-{self.end_year}_authors.csv"
+        conf = f"_{conference_name}" if conference_name else ""
+        self.url_csv = f"BMJ_{self.directory}-{self.start_year}-{self.end_year}{conf}_urls.csv"
+        self.authors_csv = f"BMJ_{self.directory}-{self.start_year}-{self.end_year}{conf}_authors.csv"
 
     def _initialize_driver(self):
         """Initialize the Chrome driver"""
@@ -308,21 +311,32 @@ class BMJJournalScraper(ChromeDisplayMixin):
             return None
 
     def save_to_csv(self, data, filename, header=None):
-        """Save data to a CSV file — uses output_dir (Celery) if available."""
+        """Save data to CSV. Uses output_dir if available. Filters out N/A rows."""
         try:
             work_dir = self.output_dir if self.output_dir else self.directory
             os.makedirs(work_dir, exist_ok=True)
             filepath = os.path.join(work_dir, filename)
             file_exists = os.path.exists(filepath) and os.path.getsize(filepath) > 0
-            
+
+            # Only write rows that have a real email address
+            if filename == self.authors_csv:
+                data = [
+                    row for row in data
+                    if len(row) >= 3
+                    and row[2] not in ("N/A", "ERROR", "", None)
+                    and "@" in str(row[2])
+                ]
+                if not data:
+                    return  # Nothing valid to write
+
             with open(filepath, mode="a", newline="", encoding="utf-8") as file:
                 writer = csv.writer(file)
                 if not file_exists and header:
                     writer.writerow(header)
                 writer.writerows(data)
-            self.logger.info(f"Saved data to {filepath}.")
+            self.logger.info(f"BMJ ==> Saved {len(data)} row(s) → {filepath}")
         except Exception as e:
-            self.logger.error(f"Failed to save data to CSV: {e}")
+            self.logger.error(f"BMJ ==> CSV save failed: {e}")
 
     def get_total_pages(self):
         """
