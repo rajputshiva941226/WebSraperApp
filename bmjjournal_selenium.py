@@ -85,6 +85,20 @@ class BMJJournalScraper(ChromeDisplayMixin):
             self.logger.error(f"Failed to restart driver: {e}")
             raise
 
+    def _report_progress(self, pct, msg, current_url="", authors_count=0, links_count=0):
+        """Report progress to Celery job UI — same pattern as Cambridge scraper."""
+        self.logger.info(f"BMJ ==> [{pct}%] {msg}")
+        if self.progress_callback:
+            try:
+                self.progress_callback(
+                    pct, msg,
+                    current_url=current_url,
+                    authors_count=authors_count,
+                    links_count=links_count,
+                )
+            except Exception:
+                pass
+
     def _bypass_cloudflare(self, timeout: int = 90) -> bool:
         """
         Bypass Cloudflare Turnstile using ActionChains + JS click.
@@ -294,10 +308,11 @@ class BMJJournalScraper(ChromeDisplayMixin):
             return None
 
     def save_to_csv(self, data, filename, header=None):
-        """Save data to a CSV file."""
+        """Save data to a CSV file — uses output_dir (Celery) if available."""
         try:
-            os.makedirs(self.directory, exist_ok=True)
-            filepath = os.path.join(self.directory, filename)
+            work_dir = self.output_dir if self.output_dir else self.directory
+            os.makedirs(work_dir, exist_ok=True)
+            filepath = os.path.join(work_dir, filename)
             file_exists = os.path.exists(filepath) and os.path.getsize(filepath) > 0
             
             with open(filepath, mode="a", newline="", encoding="utf-8") as file:
@@ -397,45 +412,71 @@ class BMJJournalScraper(ChromeDisplayMixin):
         return 0
 
     def extract_article_links(self, total_pages, query_params):
-        """Extract article links from each page and save them to a CSV file."""
+        """Extract article links from each page — with live progress updates."""
         all_links = []
+        total_saved = 0
 
         for page in range(0, total_pages):
             page_url = f"{query_params['base_url']}?page={page}"
-            
+
             try:
                 self.driver.get(page_url)
-                time.sleep(3)  # Increased wait time
+                time.sleep(3)
 
                 links = self.wait.until(
-                    EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'a.highwire-cite-linked-title'))
+                    EC.presence_of_all_elements_located(
+                        (By.CSS_SELECTOR, 'a.highwire-cite-linked-title')
+                    )
                 )
-                page_links = [[link.get_attribute("href")] for link in links if link.get_attribute("href")]
+                page_links = [
+                    [lnk.get_attribute("href")]
+                    for lnk in links if lnk.get_attribute("href")
+                ]
                 all_links.extend(page_links)
-                self.logger.info(f"Extracted {len(page_links)} links from page {page}.")
+                total_saved += len(page_links)
+                self.logger.info(
+                    f"BMJ ==> Page {page+1}/{total_pages}: "
+                    f"{len(page_links)} links (total {total_saved})"
+                )
             except TimeoutException:
-                self.logger.error(f"Timeout while extracting links from page {page}")
+                self.logger.error(f"BMJ ==> Timeout on page {page+1}")
             except NoSuchWindowException:
-                self.logger.error(f"Window closed on page {page}, restarting driver")
+                self.logger.error(f"BMJ ==> Window closed page {page+1}, restarting")
                 self._restart_driver()
             except Exception as e:
-                self.logger.error(f"Failed to extract links from page {page}: {e}")
+                self.logger.error(f"BMJ ==> Error page {page+1}: {e}")
+
+            pct = int(5 + ((page + 1) / total_pages) * 35)   # 5 → 40%
+            self._report_progress(
+                pct,
+                f"URL collection: page {page+1}/{total_pages} ({total_saved} links)",
+                current_url=page_url,
+                links_count=total_saved,
+            )
 
         self.save_to_csv(all_links, self.url_csv, header=["Article_URL"])
 
     def extract_author_info(self):
-        """Read article URLs from the CSV file and extract corresponding author name and email."""
-        filepath = os.path.join(self.directory, self.url_csv)
+        """Read article URLs and scrape author emails — with live progress updates."""
+        work_dir = self.output_dir if self.output_dir else self.directory
+        filepath = os.path.join(work_dir, self.url_csv)
         if not os.path.exists(filepath):
-            self.logger.error("URLs file not found! Run extract_article_links() first.")
+            self.logger.error("BMJ ==> URLs file not found!")
             return
 
-        with open(filepath, mode="r", encoding="utf-8") as file:
-            reader = csv.reader(file)
-            next(reader)  # Skip header
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                rows = list(csv.reader(f))
+            all_urls = [r[0].strip() for r in rows[1:] if r and r[0].strip()]
+        except Exception as e:
+            self.logger.error(f"BMJ ==> Cannot read URL file: {e}")
+            return
 
-            for row in reader:
-                article_url = row[0]
+        total = len(all_urls)
+        authors_found = 0
+        self.logger.info(f"BMJ ==> Processing {total} articles for email extraction")
+
+        for _idx, article_url in enumerate(all_urls, 1):
                 if "veterinaryrecord.bmj.com" in article_url:
                     self.logger.info("Skipping veterinaryrecord.bmj.com URL")
                     continue
@@ -523,9 +564,20 @@ class BMJJournalScraper(ChromeDisplayMixin):
 
                         if author_info:
                             self.save_to_csv(author_info, self.authors_csv, header=["Article_URL", "Author_Name", "Email"])
+                            authors_found += len(
+                                [a for a in author_info if a[2] not in ("N/A", "ERROR")]
+                            )
                         else:
                             self.save_to_csv([[article_url, "N/A", "N/A"]], self.authors_csv, header=["Article_URL", "Author_Name", "Email"])
-                        
+
+                        pct = int(40 + (_idx / total) * 55)   # 40 → 95%
+                        self._report_progress(
+                            pct,
+                            f"Author extraction: {_idx}/{total} ({authors_found} emails found)",
+                            current_url=article_url,
+                            authors_count=authors_found,
+                            links_count=total,
+                        )
                         # If successful, break the retry loop
                         break
 
@@ -603,9 +655,22 @@ class BMJJournalScraper(ChromeDisplayMixin):
 
             total_pages = self.get_total_pages()
             if total_pages > 0:
-                query_params = {"base_url": self.driver.current_url, "page": 0}
+                # Fix URL path encoding: form submit encodes spaces as "+" in the path
+                # but Varnish rejects "+" in URL paths (only valid in query strings).
+                # Replace "+" → "%20" in the path segment only.
+                raw_url = self.driver.current_url
+                from urllib.parse import urlparse, urlunparse
+                p = urlparse(raw_url)
+                clean_path = p.path.replace('+', '%20')
+                clean_url  = urlunparse(p._replace(path=clean_path))
+                if clean_url != raw_url:
+                    self.logger.info(f"BMJ ==> Fixed URL path encoding: {clean_url[:80]}")
+                query_params = {"base_url": clean_url, "page": 0}
+                self._report_progress(5, f"Found {total_pages} page(s) — collecting URLs...")
                 self.extract_article_links(total_pages, query_params)
+                self._report_progress(40, "PHASE 2: Extracting author emails...")
                 self.extract_author_info()
+                self._report_progress(100, "BMJ scraping completed.")
             else:
                 self.logger.error("BMJ ==> No pages found to scrape")
 

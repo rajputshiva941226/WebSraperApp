@@ -866,88 +866,91 @@ class SageScraper(ChromeDisplayMixin):
         """
         Execute full scrape: Phase 1 (URL collection) → Phase 2 (email extraction).
         Returns (output_file_path, summary_string).
+
+        Navigation:
+          1. Go to journals.sagepub.com — accept cookie banner
+          2. Go to /search/advanced — fill form with keyword + custom date range
+          3. After results load — set 100 results/page, paginate
+          4. Phase 2: extract author emails
         """
         authors_path = os.path.join(self._work_dir(), self.authors_csv)
 
         try:
-            # Parse date parts — Sage URL uses integer months (no leading zeros)
-            # Input format: MM/DD/YYYY
+            # Parse date parts: input MM/DD/YYYY → month int, year string
             start_parts  = self.start_year.split("/")  # ["MM","DD","YYYY"]
             end_parts    = self.end_year.split("/")
-            after_month  = str(int(start_parts[0]))    # "01" → "1"
-            after_year   = start_parts[-1]
-            before_month = str(int(end_parts[0]))
+            after_month  = int(start_parts[0])          # "01" → 1
+            after_year   = start_parts[-1]              # "2025"
+            before_month = int(end_parts[0])
             before_year  = end_parts[-1]
-
-            # Confirmed working Sage search URL format:
-            # field1=Keyword&text1={kw}&field2=Abstract&text2={kw}
-            # AfterMonth=1 (no leading zero)
-            from urllib.parse import quote_plus
-            kw = quote_plus(self.keyword)
-            search_url = (
-                f"https://journals.sagepub.com/action/doSearch"
-                f"?field1=Keyword&text1={kw}"
-                f"&field2=Abstract&text2={kw}"
-                f"&publication=&Ppub="
-                f"&AfterMonth={after_month}&AfterYear={after_year}"
-                f"&BeforeMonth={before_month}&BeforeYear={before_year}"
-                f"&access="
-            )
-
-            self.logger.info(
-                f"Sage ==> Search URL: {search_url}"
-            )
 
             self._init_csv(self.url_csv,     ["Article_URL"])
             self._init_csv(self.authors_csv, ["Article_URL", "Author_Name", "Email"])
 
             # ── Step 1: Homepage + cookie consent ────────────────────────────
             self._progress(2, "Opening Sage Journals homepage...")
-            self.logger.info("Sage ==> Loading https://journals.sagepub.com/")
+            self.logger.info("Sage ==> GET https://journals.sagepub.com/")
             self.driver.get("https://journals.sagepub.com/")
+            time.sleep(4)
+
+            # <button id="onetrust-accept-btn-handler">Accept Non-Essential Cookies</button>
+            try:
+                btn = WebDriverWait(self.driver, 8).until(
+                    EC.presence_of_element_located(
+                        (By.CSS_SELECTOR, "#onetrust-accept-btn-handler")
+                    )
+                )
+                self.driver.execute_script("arguments[0].click();", btn)
+                self.logger.info("Sage ==> Cookie consent accepted")
+                time.sleep(2)
+            except Exception:
+                self.logger.info("Sage ==> No cookie banner found")
+
+            # ── Step 2: Advanced search form ─────────────────────────────────
+            self._progress(4, "Opening advanced search form...")
+            self.logger.info("Sage ==> GET https://journals.sagepub.com/search/advanced")
+            self.driver.get("https://journals.sagepub.com/search/advanced")
             time.sleep(5)
 
-            # Accept cookies — "Accept Non-Essential Cookies" button
-            # <button id="onetrust-accept-btn-handler">Accept Non-Essential Cookies</button>
-            for cookie_sel in [
-                "#onetrust-accept-btn-handler",
-                "button#onetrust-accept-btn-handler",
-            ]:
-                try:
-                    btn = WebDriverWait(self.driver, 8).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, cookie_sel))
-                    )
-                    self.driver.execute_script("arguments[0].click();", btn)
-                    self.logger.info(f"Sage ==> Cookie consent clicked ({cookie_sel})")
-                    time.sleep(2)
-                    break
-                except Exception:
-                    continue
+            # Fill form using exact selectors from live HTML
+            self._fill_sage_search_form(after_month, after_year, before_month, before_year)
 
-            # ── Step 2: Navigate to search URL via JS (keeps session trust) ───
-            self._progress(5, "PHASE 1: Collecting article URLs...")
-            self.logger.info(f"Sage ==> Navigating to search URL via JS...")
-            self.driver.execute_script(f"window.location.href = arguments[0];", search_url)
-            time.sleep(10)   # wait for page + any Cloudflare managed challenge
+            # ── Step 3: Wait for results ──────────────────────────────────────
+            self._progress(5, "Waiting for search results...")
+            time.sleep(8)
 
-            # Handle Cloudflare if it appears
-            self._bypass_cloudflare(timeout=90)
+            # Handle Cloudflare if it appears (unlikely via form submit)
+            self._bypass_cloudflare(timeout=60)
+
+            # Set 100 results per page via URL parameter then reload
+            current_url = self.driver.current_url
+            self.logger.info(f"Sage ==> Results URL: {current_url}")
+
+            if "pageSize" not in current_url:
+                if "?" in current_url:
+                    current_url += "&pageSize=100&startPage=0"
+                else:
+                    current_url += "?pageSize=100&startPage=0"
+                self.logger.info("Sage ==> Navigating with pageSize=100")
+                self.driver.execute_script(f"window.location.href = arguments[0];", current_url)
+                time.sleep(6)
+                self._bypass_cloudflare(timeout=60)
 
             total_pages = self.get_total_pages()
             if total_pages == 0:
                 self.logger.warning("Sage ==> No results found — aborting.")
                 return authors_path, "No results found"
 
-            self.extract_article_links(total_pages,
-                                       "https://journals.sagepub.com/action/doSearch",
-                                       {
-                                           "field1": "Keyword", "text1": self.keyword,
-                                           "field2": "Abstract", "text2": self.keyword,
-                                           "publication": "", "Ppub": "",
-                                           "AfterMonth": after_month, "AfterYear": after_year,
-                                           "BeforeMonth": before_month, "BeforeYear": before_year,
-                                           "access": "", "pageSize": 100,
-                                       })
+            # Build base_url and query_params from current URL for pagination
+            from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+            parsed = urlparse(self.driver.current_url)
+            params = parse_qs(parsed.query, keep_blank_values=True)
+            # Flatten params (parse_qs returns lists)
+            flat_params = {k: v[0] for k, v in params.items()}
+            flat_params["pageSize"] = "100"
+            base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+
+            self.extract_article_links(total_pages, base_url, flat_params)
 
             self._progress(40, "PHASE 2: Extracting author emails...")
             self.extract_author_info()
@@ -958,3 +961,139 @@ class SageScraper(ChromeDisplayMixin):
 
         finally:
             self._quit_chrome()
+
+    def _fill_sage_search_form(self, after_month, after_year, before_month, before_year):
+        """
+        Fill the Sage advanced search form.
+
+        CRITICAL ORDER — keyword MUST be typed last.
+        The field1 dropdown change event and customRange radio both fire
+        JS that can reset text1. Typing keyword last ensures it is not wiped.
+
+          Order:
+            1. Click Custom Range radio  (enables date fields)
+            2. Set field1 = Keyword      (may fire change event)
+            3. Set hidden date inputs    (JS, no visible interaction)
+            4. Type keyword into text1   (LAST — nothing clears it after)
+            5. Verify value retained     (JS force if empty)
+            6. Submit
+        """
+        import random
+        from selenium.webdriver.support.ui import Select
+
+        self.logger.info(
+            f"Sage ==> Filling form: keyword='{self.keyword}' "
+            f"{after_month}/{after_year} → {before_month}/{before_year}"
+        )
+
+        try:
+            WebDriverWait(self.driver, 15).until(
+                EC.presence_of_element_located((By.ID, "text1"))
+            )
+        except Exception as e:
+            self.logger.error(f"Sage ==> Search form not loaded: {e}")
+            return
+
+        try:
+            # ── 1. Click Custom Range radio first ─────────────────────────────
+            time.sleep(random.uniform(0.8, 1.5))
+            custom_radio = self.driver.find_element(By.ID, "customRange")
+            self.driver.execute_script("arguments[0].click();", custom_radio)
+            self.logger.info("Sage ==> Custom Range selected")
+            time.sleep(1.5)
+
+            # ── 2. Set field dropdown to Keywords ─────────────────────────────
+            time.sleep(random.uniform(0.5, 1.0))
+            try:
+                field_sel = self.driver.find_element(
+                    By.CSS_SELECTOR, "select[name=\'field1\']"
+                )
+                Select(field_sel).select_by_value("Keyword")
+                self.logger.info("Sage ==> Field set to Keywords")
+            except Exception as e:
+                self.logger.warning(f"Sage ==> Field dropdown: {e}")
+            time.sleep(random.uniform(0.6, 1.0))
+
+            # ── 3. Set date hidden inputs via JS ──────────────────────────────
+            MONTH_LABELS = {
+                1:"Jan",2:"Feb",3:"Mar",4:"Apr",5:"May",6:"June",
+                7:"July",8:"Aug",9:"Sept",10:"Oct",11:"Nov",12:"Dec"
+            }
+            js = """
+                function setH(id, val, label) {
+                    var el = document.getElementById(id);
+                    if (!el) return "miss:"+id;
+                    el.removeAttribute("disabled");
+                    el.removeAttribute("aria-disabled");
+                    el.value = String(val);
+                    el.dispatchEvent(new Event("change",{bubbles:true}));
+                    var cont = el.closest(".dropdown")||el.closest(".advanced-search__select-container");
+                    if (cont && label) {
+                        var sp = cont.querySelector("button.dropdown-toggle span");
+                        if (sp) sp.textContent = label;
+                    }
+                    return "ok:"+id+"="+val;
+                }
+                return [setH("fromMonth",arguments[0],arguments[4]),
+                        setH("fromYear", arguments[1],arguments[1]),
+                        setH("toMonth",  arguments[2],arguments[5]),
+                        setH("toYear",   arguments[3],arguments[3])].join("|");
+            """
+            result = self.driver.execute_script(
+                js,
+                str(after_month), str(after_year),
+                str(before_month), str(before_year),
+                MONTH_LABELS.get(after_month, str(after_month)),
+                MONTH_LABELS.get(before_month, str(before_month))
+            )
+            self.logger.info(f"Sage ==> Dates: {result}")
+            time.sleep(random.uniform(0.6, 1.0))
+
+            # ── 4. Type keyword LAST so nothing overwrites it ──────────────────
+            text_input = self.driver.find_element(By.ID, "text1")
+            self.driver.execute_script("arguments[0].focus();", text_input)
+            time.sleep(random.uniform(0.4, 0.8))
+            self.driver.execute_script("arguments[0].value = \'\';", text_input)
+            time.sleep(0.2)
+            for ch in self.keyword:
+                text_input.send_keys(ch)
+                time.sleep(random.uniform(0.07, 0.18))
+            time.sleep(0.3)
+
+            # ── 5. Verify keyword retained — force via JS if empty ─────────────
+            actual = text_input.get_attribute("value")
+            self.logger.info(f"Sage ==> text1 value: \'{actual}\'")
+            if not actual.strip():
+                self.logger.warning("Sage ==> text1 empty — forcing via JS")
+                self.driver.execute_script(
+                    "var el=arguments[0]; el.value=arguments[1];"
+                    "el.dispatchEvent(new Event(\'input\',{bubbles:true}));"
+                    "el.dispatchEvent(new Event(\'change\',{bubbles:true}));",
+                    text_input, self.keyword
+                )
+                time.sleep(0.3)
+                actual = text_input.get_attribute("value")
+                self.logger.info(f"Sage ==> text1 after JS force: \'{actual}\'")
+
+            time.sleep(random.uniform(1.2, 2.0))
+
+            # ── 6. Submit ──────────────────────────────────────────────────────
+            search_btn = WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.ID, "advanced-search-btn"))
+            )
+            self.driver.execute_script(
+                "arguments[0].removeAttribute(\'disabled\');"
+                "arguments[0].removeAttribute(\'aria-disabled\');",
+                search_btn
+            )
+            time.sleep(random.uniform(1.2, 2.0))
+            self.driver.execute_script("arguments[0].click();", search_btn)
+            self.logger.info(f"Sage ==> Submitted with keyword=\'{actual}\'")
+
+        except Exception as e:
+            self.logger.error(f"Sage ==> Form fill error: {e}", exc_info=True)
+            try:
+                os.makedirs("logs", exist_ok=True)
+                self.driver.save_screenshot("logs/sage_form_error.png")
+            except Exception:
+                pass
