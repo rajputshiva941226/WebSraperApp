@@ -927,14 +927,14 @@ class SageScraper(ChromeDisplayMixin):
             self.logger.info(f"Sage ==> Results URL: {current_url}")
 
             if "pageSize" not in current_url:
-                if "?" in current_url:
-                    current_url += "&pageSize=100&startPage=0"
-                else:
-                    current_url += "?pageSize=100&startPage=0"
-                self.logger.info("Sage ==> Navigating with pageSize=100")
-                self.driver.execute_script(f"window.location.href = arguments[0];", current_url)
-                time.sleep(6)
-                self._bypass_cloudflare(timeout=60)
+                # Append pageSize to URL and navigate — use JS to stay in same session
+                sep = "&" if "?" in current_url else "?"
+                paged_url = current_url + sep + "pageSize=100&startPage=0"
+                self.logger.info(f"Sage ==> Setting pageSize=100: {paged_url[:80]}...")
+                self.driver.execute_script("window.location.href = arguments[0];", paged_url)
+                time.sleep(10)   # longer wait — Cloudflare needs more time on this nav
+                self._bypass_cloudflare(timeout=90)
+                current_url = self.driver.current_url
 
             total_pages = self.get_total_pages()
             if total_pages == 0:
