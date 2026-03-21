@@ -542,5 +542,6 @@ class LippincottScraper(ChromeDisplayMixin):
 
         except Exception as e:
             self.logger.error(f"Lippincott ==> run() error: {e}", exc_info=True)
+            raise   # propagate so SeleniumScraperWrapper marks job FAILED
         finally:
             self._quit_chrome()
