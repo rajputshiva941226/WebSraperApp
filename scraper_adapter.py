@@ -558,7 +558,7 @@ class ScraperAdapter:
         'emerald':    {'module': 'emerald_selenium',     'class': 'EmeraldInsights',       'type': 'selenium'},
         'mdpi':       {'module': 'mdpi_app',             'class': 'MDPIScraper',    'type': 'selenium'},
         'pubmed':     {'module': 'pubmed_mesh_scraper',  'class': 'PubMedScraper',         'type': 'api'},
-        'taylor': {'module': 'taylor_selenium', 'class': 'TaylorScraper', 'type': 'selenium'},
+        'tandf': {'module': 'taylor_selenium', 'class': 'TaylorScraper', 'type': 'selenium'},
         'wiley':  {'module': 'wiley_selenium',  'class': 'WileyScraper',  'type': 'selenium'},
     }
     
