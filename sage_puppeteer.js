@@ -109,9 +109,11 @@ class SageScraper {
             const uaFile = path.join(__dirname, 'db-1.txt');
             const lines  = fsSync.readFileSync(uaFile, 'utf8')
                 .split('\n').map(l => l.trim())
-                .filter(l => l.length > 10 &&
-                    !l.includes('Mobile') && !l.includes('Android') &&
-                    !l.includes('iPhone') && !l.includes('iPad'));
+                .filter(l => {
+                    if (l.length < 20 || /Mobile|Android|iPhone|iPad|UCBrowser|SamsungBrowser/i.test(l)) return false;
+                    const m = l.match(/Chrome\/(\d+)/);
+                    return m && parseInt(m[1], 10) >= 100;
+                });
             if (lines.length > 5) {
                 this.logger && this.logger.info(`[UA] Loaded ${lines.length} desktop UAs`);
                 return lines;
@@ -149,15 +151,43 @@ class SageScraper {
     // ── Bot / CAPTCHA detection ──────────────────────────────────────────────
     async _isCaptcha() {
         try {
-            return await this.page.evaluate(() => {
+            const url = this.page.url();
+            if (url.includes('unsupported_browser') || url.includes('outdated')) return 'hard';
+            const result = await this.page.evaluate(() => {
                 const txt = ((document.title || '') + ' ' +
-                    (document.body ? document.body.innerText.slice(0, 500) : '')).toLowerCase();
-                return ['captcha','verify you are human','access denied','robot',
-                        'unusual traffic','security check','bot detection',
-                        'challenge'].some(p => txt.includes(p));
+                    (document.body ? document.body.innerText.slice(0, 600) : '')).toLowerCase();
+                const CF_AUTO  = ['verifying you are human', 'just a moment',
+                                  'checking your browser', 'performing security verification'];
+                const HARD_BOT = ['access denied', 'robot', 'unusual traffic',
+                                  'security check', 'bot detection', 'are you a robot'];
+                if (HARD_BOT.some(p => txt.includes(p))) return 'hard';
+                if (CF_AUTO.some(p => txt.includes(p)))  return 'cf_auto';
+                return 'none';
             });
+            return result !== 'none' ? result : false;
         } catch (e) { return false; }
     }
+
+    async _waitForCFClear(maxWaitMs = 30000) {
+        const CF_PHRASES = ['verifying you are human', 'just a moment', 'checking your browser',
+                            'please wait', 'performing security verification'];
+        const deadline = Date.now() + maxWaitMs;
+        this.logger.info(`CF auto-challenge — waiting up to ${maxWaitMs/1000}s for auto-clear...`);
+        while (Date.now() < deadline) {
+            await this.delay(3000);
+            try {
+                const stillCF = await this.page.evaluate((phrases) => {
+                    const txt = ((document.title || '') + ' ' +
+                        (document.body ? document.body.innerText.slice(0, 400) : '')).toLowerCase();
+                    return phrases.some(p => txt.includes(p));
+                }, CF_PHRASES);
+                if (!stillCF) { this.logger.info('✓ CF challenge auto-cleared'); return true; }
+            } catch (e) { break; }
+        }
+        this.logger.warn('CF did not auto-clear — rotating UA');
+        return false;
+    }
+
 
     async _launch(ua) {
         const cp = this._chromePath();
@@ -229,9 +259,12 @@ class SageScraper {
         for (let attempt = 1; attempt <= 3; attempt++) {
             try {
                 await this.page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
-                if (await this._isCaptcha()) {
-                    await this.rotateAndRestart(homeUrl || 'https://journals.sagepub.com');
-                    await this.page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+                const _captcha = await this._isCaptcha();
+                if (_captcha === 'cf_auto') {
+                    const _cleared = await this._waitForCFClear(30000);
+                    if (!_cleared) { await this.rotateAndRestart(homeUrl || 'https://journals.sagepub.com'); await this.page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 }); }
+                } else if (_captcha === 'hard' || _captcha) {
+                    await this.rotateAndRestart(homeUrl || 'https://journals.sagepub.com'); await this.page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
                 }
                 return;
             } catch (e) {

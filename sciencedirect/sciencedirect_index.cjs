@@ -85,27 +85,34 @@ class ScienceDirectScraper {
         this.currentUserAgentIndex = 0;
         // Load UAs from db-1.txt (6,718 entries) — falls back to defaults
         this.userAgents = (() => {
-            try {
-                const uaFile = path.join(__dirname, '..', 'db-1.txt');
-                const lines  = fsSync.readFileSync(uaFile, 'utf8')
-                    .split('\n')
-                    .map(l => l.trim())
-                    .filter(l => l.length > 10 &&
-                            !l.includes('Mobile') && !l.includes('Android') &&
-                            !l.includes('iPhone') && !l.includes('iPad'));
-                if (lines.length > 10) {
-                    console.log(`[UA] Loaded ${lines.length} desktop UAs from db-1.txt`);
-                    return lines;
-                }
-            } catch (e) {
-                console.log('[UA] db-1.txt not found, using defaults');
-            }
-            return [
+            // Filter to MODERN desktop Chrome 100+ only
+            // Old UAs (Chrome/70 etc.) get "Your browser is outdated" from ScienceDirect
+            const MODERN_DEFAULTS = [
                 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
             ];
+            try {
+                const uaFile = path.join(__dirname, '..', 'db-1.txt');
+                const all = fsSync.readFileSync(uaFile, 'utf8').split('\n').map(l => l.trim());
+                const modern = all.filter(l => {
+                    if (l.length < 20) return false;
+                    // Skip mobile UAs
+                    if (/Mobile|Android|iPhone|iPad|UCBrowser|SamsungBrowser/i.test(l)) return false;
+                    // Must be Chrome 100+ (ScienceDirect rejects older)
+                    const m = l.match(/Chrome\/(\d+)/);
+                    return m && parseInt(m[1], 10) >= 100;
+                });
+                if (modern.length > 10) {
+                    console.log(`[UA] Loaded ${modern.length} modern desktop Chrome 100+ UAs from db-1.txt`);
+                    return modern;
+                }
+            } catch (e) {
+                console.log('[UA] db-1.txt not found, using defaults');
+            }
+            return MODERN_DEFAULTS;
         })();
         this.articleTypes = ['REV', 'FLA', 'DAT', 'CH'];
         this.seenUrls = {};
@@ -181,7 +188,6 @@ class ScienceDirectScraper {
     }
 
     isCaptchaPage() {
-        // Returns true if current page is a captcha/bot-block page
         try {
             const title = document.title || '';
             const body  = document.body ? document.body.innerText.slice(0, 1000) : '';
@@ -199,6 +205,13 @@ class ScienceDirectScraper {
 
     async checkBotDetection() {
         try {
+            // Detect "Your browser is outdated" — caused by old UA
+            const currentUrl = this.page.url();
+            if (currentUrl.includes('unsupported_browser') || currentUrl.includes('outdated')) {
+                this.logger.warn('⚠️  "Browser outdated" page — UA too old, rotating...');
+                await this.rotateAndRestart('https://www.sciencedirect.com/');
+                return true;
+            }
             const detected = await this.page.evaluate(this.isCaptchaPage.toString() + '\nreturn isCaptchaPage();');
             if (detected) {
                 this.logger.warn('⚠️  Bot/CAPTCHA detected — rotating UA and restarting browser...');
