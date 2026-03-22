@@ -28,7 +28,7 @@ class TaylorScraper(ChromeDisplayMixin):
 
     Search URL:
         https://www.tandfonline.com/action/doSearch
-            ?AllField={keyword}&AfterYear={YYYY}&BeforeYear={YYYY}
+            ?field1=AllField&text1={keyword}&Ppub=&AfterYear={YYYY}&BeforeYear={YYYY}
             &pageSize=100&startPage={N}
 
     Article link selector : article.searchResultItem div.art_title span.hlFld-Title a
@@ -203,41 +203,104 @@ class TaylorScraper(ChromeDisplayMixin):
             self.logger.warning(f"Taylor ==> readyState wait failed: {e}")
 
     def get_total_results(self) -> int:
-        """Parse 'Showing X - Y of N results' from the search results page."""
-        try:
-            el = self.wait.until(
-                EC.presence_of_element_located(
-                    (By.XPATH, '//p[@role="status"]/strong')
+        """
+        Parse total results from Taylor & Francis search page.
+        Live page shows: "Showing 1-10 of 4,536 results for search: ..."
+        Tries multiple selectors for resilience.
+        """
+        import re
+        SELECTORS = [
+            # Primary: the results count paragraph
+            "p.results-count",
+            "p.result-count",
+            "[class*='result'] strong",
+            # Fallback: any element with result count text
+            "p[data-results]",
+        ]
+        # Try CSS selectors first
+        for sel in SELECTORS:
+            try:
+                el = WebDriverWait(self.driver, 8).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, sel))
                 )
+                text = el.text.strip()
+                m = re.search(r'of\s+([\d,]+)', text)
+                if m:
+                    total = int(m.group(1).replace(",", ""))
+                    self.logger.info(f"Taylor ==> [{sel}] {total} results")
+                    return total
+            except Exception:
+                continue
+
+        # XPath fallback: find any element containing "of X results"
+        try:
+            els = self.driver.find_elements(
+                By.XPATH,
+                '//*[contains(text(),"results for search") or contains(text(),"of ")]'
             )
-            text = el.text.strip()
-            # text looks like "Showing 1 - 100 of 1,234 results"
-            idx = text.index("of")
-            end = text.index("results")
-            num = text[idx + 3:end].strip().replace(",", "")
-            total = int(num)
-            self.logger.info(f"Taylor ==> {total} results found")
-            return total
-        except Exception as e:
-            self.logger.error(f"Taylor ==> get_total_results failed: {e}")
-            return 0
+            for el in els:
+                text = el.text.strip()
+                m = re.search(r'of\s+([\d,]+)\s+results', text)
+                if m:
+                    total = int(m.group(1).replace(",", ""))
+                    self.logger.info(f"Taylor ==> [xpath] {total} results")
+                    return total
+        except Exception:
+            pass
+
+        # Page source fallback
+        try:
+            src = self.driver.page_source
+            m = re.search(r'of\s+([\d,]+)\s+results', src)
+            if m:
+                total = int(m.group(1).replace(",", ""))
+                self.logger.info(f"Taylor ==> [pagesrc] {total} results")
+                return total
+        except Exception:
+            pass
+
+        self.logger.error("Taylor ==> get_total_results: no count found")
+        self._debug_screenshot("no_results")
+        return 0
 
     def extract_links_from_page(self) -> list:
-        """Extract article hrefs from the current search results page."""
+        """
+        Extract article hrefs from the current Taylor & Francis results page.
+        Tries multiple selectors in order of specificity.
+        """
+        import re
         links = []
-        try:
-            articles = WebDriverWait(self.driver, 15).until(
-                EC.presence_of_all_elements_located(
-                    (By.CSS_SELECTOR,
-                     "article.searchResultItem div.art_title span.hlFld-Title a")
+        SELECTORS = [
+            # Primary confirmed selector
+            "article.searchResultItem div.art_title span.hlFld-Title a",
+            # Alternate layouts
+            "h3.art_title a",
+            "h2.art_title a",
+            ".searchResultItem .art_title a",
+            ".resultsItems .art_title a",
+            "a.ref.nowrap[href*='/doi/']",
+        ]
+        for sel in SELECTORS:
+            try:
+                found = WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_all_elements_located(
+                        (By.CSS_SELECTOR, sel)
+                    )
                 )
-            )
-            for a in articles:
-                href = a.get_attribute("href")
-                if href:
-                    links.append(href)
-        except Exception as e:
-            self.logger.warning(f"Taylor ==> extract_links failed: {e}")
+                if found:
+                    for a in found:
+                        href = a.get_attribute("href")
+                        if href and "/doi/" in href:
+                            links.append(href)
+                    if links:
+                        self.logger.info(
+                            f"Taylor ==> [{sel}] {len(links)} links"
+                        )
+                        return links
+            except Exception:
+                continue
+        self.logger.warning("Taylor ==> extract_links: no links found on page")
+        self._debug_screenshot("no_links")
         return links
 
     # ── Phase 2: extract author emails ────────────────────────────────────────
@@ -333,9 +396,11 @@ class TaylorScraper(ChromeDisplayMixin):
 
             kw_enc = quote_plus(self.keyword)
             base   = "https://www.tandfonline.com/action/doSearch"
+            # Correct URL format confirmed from live site:
+            #   field1=AllField&text1={kw}&Ppub=&AfterYear=YYYY&BeforeYear=YYYY
             search_url = (
-                f"{base}?AllField={kw_enc}"
-                f"&AfterYear={self.after_year}&BeforeYear={self.before_year}"
+                f"{base}?field1=AllField&text1={kw_enc}"
+                f"&Ppub=&AfterYear={self.after_year}&BeforeYear={self.before_year}"
                 f"&pageSize=100&startPage=0"
             )
 
@@ -375,8 +440,8 @@ class TaylorScraper(ChromeDisplayMixin):
             all_links = []
             for pg in range(total_pages):
                 page_url = (
-                    f"{base}?AllField={kw_enc}"
-                    f"&AfterYear={self.after_year}&BeforeYear={self.before_year}"
+                    f"{base}?field1=AllField&text1={kw_enc}"
+                    f"&Ppub=&AfterYear={self.after_year}&BeforeYear={self.before_year}"
                     f"&pageSize=100&startPage={pg}"
                 )
                 try:

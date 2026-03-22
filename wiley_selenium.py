@@ -220,20 +220,82 @@ class WileyScraper(ChromeDisplayMixin):
         except Exception as e:
             self.logger.warning(f"Wiley ==> readyState wait failed: {e}")
 
-    def get_total_results(self) -> int:
-        try:
-            el = self.wait.until(
-                EC.presence_of_element_located(
-                    (By.CSS_SELECTOR,
-                     "div.search__result--space > span.result__count")
+
+    def _click_next_page(self) -> bool:
+        """
+        Click the Wiley pagination Next button.
+        Selector from live page HTML:
+          <a aria-label="Next page" class="pagination__btn--next js__ajaxSearchTrigger">
+        Returns True if button was found and clicked, False if not found.
+        """
+        NEXT_SELECTORS = [
+            'a[aria-label="Next page"]',
+            'a.pagination__btn--next',
+            'a[aria-label="Go to next page"]',
+        ]
+        for sel in NEXT_SELECTORS:
+            try:
+                btn = self.wait.until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, sel))
                 )
-            )
-            total = int(el.text.strip().replace(",", ""))
-            self.logger.info(f"Wiley ==> {total} results found")
-            return total
-        except Exception as e:
-            self.logger.error(f"Wiley ==> get_total_results failed: {e}")
-            return 0
+                # Scroll into view before clicking
+                self.driver.execute_script(
+                    "arguments[0].scrollIntoView({block:'center'});", btn
+                )
+                time.sleep(1.5)
+                try:
+                    btn.click()
+                except Exception:
+                    self.driver.execute_script("arguments[0].click();", btn)
+                self.logger.info(f"Wiley ==> Next button clicked ({sel})")
+                return True
+            except Exception:
+                continue
+        return False
+
+    def get_total_results(self) -> int:
+        """
+        Get total result count. Wiley uses pageSize=20 (max allowed without login).
+        Live selector confirmed: div.search__result--space > span.result__count
+        """
+        import re, math
+        SELECTORS = [
+            "div.search__result--space > span.result__count",
+            "span.result__count",
+            ".search__result span",
+            "[class*='result__count']",
+        ]
+        for sel in SELECTORS:
+            try:
+                el = WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, sel))
+                )
+                text = el.text.strip().replace(",", "")
+                if text.isdigit():
+                    total = int(text)
+                    pages = math.ceil(total / 20)   # Wiley shows 20 results/page
+                    self.logger.info(
+                        f"Wiley ==> [{sel}] {total} results → {pages} pages"
+                    )
+                    return pages   # return page count, not result count
+            except Exception:
+                continue
+
+        # Fallback: parse from page text "X results for"
+        try:
+            src = self.driver.page_source
+            m = re.search(r'([\d,]+)\s+results\s+for', src)
+            if m:
+                total = int(m.group(1).replace(",", ""))
+                pages = math.ceil(total / 20)
+                self.logger.info(f"Wiley ==> [pagesrc] {total} results → {pages} pages")
+                return pages
+        except Exception:
+            pass
+
+        self.logger.error("Wiley ==> get_total_results: no count found")
+        self._debug_screenshot("no_results")
+        return 0
 
     def extract_links_from_page(self) -> list:
         links = []
@@ -323,12 +385,15 @@ class WileyScraper(ChromeDisplayMixin):
 
             kw_enc = quote_plus(self.keyword)
             base   = "https://onlinelibrary.wiley.com/action/doSearch"
+            # Correct URL confirmed from live Wiley pagination HTML:
+            #   field1=AllField&text1={kw}&publication=&Ppub=
+            #   &AfterMonth=M&AfterYear=YYYY&BeforeMonth=M&BeforeYear=YYYY
             search_url = (
-                f"{base}?AfterMonth={self.after_month}"
-                f"&AfterYear={self.after_year}"
-                f"&BeforeMonth={self.before_month}"
-                f"&BeforeYear={self.before_year}"
-                f"&field1=AllField&text1={kw_enc}&pageSize=100&startPage=0"
+                f"{base}?field1=AllField&text1={kw_enc}"
+                f"&publication=&Ppub="
+                f"&AfterMonth={self.after_month}&AfterYear={self.after_year}"
+                f"&BeforeMonth={self.before_month}&BeforeYear={self.before_year}"
+                f"&pageSize=20&startPage=0"
             )
 
             # ── Step 1: Homepage → cookie consent ────────────────────────
@@ -356,28 +421,22 @@ class WileyScraper(ChromeDisplayMixin):
             self._wait_for_page_ready("search results")
             self._bypass_cloudflare(timeout=120)
 
-            total_results = self.get_total_results()
-            if total_results == 0:
+            total_pages = self.get_total_results()
+            if total_pages == 0:
                 raise RuntimeError("Wiley ==> No results found for this search")
 
-            total_pages = math.ceil(total_results / 100)
             self.logger.info(f"Wiley ==> {total_pages} pages to collect")
 
-            # ── Step 3: Paginate and collect URLs ─────────────────────────
+            # ── Step 3: Paginate using Next button (not URL changes) ─────────
+            # Wiley triggers CF at every URL change. Instead we click the
+            # pagination Next button so the page updates via AJAX — no new
+            # navigation, no new CF challenge.
             all_links = []
-            for pg in range(total_pages):
-                page_url = (
-                    f"{base}?AfterMonth={self.after_month}"
-                    f"&AfterYear={self.after_year}"
-                    f"&BeforeMonth={self.before_month}"
-                    f"&BeforeYear={self.before_year}"
-                    f"&field1=AllField&text1={kw_enc}&pageSize=100&startPage={pg}"
-                )
+            page_num  = 1
+
+            while True:
+                current_url = self.driver.current_url
                 try:
-                    self.driver.get(page_url)
-                    time.sleep(10)                         # human-like pacing
-                    self._wait_for_page_ready(f"page {pg+1}")
-                    self._bypass_cloudflare(timeout=120)  # detect CF on any page
                     links = self.extract_links_from_page()
                     all_links.extend(links)
                     self.save_to_csv(
@@ -385,19 +444,34 @@ class WileyScraper(ChromeDisplayMixin):
                         header=["Article_URL"]
                     )
                     self.logger.info(
-                        f"Wiley ==> Page {pg+1}/{total_pages}: "
+                        f"Wiley ==> Page {page_num}/{total_pages}: "
                         f"{len(links)} links (total {len(all_links)})"
                     )
                 except Exception as e:
-                    self.logger.error(f"Wiley ==> Page {pg+1} error: {e}")
+                    self.logger.error(f"Wiley ==> Page {page_num} extract error: {e}")
 
-                pct = int(5 + ((pg + 1) / total_pages) * 33)
+                pct = int(5 + min(page_num / max(total_pages, 1), 1.0) * 33)
                 self._progress(
                     pct,
-                    f"URL collection: page {pg+1}/{total_pages} ({len(all_links)} URLs)",
-                    current_url=page_url,
+                    f"URL collection: page {page_num}/{total_pages} ({len(all_links)} URLs)",
+                    current_url=current_url,
                     links_count=len(all_links),
                 )
+
+                if page_num >= total_pages:
+                    break
+
+                # Click Next button — keeps session cookies, avoids CF re-challenge
+                if not self._click_next_page():
+                    self.logger.info("Wiley ==> No Next button found — pagination ended")
+                    break
+
+                page_num += 1
+                # Generous delay: let AJAX load + avoid rate-limiting
+                time.sleep(15)
+                self._wait_for_page_ready(f"page {page_num}")
+                # Still check for CF (appears occasionally mid-session)
+                self._bypass_cloudflare(timeout=120)
 
             self.logger.info(f"Wiley ==> Phase 1 done: {len(all_links)} URLs")
 
