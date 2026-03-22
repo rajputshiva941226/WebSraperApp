@@ -144,6 +144,64 @@ class TaylorScraper(ChromeDisplayMixin):
 
     # ── Phase 1: collect article URLs ─────────────────────────────────────────
 
+
+    def _bypass_cloudflare(self, timeout: int = 120) -> bool:
+        """
+        Wait for Cloudflare challenge to clear on tandfonline.com.
+        Challenge requires human checkbox solve in VNC.
+        RAISES RuntimeError on timeout → job marked FAILED.
+        """
+        CF_PHRASES = [
+            "just a moment", "verifying you are human",
+            "performing security verification", "checking your browser",
+        ]
+
+        def _on_cf() -> bool:
+            try:
+                t = self.driver.title.lower()
+                s = self.driver.page_source.lower()[:800]
+                return any(p in t or p in s for p in CF_PHRASES)
+            except Exception:
+                return False
+
+        time.sleep(3)
+        if not _on_cf():
+            self.logger.info("Taylor ==> CF bypass: no challenge ✓")
+            return True
+
+        self.logger.warning(
+            f"Taylor ==> ⚠️ Cloudflare challenge — solve in VNC within {timeout}s. "
+            f"URL: {self.driver.current_url}"
+        )
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            time.sleep(3)
+            if not _on_cf():
+                self.logger.info("Taylor ==> CF bypass: challenge cleared ✓")
+                return True
+            self.logger.info(f"Taylor ==> CF waiting... ({int(deadline - time.time())}s left)")
+
+        try:
+            os.makedirs("logs", exist_ok=True)
+            self.driver.save_screenshot("logs/TaylorScraper_cf_timeout.png")
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"Cloudflare captcha not solved within {timeout}s. "
+            "Open VNC at http://3.108.210.45:6080/vnc.html and click the checkbox."
+        )
+
+    def _wait_for_page_ready(self, label: str = "page") -> None:
+        """Wait for document.readyState == complete."""
+        try:
+            from selenium.webdriver.support.ui import WebDriverWait
+            WebDriverWait(self.driver, 30).until(
+                lambda d: d.execute_script("return document.readyState") == "complete"
+            )
+            self.logger.info(f"Taylor ==> {label} ready ✓")
+        except Exception as e:
+            self.logger.warning(f"Taylor ==> readyState wait failed: {e}")
+
     def get_total_results(self) -> int:
         """Parse 'Showing X - Y of N results' from the search results page."""
         try:
@@ -285,6 +343,8 @@ class TaylorScraper(ChromeDisplayMixin):
             self._progress(2, "Loading Taylor & Francis homepage...")
             self.driver.get("https://www.tandfonline.com")
             time.sleep(5)
+            self._wait_for_page_ready("homepage")
+            self._bypass_cloudflare(timeout=120)
             try:
                 btn = WebDriverWait(self.driver, 8).until(
                     EC.element_to_be_clickable(
@@ -301,6 +361,8 @@ class TaylorScraper(ChromeDisplayMixin):
             self._progress(4, f"Searching: {self.keyword}...")
             self.driver.get(search_url)
             time.sleep(6)
+            self._wait_for_page_ready("search results")
+            self._bypass_cloudflare(timeout=120)
 
             total_results = self.get_total_results()
             if total_results == 0:
@@ -319,7 +381,9 @@ class TaylorScraper(ChromeDisplayMixin):
                 )
                 try:
                     self.driver.get(page_url)
-                    time.sleep(3)
+                    time.sleep(8)                          # paced navigation
+                    self._wait_for_page_ready(f"page {pg+1}")
+                    self._bypass_cloudflare(timeout=120)  # catch mid-session CF
                     links = self.extract_links_from_page()
                     all_links.extend(links)
                     self.save_to_csv(
@@ -365,7 +429,7 @@ class TaylorScraper(ChromeDisplayMixin):
                     authors_count=authors_found,
                     links_count=total,
                 )
-                time.sleep(1)
+                time.sleep(3)   # polite delay between article requests
 
             self._progress(100, "Taylor & Francis scraping completed.")
             self.logger.info("Taylor ==> Done.")

@@ -183,24 +183,28 @@ JOURNALS = {
         'full_name': 'Taylor and Francis',
         'type': 'selenium',
         'enabled': True,
-        #'icon': '🧬',
-        'description': 'Open access scientific publisher'
+        'description': 'Multidisciplinary academic journals publisher'
     },
     'wiley': {
         'name': 'OnlineWiley',
         'full_name': 'Online Wiley',
         'type': 'selenium',
         'enabled': True,
-        #'icon': '🧬',
-        'description': 'Open access scientific publisher'
+        'description': 'Scientific, technical, and medical research journals'
     },
     'sciencedirect': {
         'name': 'Science Direct',
         'full_name': 'Science Direct',
-        'type': 'playwright',
+        'type': 'selenium',
         'enabled': True,
-        #'icon': '🧬',
-        'description': 'Open access scientific publisher'
+        'description': 'Elsevier scientific research journals'
+    },
+    'pdf_scraper': {
+        'name': 'PDF Scraper',
+        'full_name': 'PDF Author Email Extractor',
+        'type': 'selenium',
+        'enabled': True,
+        'description': 'Extract author emails from uploaded PDF files'
     }
 }
 

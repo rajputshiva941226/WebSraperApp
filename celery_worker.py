@@ -816,6 +816,7 @@ celery_app = Celery(
 SELENIUM_SCRAPERS = {
     'springer', 'cambridge', 'bmj', 'nature',
     'oxford', 'lippincott', 'sage', 'emerald', 'mdpi',
+    'tandf', 'wiley', 'sciencedirect', 'pdf_scraper',
 }
 API_SCRAPERS = {'europepmc', 'pubmed'}
 
