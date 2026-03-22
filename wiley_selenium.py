@@ -321,49 +321,107 @@ class WileyScraper(ChromeDisplayMixin):
     def scrape_article(self, article_url: str) -> list:
         """
         Navigate to one Wiley article and collect [url, author_name, email] rows.
-        Email selector: a[title="Link to email address"] > span  (span.text = email)
-        Author selector: p.author-name
+
+        Email selectors (multiple tried in order):
+          1. a[title="Link to email address"] > span   — primary (confirmed)
+          2. a[href^="mailto:"]                        — fallback
+          3. .author-info a[href^="mailto:"]           — author popup
+
+        Author selector: p.author-name, .author-name
+
+        FIX: page_load_timeout=30s prevents 2-minute hangs on slow/blocked pages.
         """
+        from selenium.common.exceptions import TimeoutException as SeleniumTimeout
+
         rows = []
         try:
-            self.driver.get(article_url)
+            # ── Short page-load timeout per article ───────────────────────
+            # Default WebDriver timeout can be 300s+ — causes the 120s log errors.
+            # 30s is generous; Wiley article pages normally load in <5s.
+            self.driver.set_page_load_timeout(30)
+
+            try:
+                self.driver.get(article_url)
+            except SeleniumTimeout:
+                self.logger.warning(
+                    f"Wiley ==> Article page timed out (30s), skipping: {article_url}"
+                )
+                return rows
+            finally:
+                # Restore a longer timeout for the search/navigation pages
+                self.driver.set_page_load_timeout(60)
+
             time.sleep(2)
 
-            # Quick check — any email links at all?
-            email_spans = self.driver.find_elements(
-                By.CSS_SELECTOR, 'a[title="Link to email address"] > span'
-            )
-            if not email_spans:
+            # ── Try email selectors ───────────────────────────────────────
+            email_data = []   # list of (email_str, parent_text)
+
+            # Selector 1: primary Wiley email link
+            try:
+                spans = self.driver.find_elements(
+                    By.CSS_SELECTOR, 'a[title="Link to email address"] > span'
+                )
+                for span in spans:
+                    email = span.text.strip()
+                    if email and "@" in email:
+                        try:
+                            parent = span.find_element(
+                                By.XPATH, "./ancestor::div[contains(@class,'author')]"
+                            ).text
+                        except Exception:
+                            parent = ""
+                        email_data.append((email, parent))
+            except Exception:
+                pass
+
+            # Selector 2: bare mailto: links (fallback)
+            if not email_data:
+                try:
+                    links = self.driver.find_elements(
+                        By.CSS_SELECTOR, 'a[href^="mailto:"]'
+                    )
+                    for lnk in links:
+                        email = lnk.get_attribute("href").replace(
+                            "mailto:", ""
+                        ).strip()
+                        if email and "@" in email:
+                            email_data.append((email, lnk.text))
+                except Exception:
+                    pass
+
+            if not email_data:
                 return rows
 
-            # Collect author names
-            name_els = self.driver.find_elements(
-                By.CSS_SELECTOR, "p.author-name"
-            )
-            names = [
-                self._clean_name(n.text.strip())
-                for n in name_els
-                if n.text.strip()
-            ]
+            # ── Collect author names for fuzzy matching ───────────────────
+            names = []
+            for sel in ["p.author-name", ".author-name", "li.author-name"]:
+                try:
+                    els = self.driver.find_elements(By.CSS_SELECTOR, sel)
+                    names = [
+                        self._clean_name(n.text.strip())
+                        for n in els if n.text.strip()
+                    ]
+                    if names:
+                        break
+                except Exception:
+                    pass
 
-            for span in email_spans:
-                email = span.text.strip()
-                if not email or "@" not in email:
-                    continue
+            # ── Build rows ────────────────────────────────────────────────
+            for email, context in email_data:
                 if email in self._seen_emails:
                     continue
                 self._seen_emails.add(email)
 
                 if names:
-                    best, score = fuzz_process.extractOne(
+                    best, _score = fuzz_process.extractOne(
                         email.split("@")[0], names,
                         scorer=fuzz.token_set_ratio
                     )
                 else:
-                    best = ""
+                    best = context.strip().split("\n")[0][:80] if context else ""
 
                 rows.append([article_url, best, email])
-                self.logger.info(f"Wiley ==> {best} — {email}")
+                self.logger.info(f"Wiley ==> ✅ {best} — {email}")
 
         except Exception as e:
             self.logger.error(f"Wiley ==> Article error {article_url}: {e}")

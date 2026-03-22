@@ -202,6 +202,39 @@ class TaylorScraper(ChromeDisplayMixin):
         except Exception as e:
             self.logger.warning(f"Taylor ==> readyState wait failed: {e}")
 
+
+    def _click_next_page(self) -> bool:
+        """
+        Click the Taylor & Francis pagination Next button.
+        From live HTML:
+          <a class="nextPage js__ajaxSearchTrigger" data-start-page="N">
+        Returns True if clicked, False if not found.
+        """
+        NEXT_SELECTORS = [
+            'a.nextPage.js__ajaxSearchTrigger',
+            'a.nextPage',
+            'li.pageLink-with-arrow a[class*="nextPage"]',
+            'span.paginationArrowSymbol.next',
+        ]
+        for sel in NEXT_SELECTORS:
+            try:
+                btn = WebDriverWait(self.driver, 8).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, sel))
+                )
+                self.driver.execute_script(
+                    "arguments[0].scrollIntoView({block:'center'});", btn
+                )
+                time.sleep(1.5)
+                try:
+                    btn.click()
+                except Exception:
+                    self.driver.execute_script("arguments[0].click();", btn)
+                self.logger.info(f"Taylor ==> Next button clicked ({sel})")
+                return True
+            except Exception:
+                continue
+        return False
+
     def get_total_results(self) -> int:
         """
         Parse total results from Taylor & Francis search page.
@@ -227,8 +260,9 @@ class TaylorScraper(ChromeDisplayMixin):
                 m = re.search(r'of\s+([\d,]+)', text)
                 if m:
                     total = int(m.group(1).replace(",", ""))
-                    self.logger.info(f"Taylor ==> [{sel}] {total} results")
-                    return total
+                    pages = math.ceil(total / 50)
+                    self.logger.info(f"Taylor ==> [{sel}] {total} results → {pages} pages")
+                    return pages
             except Exception:
                 continue
 
@@ -243,8 +277,9 @@ class TaylorScraper(ChromeDisplayMixin):
                 m = re.search(r'of\s+([\d,]+)\s+results', text)
                 if m:
                     total = int(m.group(1).replace(",", ""))
-                    self.logger.info(f"Taylor ==> [xpath] {total} results")
-                    return total
+                    pages = math.ceil(total / 50)
+                    self.logger.info(f"Taylor ==> [xpath] {total} → {pages} pages")
+                    return pages
         except Exception:
             pass
 
@@ -254,8 +289,9 @@ class TaylorScraper(ChromeDisplayMixin):
             m = re.search(r'of\s+([\d,]+)\s+results', src)
             if m:
                 total = int(m.group(1).replace(",", ""))
-                self.logger.info(f"Taylor ==> [pagesrc] {total} results")
-                return total
+                pages = math.ceil(total / 50)
+                self.logger.info(f"Taylor ==> [pagesrc] {total} → {pages} pages")
+                return pages
         except Exception:
             pass
 
@@ -401,7 +437,7 @@ class TaylorScraper(ChromeDisplayMixin):
             search_url = (
                 f"{base}?field1=AllField&text1={kw_enc}"
                 f"&Ppub=&AfterYear={self.after_year}&BeforeYear={self.before_year}"
-                f"&pageSize=100&startPage=0"
+                f"&pageSize=50&startPage=0"
             )
 
             # ── Step 1: Homepage → accept cookies ────────────────────────
@@ -410,17 +446,23 @@ class TaylorScraper(ChromeDisplayMixin):
             time.sleep(5)
             self._wait_for_page_ready("homepage")
             self._bypass_cloudflare(timeout=120)
-            try:
-                btn = WebDriverWait(self.driver, 8).until(
-                    EC.element_to_be_clickable(
-                        (By.CSS_SELECTOR, "#onetrust-accept-btn-handler")
+            for cookie_sel in [
+                'button[aria-description="Accept all cookies and close dialog."]',
+                '#onetrust-accept-btn-handler',
+                'button.button[data-initialfocus="true"]',
+            ]:
+                try:
+                    btn = WebDriverWait(self.driver, 5).until(
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, cookie_sel))
                     )
-                )
-                self.driver.execute_script("arguments[0].click();", btn)
-                self.logger.info("Taylor ==> Cookies accepted")
-                time.sleep(2)
-            except Exception:
-                self.logger.info("Taylor ==> No cookie banner")
+                    self.driver.execute_script("arguments[0].click();", btn)
+                    self.logger.info(f"Taylor ==> Cookies accepted ({cookie_sel})")
+                    time.sleep(2)
+                    break
+                except Exception:
+                    continue
+            else:
+                self.logger.info("Taylor ==> No cookie banner found")
 
             # ── Step 2: Search results ────────────────────────────────────
             self._progress(4, f"Searching: {self.keyword}...")
@@ -429,26 +471,19 @@ class TaylorScraper(ChromeDisplayMixin):
             self._wait_for_page_ready("search results")
             self._bypass_cloudflare(timeout=120)
 
-            total_results = self.get_total_results()
-            if total_results == 0:
+            total_pages = self.get_total_results()
+            if total_pages == 0:
                 raise RuntimeError("Taylor ==> No results found for this search")
 
-            total_pages = math.ceil(total_results / 100)
             self.logger.info(f"Taylor ==> {total_pages} pages to collect")
 
-            # ── Step 3: Paginate and collect URLs ─────────────────────────
+            # ── Step 3: Click-based pagination (avoids CF re-challenges) ─────
             all_links = []
-            for pg in range(total_pages):
-                page_url = (
-                    f"{base}?field1=AllField&text1={kw_enc}"
-                    f"&Ppub=&AfterYear={self.after_year}&BeforeYear={self.before_year}"
-                    f"&pageSize=100&startPage={pg}"
-                )
+            page_num  = 1
+
+            while True:
+                current_url = self.driver.current_url
                 try:
-                    self.driver.get(page_url)
-                    time.sleep(8)                          # paced navigation
-                    self._wait_for_page_ready(f"page {pg+1}")
-                    self._bypass_cloudflare(timeout=120)  # catch mid-session CF
                     links = self.extract_links_from_page()
                     all_links.extend(links)
                     self.save_to_csv(
@@ -456,19 +491,31 @@ class TaylorScraper(ChromeDisplayMixin):
                         header=["Article_URL"]
                     )
                     self.logger.info(
-                        f"Taylor ==> Page {pg+1}/{total_pages}: "
+                        f"Taylor ==> Page {page_num}/{total_pages}: "
                         f"{len(links)} links (total {len(all_links)})"
                     )
                 except Exception as e:
-                    self.logger.error(f"Taylor ==> Page {pg+1} error: {e}")
+                    self.logger.error(f"Taylor ==> Page {page_num} extract error: {e}")
 
-                pct = int(5 + ((pg + 1) / total_pages) * 33)
+                pct = int(5 + min(page_num / max(total_pages, 1), 1.0) * 33)
                 self._progress(
                     pct,
-                    f"URL collection: page {pg+1}/{total_pages} ({len(all_links)} URLs)",
-                    current_url=page_url,
+                    f"URL collection: page {page_num}/{total_pages} ({len(all_links)} URLs)",
+                    current_url=current_url,
                     links_count=len(all_links),
                 )
+
+                if page_num >= total_pages:
+                    break
+
+                if not self._click_next_page():
+                    self.logger.info("Taylor ==> No Next button — pagination ended")
+                    break
+
+                page_num += 1
+                time.sleep(10)
+                self._wait_for_page_ready(f"page {page_num}")
+                self._bypass_cloudflare(timeout=120)
 
             self.logger.info(f"Taylor ==> Phase 1 done: {len(all_links)} URLs")
 
