@@ -177,6 +177,30 @@ JOURNALS = {
         'enabled': True,
         #'icon': '🧬',
         'description': 'Open access scientific publisher'
+    },
+    'tandf': {
+        'name': 'TandFonline',
+        'full_name': 'Taylor and Francis',
+        'type': 'selenium',
+        'enabled': True,
+        #'icon': '🧬',
+        'description': 'Open access scientific publisher'
+    },
+    'wiley': {
+        'name': 'OnlineWiley',
+        'full_name': 'Online Wiley',
+        'type': 'selenium',
+        'enabled': True,
+        #'icon': '🧬',
+        'description': 'Open access scientific publisher'
+    },
+    'pubmed': {
+        'name': 'Science Direct',
+        'full_name': 'Science Direct',
+        'type': 'playwright',
+        'enabled': True,
+        #'icon': '🧬',
+        'description': 'Open access scientific publisher'
     }
 }
 
