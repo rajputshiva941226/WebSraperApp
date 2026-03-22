@@ -1198,7 +1198,13 @@ class ChromeDisplayMixin:
             for arg in extra_args:
                 opts.add_argument(arg)
         opts.add_argument("--disable-blink-features=AutomationControlled")
-        opts.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36")
+        # Random desktop UA from db-1.txt (6,718 real browser strings)
+        try:
+            from user_agents import get_desktop_ua as _get_ua
+            _ua = _get_ua()
+        except Exception:
+            _ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        opts.add_argument(f"--user-agent={_ua}")
         # Eager strategy — DOM ready is enough, skip waiting for all images/JS
         # (same as Cambridge — makes navigation faster on slow journal pages)
         opts.page_load_strategy = 'eager'

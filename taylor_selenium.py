@@ -344,22 +344,28 @@ class TaylorScraper(ChromeDisplayMixin):
     def scrape_article(self, article_url: str) -> list:
         """
         Navigate to an article and collect [url, author_name, email] rows.
-        Uses:
-          show-all-link  — expand collapsed author list
-          span.corr-email a — email links
-          a.author          — author name elements
+
+        Fix for author/email mismatch: instead of fuzzy-matching email against
+        ALL author names on the page, we traverse UP from each email element to
+        find the author name WITHIN THE SAME entryAuthor container.
+
+        Taylor HTML structure:
+          div.entryAuthor (or span.contrib-author)
+            ├─ a.author          ← author name
+            └─ span.overlay
+                 └─ span.corr-sec
+                      └─ span.corr-email
+                           └─ a[href="mailto:..."]   ← email
         """
         rows = []
         try:
             self.driver.get(article_url)
             time.sleep(2)
 
-            # Expand author list if collapsed
+            # Expand author list if "show all" button exists
             try:
                 show_all = self.wait.until(
-                    EC.element_to_be_clickable(
-                        (By.CLASS_NAME, "show-all-link")
-                    )
+                    EC.element_to_be_clickable((By.CLASS_NAME, "show-all-link"))
                 )
                 self.driver.execute_script(
                     "arguments[0].scrollIntoView({block:'center'});", show_all
@@ -367,51 +373,79 @@ class TaylorScraper(ChromeDisplayMixin):
                 self.driver.execute_script("arguments[0].click();", show_all)
                 time.sleep(2)
             except Exception:
-                pass  # already fully expanded or no button
+                pass
 
-            # Collect all email elements
-            email_els = self.driver.find_elements(
+            # Find every email link on the page
+            # Each is inside span.corr-email which is inside its author's container
+            email_anchors = self.driver.find_elements(
                 By.XPATH,
-                '//span[@class="overlay"]/span[@class="corr-sec"]'
-                '/span[@class="corr-email"]/a'
+                '//span[contains(@class,"corr-email")]/a[contains(@href,"mailto:")]'
             )
-            if not email_els:
+            if not email_anchors:
                 return rows
 
-            # Collect author names for fuzzy matching
-            name_els = self.driver.find_elements(
-                By.XPATH,
-                '//span[@class="corr-email"]/a'
-                '/following::a[@class="author"]'
-            )
-            # Fallback: all a.author on the page
-            if not name_els:
-                name_els = self.driver.find_elements(
-                    By.CSS_SELECTOR, "a.author"
-                )
-            names = [n.text.strip() for n in name_els if n.text.strip()]
-
-            for el in email_els:
+            for email_a in email_anchors:
                 try:
-                    href  = el.get_attribute("href") or ""
-                    # href may be "mailto:user@domain.com%20" or contain spaces
-                    emails = [
-                        e.strip()
-                        for e in href.replace("mailto:", "").split("%20")
-                        if "@" in e
-                    ]
-                    for email in emails:
-                        if names:
-                            best, score = fuzz_process.extractOne(
-                                email.split("@")[0], names,
-                                scorer=fuzz.token_set_ratio
-                            )
-                        else:
-                            best, score = "", 0
-                        rows.append([article_url, best, email])
-                        self.logger.info(f"Taylor ==> {best} — {email}")
+                    # ── Extract email from href ───────────────────────────────
+                    href = email_a.get_attribute("href") or ""
+                    raw  = href.replace("mailto:", "").strip()
+                    # Handle encoded spaces: "name@domain.com%20" → strip
+                    email = raw.split("%20")[0].split(" ")[0].strip()
+                    if not email or "@" not in email:
+                        continue
+
+                    # ── Find author name INSIDE THE SAME author container ─────
+                    # Walk up the DOM: corr-email → corr-sec → overlay → entryAuthor
+                    # Then look for a.author within that same block.
+                    author_name = ""
+                    try:
+                        author_name = self.driver.execute_script("""
+                            var el = arguments[0];
+                            // Walk up until we find the author container
+                            var container = el;
+                            for (var i = 0; i < 8; i++) {
+                                container = container.parentElement;
+                                if (!container) break;
+                                // entryAuthor is the top-level per-author div
+                                var cls = container.className || '';
+                                if (cls.indexOf('entryAuthor') !== -1 ||
+                                    cls.indexOf('contrib-author') !== -1 ||
+                                    container.tagName === 'LI') {
+                                    break;
+                                }
+                            }
+                            if (!container) return '';
+                            // Look for the author name link inside this container
+                            var nameEl = container.querySelector('a.author')
+                                      || container.querySelector('.NLM_surname')
+                                      || container.querySelector('[class*="author-name"]');
+                            return nameEl ? nameEl.textContent.trim() : '';
+                        """, email_a)
+                    except Exception:
+                        pass
+
+                    # If DOM traversal failed, fall back to the envelope icon's
+                    # preceding sibling author link (most reliable backup)
+                    if not author_name:
+                        try:
+                            author_name = self.driver.execute_script("""
+                                var el = arguments[0];
+                                // Find preceding a.author in the same subtree
+                                var parent = el.closest('.entryAuthor, li, .contrib-author');
+                                if (!parent) parent = el.parentElement;
+                                if (!parent) return '';
+                                var a = parent.querySelector('a.author');
+                                return a ? a.textContent.trim() : '';
+                            """, email_a)
+                        except Exception:
+                            pass
+
+                    rows.append([article_url, author_name or "", email])
+                    self.logger.info(f"Taylor ==> ✅ {author_name or '(unknown)'} — {email}")
+
                 except Exception as e:
-                    self.logger.warning(f"Taylor ==> email extraction error: {e}")
+                    self.logger.warning(f"Taylor ==> email_anchor error: {e}")
+
         except Exception as e:
             self.logger.error(f"Taylor ==> Article error {article_url}: {e}")
         return rows

@@ -83,13 +83,30 @@ class ScienceDirectScraper {
         this.browser = null;
         this.page    = null;
         this.currentUserAgentIndex = 0;
-        this.userAgents = [
-            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-        ];
+        // Load UAs from db-1.txt (6,718 entries) — falls back to defaults
+        this.userAgents = (() => {
+            try {
+                const uaFile = path.join(__dirname, '..', 'db-1.txt');
+                const lines  = fsSync.readFileSync(uaFile, 'utf8')
+                    .split('\n')
+                    .map(l => l.trim())
+                    .filter(l => l.length > 10 &&
+                            !l.includes('Mobile') && !l.includes('Android') &&
+                            !l.includes('iPhone') && !l.includes('iPad'));
+                if (lines.length > 10) {
+                    console.log(`[UA] Loaded ${lines.length} desktop UAs from db-1.txt`);
+                    return lines;
+                }
+            } catch (e) {
+                console.log('[UA] db-1.txt not found, using defaults');
+            }
+            return [
+                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+            ];
+        })();
         this.articleTypes = ['REV', 'FLA', 'DAT', 'CH'];
         this.seenUrls = {};
     }
@@ -97,8 +114,8 @@ class ScienceDirectScraper {
     delay(ms) { return new Promise(r => setTimeout(r, ms)); }
 
     getNextUserAgent() {
-        const ua = this.userAgents[this.currentUserAgentIndex];
-        this.currentUserAgentIndex = (this.currentUserAgentIndex + 1) % this.userAgents.length;
+        // Pick a random UA each time for better anti-bot evasion
+        const ua = this.userAgents[Math.floor(Math.random() * this.userAgents.length)];
         return ua;
     }
 
