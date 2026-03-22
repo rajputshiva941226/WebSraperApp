@@ -141,37 +141,9 @@ class ScienceDirectScraper {
     }
 
     async initialize() {
-        const executablePath = this.findChromePath();
-        const launchOpts = {
-            headless: false,   // must be visible for VNC / Xvfb
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--disable-gpu',
-                '--window-size=1400,900',
-                '--disable-blink-features=AutomationControlled',
-                '--disable-infobars',
-                '--disable-notifications',
-                '--disable-popup-blocking',
-            ],
-            defaultViewport: null,
-            ignoreHTTPSErrors: true,
-            timeout: 60000,
-        };
-        if (executablePath) launchOpts.executablePath = executablePath;
-
-        this.browser = await puppeteer.launch(launchOpts);
-        this.page    = await this.browser.newPage();
-
         const ua = this.getNextUserAgent();
-        await this.page.setUserAgent(ua);
-        this.logger.info(`User-Agent: ${ua}`);
-
-        await this.page.evaluateOnNewDocument(() => {
-            Object.defineProperty(navigator, 'webdriver', { get: () => false });
-        });
+        this.lastUsedUA = ua;
+        await this.initializeWithUA(ua);
         this.logger.info('Browser initialized ✓');
     }
 
@@ -193,25 +165,85 @@ class ScienceDirectScraper {
         }
     }
 
+    isCaptchaPage() {
+        // Returns true if current page is a captcha/bot-block page
+        try {
+            const title = document.title || '';
+            const body  = document.body ? document.body.innerText.slice(0, 1000) : '';
+            const PATTERNS = [
+                'verify you are human', 'captcha', 'robot', 'User Agent:',
+                'Access Denied', 'Please verify', 'unusual traffic',
+                'challenge', 'security check', 'bot detection',
+            ];
+            return PATTERNS.some(p =>
+                title.toLowerCase().includes(p.toLowerCase()) ||
+                body.toLowerCase().includes(p.toLowerCase())
+            );
+        } catch(e) { return false; }
+    }
+
     async checkBotDetection() {
         try {
-            const content = await this.page.content();
-            if (content.includes('User Agent:') || content.includes('robot.txt')) {
-                this.logger.warn('Bot detection page! Restarting browser...');
-                await this.restartBrowser();
+            const detected = await this.page.evaluate(this.isCaptchaPage.toString() + '\nreturn isCaptchaPage();');
+            if (detected) {
+                this.logger.warn('⚠️  Bot/CAPTCHA detected — rotating UA and restarting browser...');
+                await this.rotateAndRestart('https://www.sciencedirect.com/');
                 return true;
             }
         } catch (e) {}
         return false;
     }
 
-    async restartBrowser() {
+    async rotateAndRestart(returnUrl) {
+        // Force-pick a DIFFERENT UA before restarting so the site sees a new browser fingerprint
+        this.lastUsedUA = this.lastUsedUA || '';
+        let newUA = this.getNextUserAgent();
+        let tries = 0;
+        while (newUA === this.lastUsedUA && tries < 10) {
+            newUA = this.getNextUserAgent();
+            tries++;
+        }
+        this.lastUsedUA = newUA;
+        this.logger.info(`[UA rotate] New UA: ${newUA.slice(0, 60)}...`);
+
         try { if (this.browser) await this.browser.close(); } catch (e) {}
         this.browser = null; this.page = null;
-        await this.delay(5000);
-        await this.initialize();
-        await this.page.goto('https://www.sciencedirect.com/', { waitUntil: 'networkidle2', timeout: 60000 });
-        await this.handleCookiesAndPopups();
+        await this.delay(8000);   // longer wait after bot detection
+
+        // Reinitialize with new UA
+        await this.initializeWithUA(newUA);
+        if (returnUrl) {
+            await this.page.goto(returnUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+            await this.handleCookiesAndPopups();
+        }
+    }
+
+    async restartBrowser() {
+        await this.rotateAndRestart('https://www.sciencedirect.com/');
+    }
+
+    async initializeWithUA(ua) {
+        const executablePath = this.findChromePath();
+        const launchOpts = {
+            headless: false,
+            args: [
+                '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas', '--disable-gpu', '--window-size=1400,900',
+                '--disable-blink-features=AutomationControlled', '--disable-infobars',
+                '--disable-notifications', '--disable-popup-blocking',
+            ],
+            defaultViewport: null,
+            ignoreHTTPSErrors: true,
+            timeout: 60000,
+        };
+        if (executablePath) launchOpts.executablePath = executablePath;
+        this.browser = await puppeteer.launch(launchOpts);
+        this.page    = await this.browser.newPage();
+        await this.page.setUserAgent(ua);
+        await this.page.evaluateOnNewDocument(() => {
+            Object.defineProperty(navigator, 'webdriver', { get: () => false });
+        });
+        this.logger.info(`Browser restarted with UA: ${ua.slice(0, 60)}...`);
     }
 
     async getTotalResults(url) {
