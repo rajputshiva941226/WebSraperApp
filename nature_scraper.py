@@ -595,7 +595,6 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException
 
-from utils import safe_log_file_path
 
 
 class NatureScraper(ChromeDisplayMixin):
@@ -662,8 +661,13 @@ class NatureScraper(ChromeDisplayMixin):
     def _setup_logger(self):
         self.logger = logging.getLogger(f"NatureScraper-{id(self)}")
         self.logger.setLevel(logging.INFO)
-        log_file = safe_log_file_path(
-            "NatureScraper", self.directory, self.start_year, self.end_year
+        log_dir = "logs"
+        os.makedirs(log_dir, exist_ok=True)
+        log_file = os.path.join(
+            log_dir,
+            f"NatureScraper-{self.directory}"
+            f"-{self.start_year.replace('/', '-')}"
+            f"-{self.end_year.replace('/', '-')}.log"
         )
         if self.logger.hasHandlers():
             self.logger.handlers.clear()
@@ -1002,6 +1006,7 @@ class NatureScraper(ChromeDisplayMixin):
                 self._progress(
                     pct,
                     f"URL collection: year {year} ({len(all_links)} total URLs)",
+                    current_url=self.driver.current_url,
                     links_count=len(all_links),
                 )
 
