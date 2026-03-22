@@ -23,15 +23,14 @@
 
 'use strict';
 
-const puppeteer      = require('puppeteer-extra');
-const StealthPlugin  = require('puppeteer-extra-plugin-stealth');
+const puppeteer      = require('puppeteer-core');
+// puppeteer-core: stealth applied via evaluateOnNewDocument (no plugin needed)
 const fsSync         = require('fs');
 const path           = require('path');
 const { createObjectCsvWriter } = require('csv-writer');
 const csv            = require('csv-parser');
 const os             = require('os');
 
-puppeteer.use(StealthPlugin());
 
 // ── Parse CLI args ──────────────────────────────────────────────────────────
 function parseArgs() {

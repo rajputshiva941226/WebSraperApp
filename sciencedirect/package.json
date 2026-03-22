@@ -1,0 +1,14 @@
+{
+  "name": "scidirect-scraper",
+  "version": "1.0.0",
+  "description": "ScienceDirect Puppeteer scraper for journal-scraper integration",
+  "main": "index.cjs",
+  "scripts": {
+    "start": "node index.cjs"
+  },
+  "dependencies": {
+    "puppeteer-core": "^21.0.0",
+    "csv-writer": "^1.6.0",
+    "csv-parser": "^3.0.0"
+  }
+}
