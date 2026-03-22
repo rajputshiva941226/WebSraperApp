@@ -26,11 +26,42 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
-const puppeteer = require('puppeteer-core');
+// resolve deps from sciencedirect/node_modules
 const fsSync    = require('fs');
 const path      = require('path');
-const { createObjectCsvWriter } = require('csv-writer');
-const csv       = require('csv-parser');
+// Resolve puppeteer-core from sciencedirect/node_modules (shared install)
+const puppeteer = (() => {
+    const path = require('path');
+    const attempts = [
+        'puppeteer-core',  // if globally installed
+        path.join(__dirname, 'sciencedirect', 'node_modules', 'puppeteer-core'),
+        path.join(__dirname, '..', 'sciencedirect', 'node_modules', 'puppeteer-core'),
+    ];
+    for (const p of attempts) {
+        try { return require(p); } catch(e) {}
+    }
+    throw new Error('puppeteer-core not found. Run: cd sciencedirect && npm install');
+})();
+const { createObjectCsvWriter } = (() => {
+    const path = require('path');
+    const attempts = [
+        'csv-writer',
+        path.join(__dirname, 'sciencedirect', 'node_modules', 'csv-writer'),
+        path.join(__dirname, '..', 'sciencedirect', 'node_modules', 'csv-writer'),
+    ];
+    for (const p of attempts) { try { return require(p); } catch(e) {} }
+    throw new Error('csv-writer not found');
+})();
+const csv = (() => {
+    const path = require('path');
+    const attempts = [
+        'csv-parser',
+        path.join(__dirname, 'sciencedirect', 'node_modules', 'csv-parser'),
+        path.join(__dirname, '..', 'sciencedirect', 'node_modules', 'csv-parser'),
+    ];
+    for (const p of attempts) { try { return require(p); } catch(e) {} }
+    throw new Error('csv-parser not found');
+})();
 
 // ── CLI args ────────────────────────────────────────────────────────────────
 function parseArgs() {
@@ -160,16 +191,24 @@ class OxfordScraper {
     }
 
     async _acceptCookies() {
-        await this.delay(8000);
-        for (const sel of [
-            '#onetrust-accept-btn-handler', 'button.oup-cookie-consent__btn--accept',
-            '[aria-label="Accept all cookies"]', 'button[id*="accept"]',
-        ]) {
-            try {
-                const btn = await this.page.$(sel);
-                if (btn) { await btn.click(); this.logger.info(`Cookies accepted (${sel})`); await this.delay(2000); break; }
-            } catch (e) {}
+        const selectors = ['#onetrust-accept-btn-handler', 'button.oup-cookie-consent__btn--accept',
+                           '[aria-label="Accept all cookies"]', 'button[id*="accept"]'];
+        const deadline = Date.now() + 15000;
+        while (Date.now() < deadline) {
+            for (const sel of selectors) {
+                try {
+                    const btn = await this.page.$(sel);
+                    if (btn) {
+                        await btn.click();
+                        this.logger.info(`Cookies accepted (${sel})`);
+                        await this.delay(1500);
+                        return;
+                    }
+                } catch (e) {}
+            }
+            await this.delay(1000);
         }
+        this.logger.info('No cookie banner found — continuing');
     }
 
     async _closePopups() {

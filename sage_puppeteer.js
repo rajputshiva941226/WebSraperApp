@@ -27,11 +27,42 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
-const puppeteer = require('puppeteer-core');
+// resolve deps from sciencedirect/node_modules
 const fsSync    = require('fs');
 const path      = require('path');
-const { createObjectCsvWriter } = require('csv-writer');
-const csv       = require('csv-parser');
+// Resolve puppeteer-core from sciencedirect/node_modules (shared install)
+const puppeteer = (() => {
+    const path = require('path');
+    const attempts = [
+        'puppeteer-core',  // if globally installed
+        path.join(__dirname, 'sciencedirect', 'node_modules', 'puppeteer-core'),
+        path.join(__dirname, '..', 'sciencedirect', 'node_modules', 'puppeteer-core'),
+    ];
+    for (const p of attempts) {
+        try { return require(p); } catch(e) {}
+    }
+    throw new Error('puppeteer-core not found. Run: cd sciencedirect && npm install');
+})();
+const { createObjectCsvWriter } = (() => {
+    const path = require('path');
+    const attempts = [
+        'csv-writer',
+        path.join(__dirname, 'sciencedirect', 'node_modules', 'csv-writer'),
+        path.join(__dirname, '..', 'sciencedirect', 'node_modules', 'csv-writer'),
+    ];
+    for (const p of attempts) { try { return require(p); } catch(e) {} }
+    throw new Error('csv-writer not found');
+})();
+const csv = (() => {
+    const path = require('path');
+    const attempts = [
+        'csv-parser',
+        path.join(__dirname, 'sciencedirect', 'node_modules', 'csv-parser'),
+        path.join(__dirname, '..', 'sciencedirect', 'node_modules', 'csv-parser'),
+    ];
+    for (const p of attempts) { try { return require(p); } catch(e) {} }
+    throw new Error('csv-parser not found');
+})();
 
 // ── CLI args ────────────────────────────────────────────────────────────────
 function parseArgs() {
@@ -165,14 +196,25 @@ class SageScraper {
 
     // ── Cookie / popup handling ──────────────────────────────────────────────
     async _acceptCookies() {
-        await this.delay(8000);
-        for (const sel of ['#onetrust-accept-btn-handler', 'button.onetrust-close-btn-handler',
-                           '[aria-label="Accept all cookies"]']) {
-            try {
-                const btn = await this.page.$(sel);
-                if (btn) { await btn.click(); this.logger.info(`Cookies accepted (${sel})`); await this.delay(2000); break; }
-            } catch (e) {}
+        // Poll up to 15s for cookie banner — dismiss as soon as it appears
+        const selectors = ['#onetrust-accept-btn-handler', 'button.onetrust-close-btn-handler',
+                           '[aria-label="Accept all cookies"]', 'button[id*="accept"]'];
+        const deadline = Date.now() + 15000;
+        while (Date.now() < deadline) {
+            for (const sel of selectors) {
+                try {
+                    const btn = await this.page.$(sel);
+                    if (btn) {
+                        await btn.click();
+                        this.logger.info(`Cookies accepted (${sel})`);
+                        await this.delay(1500);
+                        return;
+                    }
+                } catch (e) {}
+            }
+            await this.delay(1000);
         }
+        this.logger.info('No cookie banner found — continuing');
     }
 
     async _closePopups() {
@@ -319,11 +361,13 @@ class SageScraper {
 
         // Build search URL
         const q = encodeURIComponent(kw);
+        // Direct search URL — avoids the advanced form with dynamic dropdown IDs.
+        // Confirmed working URL format from the server logs.
         const baseUrl   = 'https://journals.sagepub.com/action/doSearch';
         const buildUrl  = (page) =>
             `${baseUrl}?field1=AllField&text1=${q}` +
-            `&AfterMonth=${smm}&AfterYear=${syyyy}` +
-            `&BeforeMonth=${emm}&BeforeYear=${eyyyy}` +
+            `&AfterMonth=${parseInt(smm,10)}&AfterYear=${syyyy}` +
+            `&BeforeMonth=${parseInt(emm,10)}&BeforeYear=${eyyyy}` +
             `&pageSize=100&startPage=${page}`;
 
         // Initialise CSV files
@@ -348,11 +392,18 @@ class SageScraper {
         });
 
         // ── Phase 1 ──────────────────────────────────────────────────────────
+        // Step 1: Land on homepage to set cookies (avoids CF challenge on direct search)
         reportProgress(5, 'Landing on Sage homepage...');
         await this.page.goto('https://journals.sagepub.com', { waitUntil: 'networkidle2', timeout: 60000 });
         await this._acceptCookies();
-        await this.page.goto(buildUrl(0), { waitUntil: 'networkidle2', timeout: 60000 });
-        if (await this._isCaptcha()) await this.rotateAndRestart('https://journals.sagepub.com');
+
+        // Step 2: Navigate directly to search URL (no form needed — URL has all params)
+        reportProgress(8, `Searching: "${kw}" ${startDate}→${endDate}`);
+        const searchUrl = buildUrl(0);
+        this.logger.info(`Sage ==> Search URL: ${searchUrl}`);
+        await this._goto(searchUrl, 'https://journals.sagepub.com');
+        await this.delay(5000);
+        await this._closePopups();
 
         const totalPages = await this._getTotalPages();
         if (totalPages === 0) throw new Error('No results found for this search');

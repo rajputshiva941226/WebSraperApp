@@ -148,20 +148,35 @@ class ScienceDirectScraper {
     }
 
     async handleCookiesAndPopups() {
-        this.logger.info('Handling cookies/popups (15s settle)...');
-        await this.delay(15000);
-
-        for (const sel of [
+        this.logger.info('Handling cookies/popups...');
+        // Poll for cookie banner up to 20s — dismiss as soon as it appears
+        const cookieSelectors = [
             '#onetrust-accept-btn-handler',
             'button[data-testid="accept-all-cookies"]',
-        ]) {
-            try {
-                const btn = await this.page.$(sel);
-                if (btn) { await btn.click(); this.logger.info(`Accepted cookies (${sel})`); await this.delay(2000); break; }
-            } catch (e) {}
+            'button.onetrust-close-btn-handler',
+        ];
+        const deadline = Date.now() + 20000;
+        let accepted = false;
+        while (Date.now() < deadline && !accepted) {
+            for (const sel of cookieSelectors) {
+                try {
+                    const btn = await this.page.$(sel);
+                    if (btn) {
+                        await btn.click();
+                        this.logger.info(`Accepted cookies (${sel})`);
+                        await this.delay(2000);
+                        accepted = true;
+                        break;
+                    }
+                } catch (e) {}
+            }
+            if (!accepted) await this.delay(1000);
         }
+        if (!accepted) this.logger.info('No cookie banner found — continuing');
+
+        // Close any AI / institution popups
         for (const sel of ['._pendo-close-guide', '#pendo-close-guide-bfad995f', '#bdd-els-close']) {
-            try { const btn = await this.page.$(sel); if (btn) { await btn.click(); await this.delay(500); } } catch (e) {}
+            try { const btn = await this.page.$(sel); if (btn) { await btn.click(); await this.delay(400); } } catch (e) {}
         }
     }
 
@@ -253,21 +268,39 @@ class ScienceDirectScraper {
                 if (await this.checkBotDetection()) {
                     await this.page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
                 }
-                await this.delay(3000);
+                await this.delay(4000);
+                await this.handleCookiesAndPopups();
                 try { const btn = await this.page.$('#bdd-els-close'); if (btn) { await btn.click(); await this.delay(1000); } } catch (e) {}
-                try { await this.page.waitForSelector('.search-body-results-text', { timeout: 10000 }); } catch (e) {}
+
+                // Wait for ANY result count element
+                for (const sel of ['.search-body-results-text','.ResultsFound','[data-testid="search-count"]',
+                                    'div[class*="SearchResults"] span','ol.search-result-cont']) {
+                    try { await this.page.waitForSelector(sel, { timeout: 5000 }); break; } catch (e) {}
+                }
 
                 const total = await this.page.evaluate(() => {
-                    const el = document.querySelector('.search-body-results-text') || document.querySelector('.ResultsFound');
-                    if (!el) return 0;
-                    const m = el.textContent.match(/[\d,]+/);
-                    return m ? parseInt(m[0].replace(/,/g, ''), 10) : 0;
+                    const SELECTORS = [
+                        '.search-body-results-text',
+                        '.ResultsFound',
+                        '[data-testid="search-count"]',
+                        'div[class*="ResultsFound"]',
+                        'span[class*="result-count"]',
+                    ];
+                    for (const sel of SELECTORS) {
+                        const el = document.querySelector(sel);
+                        if (!el) continue;
+                        const m = el.textContent.match(/[\d,]+/);
+                        if (m) return parseInt(m[0].replace(/,/g, ''), 10);
+                    }
+                    // Last resort: count article items on page
+                    const items = document.querySelectorAll('#srp-results-list .result-item-content');
+                    return items.length;
                 });
-                this.logger.info(`Total results: ${total}`);
+                this.logger.info(`Total results: ${total} (url: ${url.slice(0,80)}...)`);
                 return total;
             } catch (e) {
                 this.logger.error(`getTotalResults attempt ${attempt}: ${e.message}`);
-                if (attempt < 3) await this.restartBrowser();
+                if (attempt < 3) await this.rotateAndRestart(null);
             }
         }
         return 0;
