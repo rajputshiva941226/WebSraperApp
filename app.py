@@ -194,7 +194,7 @@ JOURNALS = {
         #'icon': '🧬',
         'description': 'Open access scientific publisher'
     },
-    'pubmed': {
+    'sciencedirect': {
         'name': 'Science Direct',
         'full_name': 'Science Direct',
         'type': 'playwright',
