@@ -888,6 +888,54 @@ class OxfordScraper(ChromeDisplayMixin):
 
     # ── Page helpers ──────────────────────────────────────────────────────────
 
+
+    def _bypass_cloudflare(self, timeout: int = 120) -> bool:
+        """
+        Oxford uses Cloudflare managed challenge (auto-verifies in ~5s on most runs).
+        Waits for it to clear. RAISES RuntimeError on timeout.
+        """
+        CF_PHRASES = [
+            "just a moment", "verifying you are human",
+            "performing security verification", "checking your browser",
+        ]
+
+        def _on_cf() -> bool:
+            try:
+                t = self.driver.title.lower()
+                s = self.driver.page_source.lower()[:600]
+                return any(p in t or p in s for p in CF_PHRASES)
+            except Exception:
+                return False
+
+        time.sleep(3)
+        if not _on_cf():
+            self.logger.info("Oxford ==> CF bypass: no challenge ✓")
+            return True
+
+        self.logger.warning(
+            f"Oxford ==> ⚠️ Cloudflare challenge — waiting up to {timeout}s "
+            f"(managed challenge usually auto-clears). URL: {self.driver.current_url}"
+        )
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            time.sleep(3)
+            if not _on_cf():
+                self.logger.info("Oxford ==> CF bypass: challenge cleared ✓")
+                return True
+            self.logger.info(
+                f"Oxford ==> CF bypass: waiting... ({int(deadline - time.time())}s left)"
+            )
+
+        try:
+            os.makedirs("logs", exist_ok=True)
+            self.driver.save_screenshot("logs/OxfordScraper_cf_timeout.png")
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"Oxford Cloudflare challenge not cleared within {timeout}s. "
+            "Open VNC at http://3.108.210.45:6080/vnc.html and solve the captcha."
+        )
+
     def accept_cookies(self):
         for sel in [
             "#onetrust-accept-btn-handler",
@@ -1091,12 +1139,14 @@ class OxfordScraper(ChromeDisplayMixin):
             self._progress(2, "Loading Oxford Academic homepage...")
             self.driver.get(base_url)
             time.sleep(5)
+            self._bypass_cloudflare(timeout=60)
             self.accept_cookies()
 
             # ── Step 2: Search results ────────────────────────────────────
             self._progress(4, f"Searching: {self.keyword}...")
             self.driver.get(search_url)
             time.sleep(5)
+            self._bypass_cloudflare(timeout=120)
 
             if self._detect_captcha():
                 raise RuntimeError(
