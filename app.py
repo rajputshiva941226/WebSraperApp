@@ -1050,11 +1050,17 @@ def download_results(job_id):
             author_col = next((c for c in df.columns if c.lower() in ('author_name', 'name', 'author', 'names')), None)
             url_col = next((c for c in df.columns if c.lower() in ('article_url', 'url', 'article url', 'link')), None)
 
+            # Add Conference_Name column to results if not present
+            _conf_name = job.get('conference') or job.get('conference_name') or ''
+            if _conf_name and 'Conference_Name' not in df.columns:
+                df.insert(0, 'Conference_Name', _conf_name)
+
             with pd.ExcelWriter(xlsx_path, engine='openpyxl') as writer:
                 df.to_excel(writer, sheet_name='Results', index=False)
                 stats_df = pd.DataFrame({
                     'Metric': ['Total Records', 'Unique Emails', 'Unique Authors',
-                               'Unique URLs', 'Scraper', 'Keyword', 'Date Range', 'Completed At'],
+                               'Unique URLs', 'Scraper', 'Keyword', 'Date Range',
+                               'Conference', 'Completed At'],
                     'Value': [
                         len(df),
                         df[email_col].nunique() if email_col else job.get('unique_emails', 'N/A'),
@@ -1063,6 +1069,7 @@ def download_results(job_id):
                         job.get('journal_name', 'Unknown'),
                         job.get('keyword', 'Unknown'),
                         f"{job.get('start_date', 'N/A')} to {job.get('end_date', 'N/A')}",
+                        _conf_name or 'N/A',
                         job.get('end_time', 'N/A'),
                     ]
                 })
@@ -1074,14 +1081,18 @@ def download_results(job_id):
             except Exception:
                 pass
 
+            _conf_safe = (_conf_name or '').replace(' ', '_')
+            _xlsx_conf = f"_{_conf_safe}" if _conf_safe else ''
             return send_file(xlsx_path, as_attachment=True,
-                             download_name=f"{journal_name_safe}_{keyword_safe}_results.xlsx")
+                             download_name=f"{journal_name_safe}{_xlsx_conf}_{keyword_safe}_results.xlsx")
         except Exception as e:
             return jsonify({'error': f'Failed to generate XLSX: {str(e)}'}), 500
 
     # Return CSV
+    _conf_name_csv = (job.get('conference') or job.get('conference_name') or '').replace(' ', '_')
+    _csv_conf = f"_{_conf_name_csv}" if _conf_name_csv else ''
     return send_file(output_file, as_attachment=True,
-                     download_name=f"{journal_name_safe}_{keyword_safe}_results.csv")
+                     download_name=f"{journal_name_safe}{_csv_conf}_{keyword_safe}_results.csv")
 
 @app.route('/api/download-bulk')
 def download_bulk_results():
