@@ -106,7 +106,7 @@ class SageScraper {
 
     _loadUAs() {
         try {
-            const uaFile = path.join(__dirname, 'db-1.txt');
+            const uaFile = fsSync.existsSync(path.join(__dirname, 'modern_useragents.txt')) ? path.join(__dirname, 'modern_useragents.txt') : path.join(__dirname, 'db-1.txt');
             const lines  = fsSync.readFileSync(uaFile, 'utf8')
                 .split('\n').map(l => l.trim())
                 .filter(l => {
@@ -168,11 +168,12 @@ class SageScraper {
         } catch (e) { return false; }
     }
 
-    async _waitForCFClear(maxWaitMs = 30000) {
+    async _waitForCFClear(maxWaitMs = 120000) {
         const CF_PHRASES = ['verifying you are human', 'just a moment', 'checking your browser',
                             'please wait', 'performing security verification'];
         const deadline = Date.now() + maxWaitMs;
-        this.logger.info(`CF auto-challenge — waiting up to ${maxWaitMs/1000}s for auto-clear...`);
+        this.logger.warn(`⚠️ CF challenge — open VNC: http://3.108.210.45:6080/vnc.html`);
+        this.logger.warn(`   Click "Verify you are human" checkbox within ${maxWaitMs/1000}s`);
         while (Date.now() < deadline) {
             await this.delay(3000);
             try {
@@ -181,10 +182,12 @@ class SageScraper {
                         (document.body ? document.body.innerText.slice(0, 400) : '')).toLowerCase();
                     return phrases.some(p => txt.includes(p));
                 }, CF_PHRASES);
-                if (!stillCF) { this.logger.info('✓ CF challenge auto-cleared'); return true; }
+                if (!stillCF) { this.logger.info('✓ CF challenge cleared'); return true; }
+                const rem = Math.round((deadline - Date.now()) / 1000);
+                this.logger.info(`CF waiting... (${rem}s left)`);
             } catch (e) { break; }
         }
-        this.logger.warn('CF did not auto-clear — rotating UA');
+        this.logger.error('CF not solved — rotating UA and retrying');
         return false;
     }
 
@@ -237,7 +240,7 @@ class SageScraper {
                     if (btn) {
                         await btn.click();
                         this.logger.info(`Cookies accepted (${sel})`);
-                        await this.delay(1500);
+                        await this.delay(3000 + Math.floor(Math.random() * 3000));
                         return;
                     }
                 } catch (e) {}
@@ -261,7 +264,7 @@ class SageScraper {
                 await this.page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
                 const _captcha = await this._isCaptcha();
                 if (_captcha === 'cf_auto') {
-                    const _cleared = await this._waitForCFClear(30000);
+                    const _cleared = await this._waitForCFClear(120000);
                     if (!_cleared) { await this.rotateAndRestart(homeUrl || 'https://journals.sagepub.com'); await this.page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 }); }
                 } else if (_captcha === 'hard' || _captcha) {
                     await this.rotateAndRestart(homeUrl || 'https://journals.sagepub.com'); await this.page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
@@ -277,28 +280,51 @@ class SageScraper {
 
     // ── Phase 1: Collect article URLs ────────────────────────────────────────
     async _getTotalPages(query) {
-        try {
-            await this.page.waitForSelector('.search-body-results-text, .resultsCount, [class*="results"]',
-                { timeout: 10000 });
-            const count = await this.page.evaluate(() => {
-                const selectors = ['.search-body-results-text', '.resultsCount',
-                                   '[class*="result-count"]', '[class*="resultsCount"]'];
-                for (const s of selectors) {
-                    const el = document.querySelector(s);
-                    if (el) {
-                        const m = el.textContent.match(/[\d,]+/);
-                        if (m) return parseInt(m[0].replace(/,/g, ''), 10);
-                    }
+        // Sage result count selectors — confirmed from live Selenium logs
+        // "span.result__count" is the primary selector used in working Selenium version
+        const COUNT_SELECTORS = [
+            'span.result__count',
+            '[class*="result__count"]',
+            '.search-body-results-text',
+            '.resultsCount',
+            '[class*="result-count"]',
+            '[data-test="results-count"]',
+            'p.results-desc',
+        ];
+        for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+                // Try all selectors
+                for (const sel of COUNT_SELECTORS) {
+                    try {
+                        await this.page.waitForSelector(sel, { timeout: 6000 });
+                        const count = await this.page.evaluate((s) => {
+                            const el = document.querySelector(s);
+                            if (!el || !el.textContent.trim()) return 0;
+                            const m = el.textContent.match(/[\d,]+/);
+                            return m ? parseInt(m[0].replace(/,/g, ''), 10) : 0;
+                        }, sel);
+                        if (count > 0) {
+                            const pages = Math.ceil(count / 100);
+                            this.logger.info(`Total results: ${count} → ${pages} pages (via ${sel})`);
+                            return pages;
+                        }
+                    } catch (e) {}
                 }
-                return 0;
-            });
-            const pages = Math.ceil(count / 100);
-            this.logger.info(`Total results: ${count} → ${pages} pages`);
-            return pages;
-        } catch (e) {
-            this.logger.error(`getTotalPages: ${e.message}`);
-            return 0;
+                // Fallback: count article items on page
+                const itemCount = await this.page.evaluate(() =>
+                    document.querySelectorAll('div.issue-item__title > a[data-id="srp-article-title"]').length
+                );
+                if (itemCount > 0) {
+                    this.logger.info(`Counted ${itemCount} items on first page — treating as 1 page`);
+                    return 1;
+                }
+                if (attempt < 2) await this.delay(3000);
+            } catch (e) {
+                this.logger.error(`getTotalPages attempt ${attempt+1}: ${e.message}`);
+            }
         }
+        this.logger.error('getTotalPages: could not determine result count');
+        return 0;
     }
 
     async _extractLinks() {
@@ -379,67 +405,179 @@ class SageScraper {
     }
 
     // ── Main run ─────────────────────────────────────────────────────────────
-    async run() {
-        const kw        = this.opts['keyword'] || '';
-        const startDate = this.opts['start-year'] || '';
-        const endDate   = this.opts['end-year'] || '';
-        const urlCsv    = this.opts['url-csv'];
-        const authCsv   = this.opts['authors-csv'];
+    async _fillSearchForm(keyword, fromMonth, fromYear, toMonth, toYear) {
+        /**
+         * Fill the Sage advanced search form using confirmed HTML selectors.
+         *
+         * Form structure (from live HTML):
+         *   #searchArea1     — select (field1): set to "Abstract" or "AllField"
+         *   #text1           — input: keyword
+         *   #customRange     — radio: enables custom date range
+         *   #dropdown100     — button: From month toggle (options: data-value="1"-"12")
+         *   #dropdown565     — button: From year toggle (options: data-value="YYYY")
+         *   #dropdown650     — button: To month toggle
+         *   #dropdown154     — button: To year toggle
+         *   #advanced-search-btn — submit button
+         *
+         * Dropdowns are Bootstrap listbox dropdowns disabled until #customRange is clicked.
+         * Must: click radio → wait → click toggle btn → wait → click option[data-value]
+         */
+        this.logger.info(`Filling form: "${keyword}" from ${fromMonth}/${fromYear} to ${toMonth}/${toYear}`);
 
-        // Parse MM/DD/YYYY
-        const [smm, , syyyy] = startDate.split('/');
-        const [emm, , eyyyy] = endDate.split('/');
-
-        reportProgress(2, `Sage: starting "${kw}" ${startDate}→${endDate}`);
-
-        // Build search URL
-        const q = encodeURIComponent(kw);
-        // Direct search URL — avoids the advanced form with dynamic dropdown IDs.
-        // Confirmed working URL format from the server logs.
-        const baseUrl   = 'https://journals.sagepub.com/action/doSearch';
-        const buildUrl  = (page) =>
-            `${baseUrl}?field1=AllField&text1=${q}` +
-            `&AfterMonth=${parseInt(smm,10)}&AfterYear=${syyyy}` +
-            `&BeforeMonth=${parseInt(emm,10)}&BeforeYear=${eyyyy}` +
-            `&pageSize=100&startPage=${page}`;
-
-        // Initialise CSV files
-        for (const [csvPath, header] of [
-            [urlCsv, [{ id: 'Article_URL', title: 'Article_URL' }]],
-            [authCsv, [{ id: 'Article_URL', title: 'Article_URL' },
-                       { id: 'Author_Name', title: 'Author_Name' },
-                       { id: 'Email',       title: 'Email' }]],
-        ]) {
-            await createObjectCsvWriter({ path: csvPath, header, append: false }).writeRecords([]);
+        // 1. Wait for form to be ready
+        try {
+            await this.page.waitForSelector('#text1', { timeout: 15000 });
+        } catch(e) {
+            await this.page.screenshot({ path: 'logs/sage_form_missing.png' }).catch(()=>{});
+            throw new Error(`Sage advanced search form not found: ${e.message}`);
         }
 
-        const urlAppend  = createObjectCsvWriter({
-            path: urlCsv,
-            header: [{ id: 'Article_URL', title: 'Article_URL' }], append: true,
-        });
-        const authAppend = createObjectCsvWriter({
-            path: authCsv,
-            header: [{ id: 'Article_URL', title: 'Article_URL' },
-                     { id: 'Author_Name', title: 'Author_Name' },
-                     { id: 'Email', title: 'Email' }], append: true,
-        });
+        // 2. Click Custom Range radio to enable date dropdowns
+        try {
+            await this.page.evaluate(() => {
+                const radio = document.getElementById('customRange');
+                if (radio) { radio.click(); }
+            });
+            await this.delay(1500);
+            this.logger.info('Custom Range radio clicked');
+        } catch(e) {
+            this.logger.warn(`Could not click customRange: ${e.message}`);
+        }
 
-        // ── Phase 1 ──────────────────────────────────────────────────────────
-        // Step 1: Land on homepage to set cookies (avoids CF challenge on direct search)
+        // 3. Helper: open a Bootstrap dropdown and click the option with data-value
+        const selectDropdownOption = async (btnId, value, label) => {
+            try {
+                // Enable the button in case it's still disabled
+                await this.page.evaluate((id) => {
+                    const btn = document.getElementById(id);
+                    if (btn) {
+                        btn.removeAttribute('disabled');
+                        btn.removeAttribute('aria-disabled');
+                        btn.setAttribute('aria-disabled', 'false');
+                    }
+                    // Also enable the hidden input
+                    const parentDropdown = btn ? btn.closest('.dropdown') : null;
+                    if (parentDropdown) {
+                        const input = parentDropdown.querySelector('input[type="hidden"]');
+                        if (input) {
+                            input.removeAttribute('disabled');
+                            input.setAttribute('aria-disabled', 'false');
+                        }
+                    }
+                }, btnId);
+
+                // Click the toggle button to open dropdown
+                await this.page.click(`#${btnId}`);
+                await this.delay(800);
+
+                // Click the option with matching data-value
+                const optionSel = `[aria-labelledby="${btnId}"] a[data-value="${value}"]`;
+                await this.page.waitForSelector(optionSel, { visible: true, timeout: 5000 });
+                await this.page.click(optionSel);
+                await this.delay(600);
+                this.logger.info(`Set ${label}: ${value}`);
+            } catch(e) {
+                // Fallback: set hidden input directly via JS
+                this.logger.warn(`Dropdown ${btnId} click failed, using JS: ${e.message}`);
+                await this.page.evaluate((id, val) => {
+                    const btn = document.getElementById(id);
+                    const parent = btn ? btn.closest('.dropdown') : null;
+                    if (parent) {
+                        const input = parent.querySelector('input[type="hidden"]');
+                        if (input) {
+                            input.value = val;
+                            input.removeAttribute('disabled');
+                            input.dispatchEvent(new Event('change', { bubbles: true }));
+                        }
+                        // Update button text
+                        const span = btn ? btn.querySelector('span') : null;
+                        if (span) span.textContent = val;
+                    }
+                }, id, value);
+                this.logger.info(`Set ${label} via JS: ${value}`);
+            }
+        };
+
+        // 4. Set date dropdowns
+        await selectDropdownOption('dropdown100', fromMonth,  'From month');
+        await selectDropdownOption('dropdown565', fromYear,   'From year');
+        await selectDropdownOption('dropdown650', toMonth,    'To month');
+        await selectDropdownOption('dropdown154', toYear,     'To year');
+
+        // 5. Type keyword (clear first, then type char by char)
+        try {
+            const input = await this.page.$('#text1');
+            await input.click({ clickCount: 3 });
+            await input.type(keyword, { delay: 80 });
+            const actual = await this.page.$eval('#text1', el => el.value);
+            this.logger.info(`Keyword field value: "${actual}"`);
+            if (actual !== keyword) {
+                // Force via JS
+                await this.page.evaluate((kw) => {
+                    const el = document.getElementById('text1');
+                    if (el) { el.value = kw; el.dispatchEvent(new Event('input', { bubbles: true })); }
+                }, keyword);
+            }
+        } catch(e) {
+            throw new Error(`Cannot type keyword into #text1: ${e.message}`);
+        }
+
+        await this.delay(1000);
+
+        // 6. Enable and click Search button
+        await this.page.evaluate(() => {
+            const btn = document.getElementById('advanced-search-btn');
+            if (btn) {
+                btn.removeAttribute('disabled');
+                btn.removeAttribute('aria-disabled');
+            }
+        });
+        await this.delay(500);
+        await this.page.click('#advanced-search-btn');
+        this.logger.info('Search form submitted');
+    }
+
+    async run() {
+        // Step 1: Land on homepage to set cookies
         reportProgress(5, 'Landing on Sage homepage...');
         await this.page.goto('https://journals.sagepub.com', { waitUntil: 'networkidle2', timeout: 60000 });
         await this._acceptCookies();
 
-        // Step 2: Navigate directly to search URL (no form needed — URL has all params)
-        reportProgress(8, `Searching: "${kw}" ${startDate}→${endDate}`);
-        const searchUrl = buildUrl(0);
-        this.logger.info(`Sage ==> Search URL: ${searchUrl}`);
-        await this._goto(searchUrl, 'https://journals.sagepub.com');
-        await this.delay(5000);
+        // Step 2: Navigate to advanced search form
+        reportProgress(7, 'Loading advanced search form...');
+        await this.page.goto('https://journals.sagepub.com/search/advanced', { waitUntil: 'networkidle2', timeout: 60000 });
+        const cfState = await this._isCaptcha();
+        if (cfState === 'cf_auto') {
+            await this._waitForCFClear(120000);
+        } else if (cfState) {
+            await this.rotateAndRestart('https://journals.sagepub.com');
+            await this.page.goto('https://journals.sagepub.com/search/advanced', { waitUntil: 'networkidle2', timeout: 60000 });
+        }
+        await this.delay(3000);
+
+        // Step 3: Fill the advanced search form
+        reportProgress(8, `Filling search form: "${kw}" ${startDate}→${endDate}`);
+        await this._fillSearchForm(kw, smm, syyyy, emm, eyyyy);
+
+        // Step 4: Wait for results page
+        reportProgress(10, 'Waiting for search results...');
+        await this.page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
+        const cfState2 = await this._isCaptcha();
+        if (cfState2 === 'cf_auto') await this._waitForCFClear(120000);
+        await this.delay(6000);
         await this._closePopups();
 
+        this.logger.info(`Sage ==> Results URL: ${this.page.url()}`);
+
         const totalPages = await this._getTotalPages();
-        if (totalPages === 0) throw new Error('No results found for this search');
+        if (totalPages === 0) {
+            try {
+                fsSync.mkdirSync('logs', { recursive: true });
+                await this.page.screenshot({ path: 'logs/sage_no_results.png', fullPage: false });
+                this.logger.error(`No results. URL: ${this.page.url()}`);
+            } catch(e) {}
+            throw new Error(`No results found for "${kw}"`);
+        }
 
         const allLinks = [];
         for (let pg = 0; pg < totalPages; pg++) {
@@ -455,7 +593,7 @@ class SageScraper {
             const pct = 5 + Math.floor(((pg + 1) / totalPages) * 33);
             reportProgress(pct, `Page ${pg+1}/${totalPages}: ${links.length} links (total ${allLinks.length})`);
             this.logger.info(`Sage ==> Page ${pg+1}/${totalPages}: ${links.length} links`);
-            await this.delay(4000);
+            await this.delay(6000 + Math.floor(Math.random() * 3000));
         }
 
         reportProgress(40, `Phase 1 done: ${allLinks.length} URLs`);

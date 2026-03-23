@@ -181,15 +181,17 @@ class SeleniumScraperWrapper:
         timeout:       int           = _DEFAULT_TIMEOUT,
         output_dir:    Optional[str] = None,
         job_id:        Optional[str] = None,
+        conference_name: str         = '',
     ):
-        self.scraper_class = scraper_class
-        self.keyword       = keyword
-        self.start_year    = start_year
-        self.end_year      = end_year
-        self.driver_path   = driver_path
-        self.timeout       = timeout
-        self.output_dir    = output_dir
-        self.job_id        = job_id or 'unknown'
+        self.scraper_class   = scraper_class
+        self.keyword         = keyword
+        self.start_year      = start_year
+        self.end_year        = end_year
+        self.driver_path     = driver_path
+        self.timeout         = timeout
+        self.output_dir      = output_dir
+        self.job_id          = job_id or 'unknown'
+        self.conference_name = conference_name
 
         self._progress_callback: Optional[Callable] = None
         self._subprocess: Optional[billiard.Process] = None
@@ -222,10 +224,11 @@ class SeleniumScraperWrapper:
         self._stop_event = stop_evt
 
         init_kwargs = {
-            'keyword':     self.keyword,
-            'start_year':  self.start_year,
-            'end_year':    self.end_year,
-            'driver_path': self.driver_path,
+            'keyword':         self.keyword,
+            'start_year':      self.start_year,
+            'end_year':        self.end_year,
+            'driver_path':     self.driver_path,
+            'conference_name': self.conference_name,
         }
         if self.output_dir:
             init_kwargs['output_dir'] = self.output_dir

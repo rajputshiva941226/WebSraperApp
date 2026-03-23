@@ -95,7 +95,9 @@ class ScienceDirectScraper {
                 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
             ];
             try {
-                const uaFile = path.join(__dirname, '..', 'db-1.txt');
+                const uaFile = fsSync.existsSync(path.join(__dirname, '..', 'modern_useragents.txt'))
+                    ? path.join(__dirname, '..', 'modern_useragents.txt')
+                    : path.join(__dirname, '..', 'db-1.txt');
                 const all = fsSync.readFileSync(uaFile, 'utf8').split('\n').map(l => l.trim());
                 const modern = all.filter(l => {
                     if (l.length < 20) return false;
@@ -210,12 +212,14 @@ class ScienceDirectScraper {
             if (currentUrl.includes('unsupported_browser') || currentUrl.includes('outdated')) {
                 this.logger.warn('⚠️  "Browser outdated" page — UA too old, rotating...');
                 await this.rotateAndRestart('https://www.sciencedirect.com/');
+                await this.delay(15000);
                 return true;
             }
             const detected = await this.page.evaluate(this.isCaptchaPage.toString() + '\nreturn isCaptchaPage();');
             if (detected) {
                 this.logger.warn('⚠️  Bot/CAPTCHA detected — rotating UA and restarting browser...');
                 await this.rotateAndRestart('https://www.sciencedirect.com/');
+                await this.delay(15000);  // settle before next navigation
                 return true;
             }
         } catch (e) {}
@@ -402,63 +406,118 @@ class ScienceDirectScraper {
     }
 
     async extractEmailsFromArticle(url, keyword, year) {
-        for (let attempt = 1; attempt <= 3; attempt++) {
+        const results = [];
+        try {
+            // Short per-article timeout — don't hang 60s on slow/broken pages
+            this.page.setDefaultNavigationTimeout(25000);
+
             try {
-                await this.page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
-                if (await this.checkBotDetection()) await this.page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
-                await this.delay(2000);
+                await this.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 });
+            } catch (e) {
+                this.logger.warn(`Article load timeout, skipping: ${url.slice(0, 80)}`);
+                return results;
+            }
 
-                try { const btn = await this.page.$('#pendo-close-guide-bfad995f'); if (btn) await btn.click(); } catch (e) {}
-                try { const btn = await this.page.$('#bdd-els-close'); if (btn) await btn.click(); } catch (e) {}
-                await this.delay(1000);
+            // Check bot detection — rotate UA, then settle 20s before retry
+            const botState = await this.checkBotDetection();
+            if (botState) {
+                this.logger.warn(`Bot detected on article — rotated UA, settling 20s...`);
+                await this.delay(20000);
+                try {
+                    await this.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 });
+                    if (await this.checkBotDetection()) {
+                        this.logger.warn('Still bot page after rotate — skipping article');
+                        return results;
+                    }
+                } catch (e) { return results; }
+            }
 
-                try { await this.page.click('#show-more-btn'); await this.delay(1000); } catch (e) {}
+            await this.delay(2000);
 
-                const authorBtns = await this.page.$$('svg[title="Author email or social media contact details icon"]');
-                if (authorBtns.length === 0) return [];
+            // Dismiss popups
+            for (const sel of ['#pendo-close-guide-bfad995f', '#bdd-els-close',
+                                '._pendo-close-guide', 'button[aria-label="Close"]']) {
+                try { const b = await this.page.$(sel); if (b) { await b.click(); await this.delay(300); } } catch (e) {}
+            }
 
-                const results = [];
+            // Expand author list
+            try { await this.page.click('#show-more-btn'); await this.delay(1000); } catch (e) {}
+
+            // ── Method A: Envelope SVG icon → side panel ────────────────
+            const authorBtns = await this.page.$$('svg[title="Author email or social media contact details icon"]');
+            if (authorBtns.length > 0) {
                 for (let i = 0; i < authorBtns.length; i++) {
                     try {
                         const btns = await this.page.$$('svg[title="Author email or social media contact details icon"]');
                         if (!btns[i]) continue;
+                        await this.page.evaluate(el => el.scrollIntoView({ block: 'center' }), btns[i]);
+                        await this.delay(500);
                         await btns[i].click();
                         await this.delay(2000);
+
                         try { await this.page.waitForSelector('#side-panel-author', { timeout: 5000 }); } catch (e) { continue; }
 
                         const data = await this.page.evaluate(() => {
-                            const emailEl   = document.querySelector('#side-panel-author .e-address a');
+                            const emailEl   = document.querySelector('#side-panel-author .e-address a')
+                                           || document.querySelector('#side-panel-author a[href^="mailto"]');
                             const givenEl   = document.querySelector('#side-panel-author .given-name');
                             const surnameEl = document.querySelector('#side-panel-author .surname');
-                            return {
-                                email:   emailEl   ? emailEl.textContent.trim()   : null,
-                                given:   givenEl   ? givenEl.textContent.trim()   : '',
-                                surname: surnameEl ? surnameEl.textContent.trim() : '',
-                            };
+                            const nameEl    = document.querySelector('#side-panel-author .author-name')
+                                           || document.querySelector('#side-panel-author .name');
+                            const email = emailEl ? (emailEl.textContent.trim() || emailEl.getAttribute('href').replace('mailto:','').trim()) : null;
+                            const given   = givenEl   ? givenEl.textContent.trim() : '';
+                            const surname = surnameEl ? surnameEl.textContent.trim() : '';
+                            const fullName = (given + ' ' + surname).trim()
+                                          || (nameEl ? nameEl.textContent.trim() : '');
+                            return { email, name: fullName };
                         });
 
-                        if (data.email) {
-                            results.push({
-                                Article_URL:  url,
-                                Author_Name:  `${data.given} ${data.surname}`.trim(),
-                                Email:        data.email,
-                            });
-                            this.logger.info(`✅ ${data.given} ${data.surname} — ${data.email}`);
+                        if (data.email && data.email.includes('@')) {
+                            results.push({ Article_URL: url, Author_Name: data.name, Email: data.email });
+                            this.logger.info(`✅ ${data.name} — ${data.email}`);
                         }
 
-                        try { const close = await this.page.$('#side-panel-author button[aria-label="Close"]'); if (close) await close.click(); } catch (e) {}
-                        await this.delay(500);
+                        try {
+                            const close = await this.page.$('#side-panel-author button[aria-label="Close"]')
+                                       || await this.page.$('.side-panel-close-btn');
+                            if (close) { await close.click(); await this.delay(400); }
+                        } catch (e) {}
                     } catch (e) {
-                        this.logger.warn(`Author ${i+1} error: ${e.message}`);
+                        this.logger.warn(`Author button ${i+1} error: ${e.message}`);
                     }
                 }
-                return results;
-            } catch (e) {
-                this.logger.error(`extractEmailsFromArticle attempt ${attempt}: ${e.message}`);
-                if (attempt < 3) await this.restartBrowser();
             }
+
+            // ── Method B: Direct mailto links anywhere on page (fallback) ──
+            if (results.length === 0) {
+                try {
+                    const emailData = await this.page.evaluate(() => {
+                        // Find all mailto links
+                        const links = Array.from(document.querySelectorAll('a[href^="mailto:"]'));
+                        return links.map(a => {
+                            const email = a.getAttribute('href').replace('mailto:','').trim();
+                            // Try to find author name nearby
+                            const parent = a.closest('.author-info, .author, [class*="author"]') || a.parentElement;
+                            const nameEl = parent ? (parent.querySelector('.given-name, .surname, .author-name, .name') || parent) : null;
+                            const name   = nameEl ? nameEl.textContent.replace(email, '').trim().slice(0, 80) : '';
+                            return { email, name };
+                        }).filter(d => d.email.includes('@') && !d.email.includes('sciencedirect'));
+                    });
+                    for (const { email, name } of emailData) {
+                        if (!results.some(r => r.Email === email)) {
+                            results.push({ Article_URL: url, Author_Name: name, Email: email });
+                            this.logger.info(`✅ [mailto] ${name} — ${email}`);
+                        }
+                    }
+                } catch (e) {}
+            }
+
+        } catch (e) {
+            this.logger.error(`extractEmailsFromArticle error ${url.slice(0,80)}: ${e.message}`);
+        } finally {
+            this.page.setDefaultNavigationTimeout(60000);
         }
-        return [];
+        return results;
     }
 
     async run() {
@@ -561,7 +620,8 @@ class ScienceDirectScraper {
                 authors: authorsFound,
                 links: urlRows.length,
             });
-            await this.delay(1000);
+            // Random delay 3-7s between articles to avoid rate limiting
+            await this.delay(3000 + Math.floor(Math.random() * 4000));
         }
 
         reportProgress(100, `Scraping complete: ${authorsFound} authors found`);
