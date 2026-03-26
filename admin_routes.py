@@ -274,25 +274,37 @@ def manage_conferences():
 @admin_required
 def list_all_conferences():
     """Get all conferences with user assignments"""
-    conferences = Conference.query.order_by(Conference.name).all()
-    result = []
-    for conf in conferences:
-        assigned_users = conf.assigned_users.all()
-        result.append({
-            'id': conf.id,
-            'name': conf.name,
-            'short_form': conf.short_form,
-            'display_name': conf.display_name,
-            'description': conf.description,
-            'year': conf.year,
-            'location': conf.location,
-            'is_active': conf.is_active,
-            'assigned_users_count': len(assigned_users),
-            'assigned_users': [{'id': u.id, 'username': u.username, 'email': u.email} for u in assigned_users],
-            'created_at': conf.created_at.isoformat() if conf.created_at else None
-        })
-    
-    return jsonify({'conferences': result, 'total': len(result)})
+    try:
+        # Get all conferences regardless of active status
+        conferences = Conference.query.order_by(Conference.name).all()
+        print(f"[DEBUG] Found {len(conferences)} conferences in database")
+        
+        result = []
+        for conf in conferences:
+            try:
+                assigned_users = conf.assigned_users.all()
+                result.append({
+                    'id': conf.id,
+                    'name': conf.name,
+                    'short_form': conf.short_form,
+                    'display_name': conf.display_name,
+                    'description': conf.description,
+                    'year': conf.year,
+                    'location': conf.location,
+                    'is_active': conf.is_active,
+                    'assigned_users_count': len(assigned_users),
+                    'assigned_users': [{'id': u.id, 'username': u.username, 'email': u.email} for u in assigned_users],
+                    'created_at': conf.created_at.isoformat() if conf.created_at else None
+                })
+            except Exception as e:
+                print(f"[DEBUG] Error processing conference {conf.id}: {e}")
+                continue
+        
+        print(f"[DEBUG] Returning {len(result)} conferences")
+        return jsonify({'conferences': result, 'total': len(result)})
+    except Exception as e:
+        print(f"[DEBUG] Error in list_all_conferences: {e}")
+        return jsonify({'error': str(e), 'conferences': [], 'total': 0}), 500
 
 
 @admin_bp.route('/api/conferences/mappings', methods=['GET'])

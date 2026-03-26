@@ -19,24 +19,37 @@ def list_conferences():
     user = get_current_user()
     is_admin = user.user_type == 'admin'
     
-    if is_admin:
-        # Admin sees all conferences
-        conferences = Conference.query.filter_by(is_active=True).order_by(Conference.name).all()
-    else:
-        # Regular users see only their assigned conferences
-        conferences = user.assigned_conferences.filter_by(is_active=True).order_by(Conference.name).all()
-    
-    result = []
-    for c in conferences:
-        conf_dict = c.to_dict()
-        # Include both short form (for filenames) and full form (for display)
-        conf_dict['filename_form'] = c.short_form or c.name
-        result.append(conf_dict)
-    
-    return jsonify({
-        'conferences': result,
-        'total': len(result)
-    })
+    try:
+        if is_admin:
+            # Admin sees all conferences (including inactive)
+            conferences = Conference.query.order_by(Conference.name).all()
+            print(f"[DEBUG] Admin user - found {len(conferences)} total conferences")
+        else:
+            # Regular users see only their assigned conferences
+            conferences = user.assigned_conferences.order_by(Conference.name).all()
+            print(f"[DEBUG] Regular user - found {len(conferences)} assigned conferences")
+        
+        result = []
+        for c in conferences:
+            conf_dict = c.to_dict()
+            # Include both short form (for filenames) and full form (for display)
+            conf_dict['filename_form'] = c.short_form or c.name
+            result.append(conf_dict)
+        
+        print(f"[DEBUG] Returning {len(result)} conferences")
+        return jsonify({
+            'conferences': result,
+            'total': len(result)
+        })
+    except Exception as e:
+        print(f"[DEBUG] Error in list_conferences: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'error': str(e),
+            'conferences': [],
+            'total': 0
+        }), 500
 
 
 @conference_bp.route('/create', methods=['POST'])
