@@ -275,15 +275,20 @@ def manage_conferences():
 def list_all_conferences():
     """Get all conferences with user assignments"""
     try:
-        # Get all conferences regardless of active status
-        conferences = Conference.query.order_by(Conference.name).all()
-        print(f"[DEBUG] Found {len(conferences)} conferences in database")
+        # Get all conferences from database
+        from sqlalchemy import text
+        conferences = db.session.execute(text('SELECT * FROM conference ORDER BY name')).fetchall()
+        print(f"[DEBUG] Raw query found {len(conferences)} conferences")
+        
+        # Also try ORM query
+        orm_conferences = Conference.query.order_by(Conference.name).all()
+        print(f"[DEBUG] ORM query found {len(orm_conferences)} conferences")
         
         result = []
-        for conf in conferences:
+        for conf in orm_conferences:
             try:
                 assigned_users = conf.assigned_users.all()
-                result.append({
+                conf_dict = {
                     'id': conf.id,
                     'name': conf.name,
                     'short_form': conf.short_form,
@@ -295,15 +300,21 @@ def list_all_conferences():
                     'assigned_users_count': len(assigned_users),
                     'assigned_users': [{'id': u.id, 'username': u.username, 'email': u.email} for u in assigned_users],
                     'created_at': conf.created_at.isoformat() if conf.created_at else None
-                })
+                }
+                result.append(conf_dict)
+                print(f"[DEBUG] Added conference: {conf.name}")
             except Exception as e:
                 print(f"[DEBUG] Error processing conference {conf.id}: {e}")
+                import traceback
+                traceback.print_exc()
                 continue
         
-        print(f"[DEBUG] Returning {len(result)} conferences")
+        print(f"[DEBUG] Returning {len(result)} conferences to client")
         return jsonify({'conferences': result, 'total': len(result)})
     except Exception as e:
         print(f"[DEBUG] Error in list_all_conferences: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e), 'conferences': [], 'total': 0}), 500
 
 
