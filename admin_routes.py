@@ -3,11 +3,9 @@ Admin Panel Routes - User Management
 """
 
 from flask import Blueprint, request, jsonify, render_template, redirect, url_for, session, flash
-from models import db, User, Conference, _hash_password
+from models import db, User, _hash_password
 from functools import wraps
 import json as _json
-import uuid
-from datetime import datetime
 
 admin_bp = Blueprint('admin', __name__, url_prefix='/admin')
 
@@ -249,191 +247,15 @@ def edit_user():
     # Update session if editing self
     if session.get('user_id') == user_id:
         session['username'] = user.username
-        session['email'] = user.email
         session['user_type'] = user.user_type
+        session['credits'] = user.credits
+        session['email'] = user.email
 
     if request.is_json:
         return jsonify({'success': True, 'message': f'User {user.username} updated successfully'})
     users = User.query.order_by(User.created_at.desc()).all()
     return render_template('admin.html', users=users,
         message=f'User {user.username} updated successfully', message_type='success')
-
-
-# ── Conference Management Routes ──
-
-@admin_bp.route('/conferences')
-@admin_required
-def manage_conferences():
-    """Admin page for managing conferences"""
-    conferences = Conference.query.order_by(Conference.name).all()
-    users = User.query.filter_by(user_type='external').order_by(User.username).all()
-    return render_template('admin_conferences.html', conferences=conferences, users=users)
-
-
-@admin_bp.route('/api/conferences/list', methods=['GET'])
-@admin_required
-def list_all_conferences():
-    """Get all conferences with user assignments"""
-    try:
-        conferences = Conference.query.order_by(Conference.name).all()
-        
-        result = []
-        for conf in conferences:
-            try:
-                assigned_users = conf.assigned_users.all()
-                conf_dict = {
-                    'id': conf.id,
-                    'name': conf.name,
-                    'short_form': conf.short_form,
-                    'display_name': conf.display_name,
-                    'description': conf.description,
-                    'year': conf.year,
-                    'location': conf.location,
-                    'is_active': conf.is_active,
-                    'assigned_users_count': len(assigned_users),
-                    'assigned_users': [{'id': u.id, 'username': u.username, 'email': u.email} for u in assigned_users],
-                    'created_at': conf.created_at.isoformat() if conf.created_at else None
-                }
-                result.append(conf_dict)
-            except Exception as e:
-                print(f"[ERROR] Error processing conference {conf.id}: {e}")
-                continue
-        
-        return jsonify({'conferences': result, 'total': len(result)})
-    except Exception as e:
-        print(f"[ERROR] list_all_conferences failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e), 'conferences': [], 'total': 0}), 500
-
-
-@admin_bp.route('/api/conferences/mappings', methods=['GET'])
-@admin_required
-def get_conference_mappings():
-    """Get all available conference short form to full form mappings"""
-    from conference_config import get_all_conferences
-    mappings = get_all_conferences()
-    return jsonify({'mappings': mappings, 'total': len(mappings)})
-
-
-@admin_bp.route('/api/conferences/create', methods=['POST'])
-@admin_required
-def create_conference_admin():
-    """Create a new conference"""
-    data = request.json
-    
-    name = data.get('name', '').strip()
-    short_form = data.get('short_form', '').strip()
-    display_name = data.get('display_name', '').strip()
-    description = data.get('description', '').strip()
-    year = data.get('year')
-    location = data.get('location', '').strip()
-    
-    if not name:
-        return jsonify({'error': 'Conference name is required'}), 400
-    
-    # Check if exists
-    if Conference.query.filter_by(name=name).first():
-        return jsonify({'error': 'Conference already exists'}), 400
-    
-    if short_form and Conference.query.filter_by(short_form=short_form).first():
-        return jsonify({'error': 'Short form already exists'}), 400
-    
-    user = User.query.get(session.get('user_id'))
-    conference = Conference(
-        id=str(uuid.uuid4()),
-        name=name,
-        short_form=short_form or None,
-        display_name=display_name or name,
-        description=description,
-        year=year,
-        location=location,
-        is_active=True,
-        created_by=user.id,
-        created_at=datetime.utcnow()
-    )
-    
-    db.session.add(conference)
-    db.session.commit()
-    
-    return jsonify({
-        'success': True,
-        'message': f'Conference "{name}" created',
-        'conference': {
-            'id': conference.id,
-            'name': conference.name,
-            'short_form': conference.short_form,
-            'display_name': conference.display_name,
-            'description': conference.description,
-            'year': conference.year,
-            'location': conference.location,
-            'is_active': conference.is_active
-        }
-    }), 201
-
-
-@admin_bp.route('/api/conferences/<conference_id>/assign-users', methods=['POST'])
-@admin_required
-def assign_users_admin(conference_id):
-    """Assign users to a conference"""
-    conference = Conference.query.get(conference_id)
-    if not conference:
-        return jsonify({'error': 'Conference not found'}), 404
-    
-    data = request.json
-    user_ids = data.get('user_ids', [])
-    
-    if not user_ids:
-        return jsonify({'error': 'No users provided'}), 400
-    
-    assigned_count = 0
-    for user_id in user_ids:
-        user = User.query.get(user_id)
-        if user and user not in conference.assigned_users:
-            conference.assigned_users.append(user)
-            assigned_count += 1
-    
-    db.session.commit()
-    
-    return jsonify({
-        'success': True,
-        'message': f'Assigned {assigned_count} user(s)',
-        'assigned_count': assigned_count
-    })
-
-
-@admin_bp.route('/api/conferences/<conference_id>/remove-user/<user_id>', methods=['POST'])
-@admin_required
-def remove_user_admin(conference_id, user_id):
-    """Remove user from conference"""
-    conference = Conference.query.get(conference_id)
-    if not conference:
-        return jsonify({'error': 'Conference not found'}), 404
-    
-    user = User.query.get(user_id)
-    if not user:
-        return jsonify({'error': 'User not found'}), 404
-    
-    if user in conference.assigned_users:
-        conference.assigned_users.remove(user)
-        db.session.commit()
-    
-    return jsonify({'success': True, 'message': 'User removed'})
-
-
-@admin_bp.route('/api/conferences/<conference_id>/delete', methods=['POST'])
-@admin_required
-def delete_conference_admin(conference_id):
-    """Delete a conference"""
-    conference = Conference.query.get(conference_id)
-    if not conference:
-        return jsonify({'error': 'Conference not found'}), 404
-    
-    name = conference.name
-    db.session.delete(conference)
-    db.session.commit()
-    
-    return jsonify({'success': True, 'message': f'Conference "{name}" deleted'})
 
 
 @admin_bp.route('/delete-user/<user_id>')
