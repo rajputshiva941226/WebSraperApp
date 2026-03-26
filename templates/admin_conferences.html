@@ -556,15 +556,29 @@ function switchTab(tabName) {
 // Load all conferences
 async function loadConferences() {
     try {
+        console.log('[DEBUG] Fetching conferences from /admin/api/conferences/list');
         const response = await fetch('/admin/api/conferences/list');
+        console.log('[DEBUG] Response status:', response.status);
+        
         if (response.ok) {
             const data = await response.json();
-            allConferences = data.conferences;
+            console.log('[DEBUG] Received data:', data);
+            console.log('[DEBUG] Number of conferences:', data.conferences ? data.conferences.length : 0);
+            
+            allConferences = data.conferences || [];
+            console.log('[DEBUG] allConferences set to:', allConferences.length, 'conferences');
+            
             renderConferences();
             populateConferenceSelects();
+            console.log('[DEBUG] Conferences rendered and selects populated');
+        } else {
+            console.error('[ERROR] Response not OK. Status:', response.status);
+            const errorData = await response.json();
+            console.error('[ERROR] Error data:', errorData);
         }
     } catch (error) {
-        console.error('Error loading conferences:', error);
+        console.error('[ERROR] Error loading conferences:', error);
+        console.error('[ERROR] Stack trace:', error.stack);
     }
 }
 
