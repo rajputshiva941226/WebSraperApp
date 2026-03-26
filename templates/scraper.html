@@ -523,20 +523,26 @@
                     }
                     
                     // Add conference options
-                    // Store both full form (for display) and short form (for filenames)
-                    data.conferences.forEach(conf => {
-                        const option = document.createElement('option');
-                        // Use full form as value for display, but store short form in data attribute
-                        option.value = conf.name;
-                        option.setAttribute('data-short-form', conf.short_form || conf.name);
-                        option.setAttribute('data-filename-form', conf.filename_form || conf.short_form || conf.name);
-                        // Display: "SHORT_FORM - Full Form Name"
-                        const displayText = conf.short_form 
-                            ? `${conf.short_form} - ${conf.display_name || conf.name}`
-                            : (conf.display_name || conf.name);
-                        option.textContent = displayText;
-                        select.appendChild(option);
-                    });
+                    if (data.conferences && data.conferences.length > 0) {
+                        // Store both full form (for display) and short form (for filenames)
+                        data.conferences.forEach(conf => {
+                            const option = document.createElement('option');
+                            // Use full form as value for display, but store short form in data attribute
+                            option.value = conf.name;
+                            option.setAttribute('data-short-form', conf.short_form || conf.name);
+                            option.setAttribute('data-filename-form', conf.filename_form || conf.short_form || conf.name);
+                            // Display: "SHORT_FORM - Full Form Name"
+                            const displayText = conf.short_form 
+                                ? `${conf.short_form} - ${conf.display_name || conf.name}`
+                                : (conf.display_name || conf.name);
+                            option.textContent = displayText;
+                            select.appendChild(option);
+                        });
+                    } else {
+                        console.warn('No conferences available');
+                    }
+                } else {
+                    console.error('Failed to load conferences:', response.status);
                 }
             } catch (error) {
                 console.error('Error loading conferences:', error);

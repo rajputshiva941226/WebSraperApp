@@ -395,6 +395,11 @@
             </div>
         </div>
 
+        <div style="margin-bottom: 30px; display: flex; gap: 10px;">
+            <a href="/admin/conferences" class="btn btn-primary" style="text-decoration: none; display: inline-block;">📋 Manage Conferences</a>
+            <a href="/master-database" class="btn btn-secondary" style="text-decoration: none; display: inline-block;">💾 Master Database</a>
+        </div>
+
         <div class="users-table">
             <div class="table-controls">
                 <h2>User Management</h2>
@@ -631,6 +636,12 @@
                 <label>Set Credits (absolute value)</label>
                 <input type="number" id="edit_credits" min="0">
             </div>
+            <div class="form-group">
+                <label>Assign Conferences</label>
+                <div id="edit_conferences_list" style="border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; max-height: 200px; overflow-y: auto;">
+                    <p style="color: #718096; font-size: 14px;">Loading conferences...</p>
+                </div>
+            </div>
             <div class="modal-actions">
                 <button class="btn" onclick="closeModal('editUserModal')">Cancel</button>
                 <button class="btn btn-primary" onclick="submitEditUser()">Save Changes</button>
@@ -765,7 +776,7 @@
         }
 
         // ===== EDIT USER =====
-        function openEditModal(btn) {
+        async function openEditModal(btn) {
             document.getElementById('edit_user_id').value = btn.dataset.uid;
             document.getElementById('edit_username').value = btn.dataset.uname;
             document.getElementById('edit_email').value = btn.dataset.email;
@@ -773,7 +784,35 @@
             document.getElementById('edit_user_type').value = btn.dataset.utype;
             document.getElementById('edit_license_type').value = btn.dataset.license;
             document.getElementById('edit_credits').value = btn.dataset.credits;
+            
+            // Load conferences
+            await loadConferencesForUser(btn.dataset.uid);
+            
             openModal('editUserModal');
+        }
+
+        async function loadConferencesForUser(userId) {
+            try {
+                const response = await fetch('/admin/api/conferences/list');
+                if (response.ok) {
+                    const data = await response.json();
+                    const container = document.getElementById('edit_conferences_list');
+                    
+                    if (data.conferences && data.conferences.length > 0) {
+                        container.innerHTML = data.conferences.map(conf => `
+                            <label style="display: flex; align-items: center; gap: 8px; padding: 8px; cursor: pointer; border-radius: 4px;">
+                                <input type="checkbox" class="conf-checkbox" value="${conf.id}" data-conf-name="${conf.name}">
+                                <span>${conf.short_form ? conf.short_form + ' - ' : ''}${conf.display_name || conf.name}</span>
+                            </label>
+                        `).join('');
+                    } else {
+                        container.innerHTML = '<p style="color: #718096; font-size: 14px;">No conferences available</p>';
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading conferences:', error);
+                document.getElementById('edit_conferences_list').innerHTML = '<p style="color: #e53e3e;">Error loading conferences</p>';
+            }
         }
 
         function submitEditUser() {
@@ -793,6 +832,9 @@
             };
             if (password) payload.password = password;
 
+            // Get selected conferences
+            const selectedConferences = Array.from(document.querySelectorAll('.conf-checkbox:checked')).map(cb => cb.value);
+
             fetch('/admin/edit-user', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -801,14 +843,40 @@
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
-                    closeModal('editUserModal');
-                    showToast(data.message, false);
-                    setTimeout(() => location.reload(), 1200);
+                    // Assign conferences if any are selected
+                    if (selectedConferences.length > 0) {
+                        return assignConferencesToUser(userId, selectedConferences);
+                    }
+                    return data;
                 } else {
-                    showToast(data.error || 'Update failed', true);
+                    throw new Error(data.error || 'Update failed');
                 }
             })
-            .catch(() => showToast('Network error', true));
+            .then(data => {
+                closeModal('editUserModal');
+                showToast(data.message || 'User updated successfully', false);
+                setTimeout(() => location.reload(), 1200);
+            })
+            .catch(err => showToast(err.message || 'Network error', true));
+        }
+
+        async function assignConferencesToUser(userId, conferenceIds) {
+            const results = [];
+            for (const confId of conferenceIds) {
+                try {
+                    const response = await fetch(`/admin/api/conferences/${confId}/assign-users`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({user_ids: [userId]})
+                    });
+                    if (response.ok) {
+                        results.push(await response.json());
+                    }
+                } catch (error) {
+                    console.error(`Error assigning conference ${confId}:`, error);
+                }
+            }
+            return {message: 'User updated and conferences assigned successfully', success: true};
         }
 
         // ===== TOGGLE ENABLE/DISABLE =====
