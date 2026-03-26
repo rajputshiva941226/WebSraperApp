@@ -16,33 +16,43 @@ conference_bp = Blueprint('conference', __name__, url_prefix='/api/conference')
 @login_required
 def list_conferences():
     """List all active conferences"""
-    user = get_current_user()
-    is_admin = user.user_type == 'admin'
-    
     try:
+        user = get_current_user()
+        is_admin = user.user_type == 'admin'
+        
         if is_admin:
-            # Admin sees all conferences (including inactive)
+            # Admin sees all conferences
             conferences = Conference.query.order_by(Conference.name).all()
-            print(f"[DEBUG] Admin user - found {len(conferences)} total conferences")
         else:
             # Regular users see only their assigned conferences
-            conferences = user.assigned_conferences.order_by(Conference.name).all()
-            print(f"[DEBUG] Regular user - found {len(conferences)} assigned conferences")
+            conferences = user.assigned_conferences.all()
         
         result = []
         for c in conferences:
-            conf_dict = c.to_dict()
-            # Include both short form (for filenames) and full form (for display)
-            conf_dict['filename_form'] = c.short_form or c.name
-            result.append(conf_dict)
+            try:
+                conf_dict = {
+                    'id': c.id,
+                    'name': c.name,
+                    'short_form': c.short_form,
+                    'display_name': c.display_name,
+                    'description': c.description,
+                    'year': c.year,
+                    'location': c.location,
+                    'is_active': c.is_active,
+                    'created_at': c.created_at.isoformat() if c.created_at else None,
+                    'filename_form': c.short_form or c.name
+                }
+                result.append(conf_dict)
+            except Exception as e:
+                print(f"[ERROR] Failed to serialize conference {c.id}: {e}")
+                continue
         
-        print(f"[DEBUG] Returning {len(result)} conferences")
         return jsonify({
             'conferences': result,
             'total': len(result)
         })
     except Exception as e:
-        print(f"[DEBUG] Error in list_conferences: {e}")
+        print(f"[ERROR] list_conferences failed: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({

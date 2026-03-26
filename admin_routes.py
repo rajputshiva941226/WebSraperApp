@@ -275,17 +275,10 @@ def manage_conferences():
 def list_all_conferences():
     """Get all conferences with user assignments"""
     try:
-        # Get all conferences from database
-        from sqlalchemy import text
-        conferences = db.session.execute(text('SELECT * FROM conference ORDER BY name')).fetchall()
-        print(f"[DEBUG] Raw query found {len(conferences)} conferences")
-        
-        # Also try ORM query
-        orm_conferences = Conference.query.order_by(Conference.name).all()
-        print(f"[DEBUG] ORM query found {len(orm_conferences)} conferences")
+        conferences = Conference.query.order_by(Conference.name).all()
         
         result = []
-        for conf in orm_conferences:
+        for conf in conferences:
             try:
                 assigned_users = conf.assigned_users.all()
                 conf_dict = {
@@ -302,17 +295,13 @@ def list_all_conferences():
                     'created_at': conf.created_at.isoformat() if conf.created_at else None
                 }
                 result.append(conf_dict)
-                print(f"[DEBUG] Added conference: {conf.name}")
             except Exception as e:
-                print(f"[DEBUG] Error processing conference {conf.id}: {e}")
-                import traceback
-                traceback.print_exc()
+                print(f"[ERROR] Error processing conference {conf.id}: {e}")
                 continue
         
-        print(f"[DEBUG] Returning {len(result)} conferences to client")
         return jsonify({'conferences': result, 'total': len(result)})
     except Exception as e:
-        print(f"[DEBUG] Error in list_all_conferences: {e}")
+        print(f"[ERROR] list_all_conferences failed: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e), 'conferences': [], 'total': 0}), 500
