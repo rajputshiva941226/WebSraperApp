@@ -16,7 +16,7 @@ from utils import sanitize_filename, safe_log_file_path
 
 class CambridgeScraper:
     def __init__(self, keyword, start_year, end_year, driver_path,
-                 output_dir=None, progress_callback=None):
+                 output_dir=None, progress_callback=None,conference_name=""):
 
         self.keyword           = keyword
         self.start_year        = start_year
@@ -26,6 +26,7 @@ class CambridgeScraper:
         self.progress_callback = progress_callback
         self.directory         = sanitize_filename(keyword)
         self.driver            = None
+        self.conference_name   = conference_name
 
         # ── FIX: logger MUST be set up before uc.Chrome() is called.
         # Previously _setup_logger() came after uc.Chrome() in __init__,
@@ -179,12 +180,14 @@ class CambridgeScraper:
         safe_kw = self.keyword.replace(' ', '-')
         safe_sd = self.start_year.replace('/', '-')
         safe_ed = self.end_year.replace('/', '-')
-        url_file     = f"Cambridge_{safe_kw}_{safe_sd}-{safe_ed}_urls.csv"
-        authors_file = f"Cambridge_{safe_kw}_{safe_sd}-{safe_ed}_authors.csv"
+        # Add conference name to filename
+        conf_suffix = f"_{self.conference_name}" if self.conference_name and self.conference_name != 'default' else ""
+        url_file     = f"Cambridge{conf_suffix}_{safe_kw}_{safe_sd}-{safe_ed}_urls.csv"
+        authors_file = f"Cambridge{conf_suffix}_{safe_kw}_{safe_sd}-{safe_ed}_authors.csv"
         authors_path = os.path.join(work_dir, authors_file)
 
         self.initialize_csv(work_dir, url_file,     ["Article_URL"])
-        self.initialize_csv(work_dir, authors_file, ["Article URL", "Name", "Email", "Match Score"])
+        self.initialize_csv(work_dir, authors_file, ["Article URL", "Name", "Email", "Match Score", "Conference Name"])
 
         phase1_ok = False
         try:
@@ -519,7 +522,7 @@ class CambridgeScraper:
                 if best_email:
                     self.write_to_csv(
                         directory, filename,
-                        [article_url, author_name.strip("*"), best_email, best_match_score]
+                        [article_url, author_name.strip("*"), best_email, best_match_score, self.conference_name]
                     )
                     self.logger.info(
                         f"Cambridge ==> Written: {author_name.strip('*')} - {best_email}"
@@ -556,7 +559,7 @@ class CambridgeScraper:
                     if best_email:
                         self.write_to_csv(
                             directory, filename,
-                            [article_url, author_name.strip("*"), best_email, best_match_score]
+                            [article_url, author_name.strip("*"), best_email, best_match_score, self.conference_name]
                         )
                         self.logger.info(
                             f"Cambridge ==> Written: {author_name.strip('*')} - {best_email}"

@@ -278,29 +278,7 @@ class ScraperAdapter:
                 }
                 return final_output, summary
 
-            # ── Nature (Selenium, special interface) ──────────────────────
-            if scraper_type == 'nature':
-                scraper = scraper_class()
-                scraper.setup_driver()
-                output_dir_nature = scraper.create_output_directory(
-                    keyword, start_date, end_date
-                )
-                success = scraper.scrape_all_years(
-                    keyword,
-                    start_date.split('/')[-1],
-                    end_date.split('/')[-1]
-                )
-                if not success:
-                    raise Exception("Nature scraper failed to complete")
-
-                self._report_progress(100, "Nature scraping completed")
-                summary = {
-                    'scraper': scraper_type, 'keyword': keyword,
-                    'output_file': output_dir_nature,
-                    'results_count': 0,
-                    'status': 'completed'
-                }
-                return output_dir_nature, summary
+            # ── All Selenium scrapers (including Nature) via SeleniumScraperWrapper ────
 
             # ── All other Selenium scrapers via SeleniumScraperWrapper ────
             #

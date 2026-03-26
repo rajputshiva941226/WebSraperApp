@@ -405,9 +405,10 @@
                     <label for="conference_name">
                         Conference Name <span class="required">*</span>
                     </label>
-                    <input type="text" id="conference_name" name="conference_name" 
-                           placeholder="e.g., ICML2024, NeurIPS2024, CVPR2024" required>
-                    <div class="help-text">Enter the conference name for organizing results</div>
+                    <select id="conference_name" name="conference_name" required>
+                        <option value="">-- Select a Conference --</option>
+                    </select>
+                    <div class="help-text">Select the conference for organizing results</div>
                 </div>
 
                 <div class="form-group">
@@ -508,6 +509,43 @@
     </div>
 
     <script>
+        // Load conferences on page load
+        async function loadConferences() {
+            try {
+                const response = await fetch('/api/conference/list');
+                if (response.ok) {
+                    const data = await response.json();
+                    const select = document.getElementById('conference_name');
+                    
+                    // Clear existing options except the first one
+                    while (select.options.length > 1) {
+                        select.remove(1);
+                    }
+                    
+                    // Add conference options
+                    // Store both full form (for display) and short form (for filenames)
+                    data.conferences.forEach(conf => {
+                        const option = document.createElement('option');
+                        // Use full form as value for display, but store short form in data attribute
+                        option.value = conf.name;
+                        option.setAttribute('data-short-form', conf.short_form || conf.name);
+                        option.setAttribute('data-filename-form', conf.filename_form || conf.short_form || conf.name);
+                        // Display: "SHORT_FORM - Full Form Name"
+                        const displayText = conf.short_form 
+                            ? `${conf.short_form} - ${conf.display_name || conf.name}`
+                            : (conf.display_name || conf.name);
+                        option.textContent = displayText;
+                        select.appendChild(option);
+                    });
+                }
+            } catch (error) {
+                console.error('Error loading conferences:', error);
+            }
+        }
+
+        // Load conferences when page loads
+        document.addEventListener('DOMContentLoaded', loadConferences);
+
         function toggleJournal(element) {
             const checkbox = element.querySelector('input[type="checkbox"]');
             checkbox.checked = !checkbox.checked;

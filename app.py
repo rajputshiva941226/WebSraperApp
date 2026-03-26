@@ -21,6 +21,7 @@ from auth_routes import auth_bp
 from credit_routes import credit_bp
 from master_db_routes import master_db_bp
 from admin_routes import admin_bp
+from conference_routes import conference_bp
 from flask_login import LoginManager
 
 # Celery integration — used when REDIS_URL is set, else falls back to threads
@@ -66,7 +67,7 @@ app.register_blueprint(auth_bp)
 app.register_blueprint(credit_bp)
 app.register_blueprint(master_db_bp)
 app.register_blueprint(admin_bp)
-
+app.register_blueprint(conference_bp)
 
 # Create required directories
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)

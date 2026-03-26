@@ -26,7 +26,7 @@ import undetected_chromedriver as uc
 
 class SpringerAuthorScraper:
     def __init__(self, keyword, start_year, end_year, driver_path,
-                 output_dir=None, progress_callback=None):
+                 output_dir=None, progress_callback=None, conference_name=""):
         """
         Parameters
         ----------
@@ -43,15 +43,17 @@ class SpringerAuthorScraper:
         self.driver_path       = driver_path
         self.output_dir        = output_dir
         self.progress_callback = progress_callback
+        self.conference_name   = conference_name
 
         # Derive a safe directory/filename prefix from keyword + dates
         safe_kw = keyword.replace(" ", "-")
         safe_sd = start_year.replace("/", "-")
         safe_ed = end_year.replace("/", "-")
         self.directory   = output_dir or safe_kw   # use output_dir if given
-        self.url_csv     = f"Springer_{safe_kw}-{safe_sd}-{safe_ed}_urls.csv"
-        self.authors_csv = f"Springer_{safe_kw}-{safe_sd}-{safe_ed}_authors.csv"
-
+        # Add conference name to filename
+        conf_suffix = f"_{conference_name}" if conference_name and conference_name != 'default' else ""
+        self.url_csv     = f"Springer{conf_suffix}_{safe_kw}-{safe_sd}-{safe_ed}_urls.csv"
+        self.authors_csv = f"Springer{conf_suffix}_{safe_kw}-{safe_sd}-{safe_ed}_authors.csv"
         # ── Logger MUST come before uc.Chrome() so init errors are captured ──
         self._setup_logger()
         self._init_driver()
@@ -328,8 +330,8 @@ class SpringerAuthorScraper:
 
             if not corresponding_authors:
                 self.logger.warning(f"Springer ==> No corresponding authors on {article_url}")
-                self.save_to_csv([[article_url, "N/A", "N/A"]], self.authors_csv,
-                                 header=["Article_URL", "Author_Name", "Email"])
+                self.save_to_csv([[article_url, "N/A", "N/A", self.conference_name]], self.authors_csv,
+                                 header=["Article_URL", "Author_Name", "Email", "Conference_Name"])
                 return
 
             author_info = []
@@ -456,15 +458,15 @@ class SpringerAuthorScraper:
 
             if author_info:
                 self.save_to_csv(author_info, self.authors_csv,
-                                 header=["Article_URL", "Author_Name", "Email"])
+                                 header=["Article_URL", "Author_Name", "Email", "Conference_Name"])
             else:
-                self.save_to_csv([[article_url, "N/A", "N/A"]], self.authors_csv,
-                                 header=["Article_URL", "Author_Name", "Email"])
+                self.save_to_csv([[article_url, "N/A", "N/A", self.conference_name]], self.authors_csv,
+                                 header=["Article_URL", "Author_Name", "Email", "Conference_Name"])
 
         except Exception as e:
             self.logger.error(f"Springer ==> Failed on article {article_url}: {e}")
-            self.save_to_csv([[article_url, "N/A", "N/A"]], self.authors_csv,
-                             header=["Article_URL", "Author_Name", "Email"])
+            self.save_to_csv([[article_url, "N/A", "N/A", self.conference_name]], self.authors_csv,
+                                 header=["Article_URL", "Author_Name", "Email", "Conference_Name"])
 
     # ─────────────────────────────────────────────────────────────────────
     # Main entry point (called by scraper_adapter / SeleniumScraperWrapper)

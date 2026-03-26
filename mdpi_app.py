@@ -57,11 +57,13 @@ class MDPIScraper:
         output_dir:        Optional[str]      = None,
         progress_callback: Optional[Callable] = None,
         driver_path:       Optional[str]      = None,
+        conference_name:   str                = '',
     ):
         self.keyword     = keyword
         self.start_year  = str(start_year)
         self.end_year    = str(end_year)
         self.driver_path = driver_path
+        self.conference_name = conference_name
 
         ts   = datetime.now().strftime('%Y%m%d_%H%M%S')
         slug = keyword.replace(' ', '_')

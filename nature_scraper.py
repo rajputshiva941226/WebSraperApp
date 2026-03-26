@@ -920,7 +920,7 @@ class NatureScraper(ChromeDisplayMixin):
                             "mailto:", ""
                         ).strip()
                         if email and "@" in email:
-                            results.append([article_url, author_name, email])
+                            results.append([article_url, author_name, email, self.conference_name])
                             self.logger.info(f"Nature ==> {author_name} — {email}")
                     except TimeoutException:
                         pass
@@ -965,7 +965,7 @@ class NatureScraper(ChromeDisplayMixin):
             self.wait = WebDriverWait(self.driver, 20)
 
             self._init_csv(self.url_csv,     ["Article_URL"])
-            self._init_csv(self.authors_csv, ["Article_URL", "Author_Name", "Email"])
+            self._init_csv(self.authors_csv, ["Article_URL", "Author_Name", "Email", "Conference_Name"])
 
             # ── Phase 1: collect URLs across all years ────────────────────
             self._progress(2, "Starting URL collection...")
@@ -1030,7 +1030,7 @@ class NatureScraper(ChromeDisplayMixin):
                 if rows:
                     self.save_to_csv(
                         rows, self.authors_csv,
-                        header=["Article_URL", "Author_Name", "Email"]
+                        header=["Article_URL", "Author_Name", "Email", "Conference_Name"]
                     )
                     authors_found += len(rows)
 

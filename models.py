@@ -61,6 +61,9 @@ class User(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_login = db.Column(db.DateTime)
     
+    # Conference assignments (many-to-many)
+    assigned_conferences = db.relationship('Conference', secondary='user_conference', backref='assigned_users', lazy='dynamic')
+    
     # Relationships
     downloads = db.relationship('Download', backref='user', lazy='dynamic', cascade='all, delete-orphan')
     credit_transactions = db.relationship('CreditTransaction', backref='user', lazy='dynamic', cascade='all, delete-orphan')
@@ -353,6 +356,118 @@ class Job(db.Model):
             'stop_requested': self.stop_requested,
             'worker_task_id': self.worker_task_id,
             'last_heartbeat_at': self.last_heartbeat_at.isoformat() if self.last_heartbeat_at else None
+        }
+
+
+# Association table for user-conference many-to-many relationship
+user_conference = db.Table(
+    'user_conference',
+    db.Column('user_id', db.String(36), db.ForeignKey('users.id'), primary_key=True),
+    db.Column('conference_id', db.String(36), db.ForeignKey('conference.id'), primary_key=True)
+)
+
+
+class Conference(db.Model):
+    """
+    Conference management model
+    Stores conference information and metadata
+    """
+    __tablename__ = 'conference'
+    
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    
+    # Conference details
+    name = db.Column(db.String(255), unique=True, nullable=False, index=True)
+    short_form = db.Column(db.String(50), unique=True, nullable=True, index=True)  # e.g., 'NWC' for 'Neurology World Conference'
+    display_name = db.Column(db.String(255))  # User-friendly display name
+    description = db.Column(db.Text)
+    year = db.Column(db.Integer)
+    location = db.Column(db.String(255))
+    
+    # Status
+    is_active = db.Column(db.Boolean, default=True, index=True)
+    
+    # Metadata
+    created_by = db.Column(db.String(36), db.ForeignKey('users.id'))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=lambda: datetime.utcnow())
+    
+    # Relationships
+    scrape_data = db.relationship('ConferenceScrapeData', backref='conference', lazy='dynamic', cascade='all, delete-orphan')
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'short_form': self.short_form,
+            'display_name': self.display_name,
+            'description': self.description,
+            'year': self.year,
+            'location': self.location,
+            'is_active': self.is_active,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+        }
+
+
+class ConferenceScrapeData(db.Model):
+    """
+    Conference-specific scrape data
+    Stores keywords, returned emails, and authors with article links for each conference
+    """
+    __tablename__ = 'conference_scrape_data'
+    
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    conference_id = db.Column(db.String(36), db.ForeignKey('conference.id'), nullable=False, index=True)
+    
+    # Search parameters
+    keyword = db.Column(db.String(255), nullable=False, index=True)
+    journal_scraper = db.Column(db.String(100), nullable=False)  # e.g., 'springer', 'nature', 'cambridge'
+    start_date = db.Column(db.String(20))
+    end_date = db.Column(db.String(20))
+    
+    # Author information
+    author_name = db.Column(db.String(255), nullable=False)
+    email = db.Column(db.String(255), nullable=False, index=True)
+    affiliation = db.Column(db.Text)
+    
+    # Article information
+    article_title = db.Column(db.Text)
+    article_url = db.Column(db.String(500), index=True)
+    
+    # Job reference
+    job_id = db.Column(db.String(36), index=True)
+    
+    # Metadata
+    match_score = db.Column(db.Float)  # For relevance scoring if applicable
+    scraped_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    
+    # Timestamps
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=lambda: datetime.utcnow())
+    
+    # Composite unique constraint
+    __table_args__ = (
+        db.UniqueConstraint('conference_id', 'email', 'article_url', name='unique_conf_email_article'),
+    )
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'conference_id': self.conference_id,
+            'keyword': self.keyword,
+            'journal_scraper': self.journal_scraper,
+            'start_date': self.start_date,
+            'end_date': self.end_date,
+            'author_name': self.author_name,
+            'email': self.email,
+            'affiliation': self.affiliation,
+            'article_title': self.article_title,
+            'article_url': self.article_url,
+            'job_id': self.job_id,
+            'match_score': self.match_score,
+            'scraped_at': self.scraped_at.isoformat() if self.scraped_at else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None
         }
 
 
