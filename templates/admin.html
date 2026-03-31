@@ -5,351 +5,95 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Admin Panel - Journal Scraper</title>
     <style>
-        /* ===== REPLACED ENTIRELY ===== */
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
 
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #fafafa;
-            min-height: 100vh;
-        }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #fafafa; min-height: 100vh; }
 
-        .navbar {
-            background: #000000;
-            padding: 15px 0;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
-        }
+        .navbar { background: #000; padding: 15px 0; box-shadow: 0 2px 10px rgba(0,0,0,0.15); }
+        .nav-container { max-width: 1400px; margin: 0 auto; padding: 0 20px; display: flex; justify-content: space-between; align-items: center; }
+        .logo { color: white; font-size: 24px; font-weight: bold; text-decoration: none; }
+        .nav-links { display: flex; gap: 30px; align-items: center; }
+        .nav-links a { color: white; text-decoration: none; font-weight: 500; position: relative; }
+        .nav-links a:hover { color: #9f7aea; }
+        .credit-badge { background: linear-gradient(135deg,#805ad5,#9f7aea); padding: 6px 16px; border-radius: 20px; font-size: 14px; font-weight: 600; color: white; }
 
-        .nav-container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 0 20px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
+        .container { max-width: 1400px; margin: 30px auto; padding: 0 20px; }
 
-        .logo {
-            color: white;
-            font-size: 24px;
-            font-weight: bold;
-            text-decoration: none;
-        }
+        .page-header { margin-bottom: 30px; }
+        .page-header h1 { font-size: 32px; color: #1a202c; margin-bottom: 10px; }
 
-        .nav-links {
-            display: flex;
-            gap: 30px;
-            align-items: center;
-        }
+        .admin-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(250px,1fr)); gap: 20px; margin-bottom: 30px; }
+        .stat-card { background: white; border-radius: 12px; padding: 25px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
+        .stat-card h3 { font-size: 13px; color: #718096; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .stat-card .value { font-size: 36px; font-weight: bold; color: #805ad5; }
 
-        .nav-links a {
-            color: white;
-            text-decoration: none;
-            font-weight: 500;
-            position: relative;
-        }
+        /* Tab nav */
+        .tab-nav { display: flex; gap: 8px; margin-bottom: 24px; }
+        .tab-btn { padding: 10px 20px; border-radius: 8px; border: none; font-weight: 600; cursor: pointer; transition: all 0.2s; background: #e2e8f0; color: #4a5568; font-size: 14px; }
+        .tab-btn.active { background: linear-gradient(135deg,#805ad5,#9f7aea); color: white; }
 
-        .nav-links a:hover {
-            color: #9f7aea;
-        }
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; }
 
-        .credit-badge {
-            background: linear-gradient(135deg, #805ad5, #9f7aea);
-            padding: 6px 16px;
-            border-radius: 20px;
-            font-size: 14px;
-            font-weight: 600;
-            color: white;
-        }
+        .panel-card { background: white; border-radius: 12px; padding: 25px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
+        .panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .panel-header h2 { font-size: 22px; color: #1a202c; }
 
-        .container {
-            max-width: 1400px;
-            margin: 30px auto;
-            padding: 0 20px;
-        }
+        .btn { padding: 10px 20px; border-radius: 8px; border: none; font-weight: 600; cursor: pointer; transition: all 0.3s; font-size: 13px; }
+        .btn-primary { background: linear-gradient(135deg,#805ad5,#9f7aea); color: white; }
+        .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 5px 15px rgba(128,90,213,0.3); }
+        .btn-danger  { background: #f56565; color: white; }
+        .btn-success { background: #48bb78; color: white; }
+        .btn-success2{ background: #48bb78; color: white; }
+        .btn-warning { background: #ed8936; color: white; }
+        .btn-warning:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(237,137,54,0.3); }
+        .btn-conf    { background: #4299e1; color: white; }
+        .btn-conf:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(66,153,225,0.3); }
+        .btn-small   { padding: 5px 10px; font-size: 12px; }
 
-        .page-header {
-            margin-bottom: 30px;
-        }
+        table { width: 100%; border-collapse: collapse; }
+        th { background: #f7fafc; padding: 12px; text-align: left; font-weight: 600; color: #4a5568; border-bottom: 2px solid #e2e8f0; font-size: 13px; }
+        td { padding: 12px; border-bottom: 1px solid #e2e8f0; font-size: 13px; }
+        tr:hover { background: #f7fafc; }
 
-        .page-header h1 {
-            font-size: 32px;
-            color: #1a202c;
-            margin-bottom: 10px;
-        }
+        .action-btns { white-space: nowrap; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 
-        .admin-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-        }
+        .badge { padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+        .badge-admin    { background: #fed7d7; color: #742a2a; }
+        .badge-internal { background: #bee3f8; color: #2c5282; }
+        .badge-external { background: #c6f6d5; color: #22543d; }
+        .badge-active   { background: #c6f6d5; color: #22543d; }
+        .badge-inactive { background: #fed7d7; color: #742a2a; }
+        .badge-conf     { background: #ebf4ff; color: #2c5282; font-size: 10px; margin: 1px; display: inline-block; padding: 2px 6px; border-radius: 8px; }
 
-        .stat-card {
-            background: white;
-            border-radius: 12px;
-            padding: 25px;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
-        }
+        /* Modals */
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center; }
+        .modal.active { display: flex; }
+        .modal-content { background: white; border-radius: 12px; padding: 30px; max-width: 560px; width: 90%; max-height: 90vh; overflow-y: auto; }
+        .modal-content h3 { margin-bottom: 20px; font-size: 22px; }
+        .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
 
-        .stat-card h3 {
-            font-size: 14px;
-            color: #718096;
-            margin-bottom: 10px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
+        .form-group { margin-bottom: 18px; }
+        .form-group label { display: block; margin-bottom: 6px; font-weight: 600; color: #4a5568; font-size: 14px; }
+        .form-group input, .form-group select { width: 100%; padding: 10px; border: 2px solid #e2e8f0; border-radius: 8px; font-size: 14px; }
+        .form-group input:focus, .form-group select:focus { outline: none; border-color: #805ad5; }
 
-        .stat-card .value {
-            font-size: 36px;
-            font-weight: bold;
-            color: #805ad5;
-        }
+        /* Checkbox grids for scrapers / conferences */
+        .check-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin-top: 8px; max-height: 280px; overflow-y: auto; }
+        .check-grid label { display: flex; align-items: center; gap: 8px; font-weight: 400; cursor: pointer; padding: 4px 6px; border-radius: 4px; font-size: 13px; }
+        .check-grid label:hover { background: #f7fafc; }
+        .check-grid input[type='checkbox'] { width: 15px; height: 15px; cursor: pointer; flex-shrink: 0; }
 
-        .users-table {
-            background: white;
-            border-radius: 12px;
-            padding: 25px;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
-        }
+        /* Conference management table */
+        .conf-badge-active   { background: #c6f6d5; color: #22543d; padding: 3px 10px; border-radius: 10px; font-size: 12px; font-weight: 600; }
+        .conf-badge-inactive { background: #fed7d7; color: #742a2a; padding: 3px 10px; border-radius: 10px; font-size: 12px; font-weight: 600; }
 
-        .users-table h2 {
-            font-size: 24px;
-            margin-bottom: 20px;
-            color: #1a202c;
-        }
+        .alert { padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+        .alert-success { background: #c6f6d5; color: #22543d; }
+        .alert-error   { background: #fed7d7; color: #742a2a; }
 
-        .table-controls {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-        }
-
-        .btn {
-            padding: 10px 20px;
-            border-radius: 8px;
-            border: none;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s;
-        }
-
-        .btn-primary {
-            background: linear-gradient(135deg, #805ad5, #9f7aea);
-            color: white;
-        }
-
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(128, 90, 213, 0.3);
-        }
-
-        .btn-danger {
-            background: #f56565;
-            color: white;
-        }
-
-        .btn-success {
-            background: #48bb78;
-            color: white;
-        }
-
-        .btn-success2 {
-            background: #48bb78;
-            color: white;
-        }
-
-        .btn-warning {
-            background: #ed8936;
-            color: white;
-        }
-
-        .btn-warning:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(237,137,54,0.3);
-        }
-
-        .action-btns {
-            white-space: nowrap;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 4px;
-            align-items: center;
-        }
-
-        .btn-small {
-            padding: 6px 12px;
-            font-size: 13px;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-
-        th {
-            background: #f7fafc;
-            padding: 12px;
-            text-align: left;
-            font-weight: 600;
-            color: #4a5568;
-            border-bottom: 2px solid #e2e8f0;
-        }
-
-        td {
-            padding: 12px;
-            border-bottom: 1px solid #e2e8f0;
-        }
-
-        tr:hover {
-            background: #f7fafc;
-        }
-
-        .badge {
-            padding: 4px 12px;
-            border-radius: 12px;
-            font-size: 12px;
-            font-weight: 600;
-        }
-
-        .badge-admin {
-            background: #fed7d7;
-            color: #742a2a;
-        }
-
-        .badge-internal {
-            background: #bee3f8;
-            color: #2c5282;
-        }
-
-        .badge-external {
-            background: #c6f6d5;
-            color: #22543d;
-        }
-
-        .badge-active {
-            background: #c6f6d5;
-            color: #22543d;
-        }
-
-        .badge-inactive {
-            background: #fed7d7;
-            color: #742a2a;
-        }
-
-        .modal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.5);
-            z-index: 1000;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .modal.active {
-            display: flex;
-        }
-
-        .modal-content {
-            background: white;
-            border-radius: 12px;
-            padding: 30px;
-            max-width: 500px;
-            width: 90%;
-        }
-
-        .modal-content h3 {
-            margin-bottom: 20px;
-            font-size: 24px;
-        }
-
-        .form-group {
-            margin-bottom: 20px;
-        }
-
-        .form-group label {
-            display: block;
-            margin-bottom: 8px;
-            font-weight: 600;
-            color: #4a5568;
-        }
-
-        .form-group input, .form-group select {
-            width: 100%;
-            padding: 10px;
-            border: 2px solid #e2e8f0;
-            border-radius: 8px;
-            font-size: 14px;
-        }
-
-        .form-group input:focus, .form-group select:focus {
-            outline: none;
-            border-color: #805ad5;
-        }
-
-        .modal-actions {
-            display: flex;
-            gap: 10px;
-            justify-content: flex-end;
-            margin-top: 20px;
-        }
-
-        .scraper-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 8px;
-            border: 1px solid #e2e8f0;
-            border-radius: 8px;
-            padding: 12px;
-            margin-top: 8px;
-        }
-
-        .scraper-grid label {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-weight: 400;
-            cursor: pointer;
-            padding: 4px 6px;
-            border-radius: 4px;
-        }
-
-        .scraper-grid label:hover {
-            background: #f7fafc;
-        }
-
-        .scraper-grid input[type='checkbox'] {
-            width: 16px;
-            height: 16px;
-            cursor: pointer;
-            border: 2px solid #e2e8f0;
-            flex-shrink: 0;
-        }
-
-        .alert {
-            padding: 15px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-        }
-
-        .alert-success {
-            background: #c6f6d5;
-            color: #22543d;
-        }
-
-        .alert-error {
-            background: #fed7d7;
-            color: #742a2a;
-        }
+        /* spinner inside checkbox area */
+        .loading-msg { color: #a0aec0; font-size: 13px; padding: 10px; }
     </style>
 </head>
 <body>
@@ -360,7 +104,7 @@
                 <a href="/scraper">Start Scraping</a>
                 <a href="/dashboard">Dashboard</a>
                 <a href="/jobs">Jobs</a>
-                <span class="credit-badge">💳 {{ session.get('credits', 0) }} Credits</span>
+                <span class="credit-badge">💳 {{ session.get('credits',0) }} Credits</span>
                 <a href="/admin">Admin Panel</a>
                 <a href="/profile">👤 {{ session.get('username') }}</a>
                 <a href="/logout">Logout</a>
@@ -371,15 +115,14 @@
     <div class="container">
         <div class="page-header">
             <h1>🔧 Admin Panel</h1>
-            <p>Manage users, credits, and system settings</p>
+            <p>Manage users, credits, conferences, and system settings</p>
         </div>
 
         {% if message %}
-        <div class="alert alert-{{ message_type or 'success' }}">
-            {{ message }}
-        </div>
+        <div class="alert alert-{{ message_type or 'success' }}">{{ message }}</div>
         {% endif %}
 
+        <!-- Stats row -->
         <div class="admin-grid">
             <div class="stat-card">
                 <h3>Total Users</h3>
@@ -391,131 +134,197 @@
             </div>
             <div class="stat-card">
                 <h3>Admin Users</h3>
-                <div class="value">{{ users|selectattr('user_type', 'equalto', 'admin')|list|length }}</div>
+                <div class="value">{{ users|selectattr('user_type','equalto','admin')|list|length }}</div>
+            </div>
+            <div class="stat-card">
+                <h3>Conferences</h3>
+                <div class="value">{{ conferences|length }}</div>
             </div>
         </div>
 
-        <div style="margin-bottom: 30px; display: flex; gap: 10px;">
-            <a href="/admin/conferences" class="btn btn-primary" style="text-decoration: none; display: inline-block;">📋 Manage Conferences</a>
-            <a href="/master-database" class="btn btn-secondary" style="text-decoration: none; display: inline-block;">💾 Master Database</a>
+        <!-- Tab navigation -->
+        <div class="tab-nav">
+            <button class="tab-btn active" onclick="switchTab('users',this)">👥 User Management</button>
+            <button class="tab-btn" onclick="switchTab('conferences',this)">🎓 Manage Conferences</button>
+            <button class="tab-btn" onclick="window.location='/master-database'">🗄️ Master Database</button>
         </div>
 
-        <div class="users-table">
-            <div class="table-controls">
-                <h2>User Management</h2>
-                <button class="btn btn-primary" onclick="openModal('createUserModal')">➕ Create User</button>
+        <!-- ══════════════════════════════════════════════════════════ -->
+        <!-- TAB: Users                                               -->
+        <!-- ══════════════════════════════════════════════════════════ -->
+        <div id="tab-users" class="tab-panel active">
+            <div class="panel-card">
+                <div class="panel-header">
+                    <h2>User Management</h2>
+                    <button class="btn btn-primary" onclick="openModal('createUserModal')">➕ Create User</button>
+                </div>
+
+                <div style="overflow-x:auto;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Username</th>
+                            <th>Email</th>
+                            <th>Type</th>
+                            <th>Credits</th>
+                            <th>License</th>
+                            <th>Status</th>
+                            <th>Conferences</th>
+                            <th>Created</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for user in users %}
+                        <tr id="row-{{ user.id }}">
+                            <td><strong>{{ user.username }}</strong></td>
+                            <td>{{ user.email }}</td>
+                            <td><span class="badge badge-{{ user.user_type }}">{{ user.user_type|upper }}</span></td>
+                            <td><strong id="credits-{{ user.id }}">{{ user.credits }}</strong></td>
+                            <td>{{ user.license_type|capitalize }}</td>
+                            <td>
+                                <span class="badge badge-{{ 'active' if user.is_active else 'inactive' }}" id="status-{{ user.id }}">
+                                    {{ 'Active' if user.is_active else 'Inactive' }}
+                                </span>
+                            </td>
+                            <td>
+                                {% set ac = user.allowed_conferences or 'all' %}
+                                {% if ac == 'all' %}
+                                    <span class="badge-conf">All</span>
+                                {% else %}
+                                    <span class="badge-conf">Custom</span>
+                                {% endif %}
+                            </td>
+                            <td>{{ user.created_at.strftime('%Y-%m-%d') if user.created_at else 'N/A' }}</td>
+                            <td class="action-btns">
+                                <button class="btn btn-success btn-small"
+                                    data-uid="{{ user.id }}" data-uname="{{ user.username }}"
+                                    onclick="openCreditsModal(this)">💳 Credits</button>
+                                <button class="btn btn-primary btn-small"
+                                    data-uid="{{ user.id }}" data-uname="{{ user.username }}"
+                                    data-scrapers="{{ (user.allowed_scrapers or 'all')|e }}"
+                                    onclick="openScrapersModal(this)">🔧 Scrapers</button>
+                                <button class="btn btn-conf btn-small"
+                                    data-uid="{{ user.id }}" data-uname="{{ user.username }}"
+                                    onclick="openConferencesModal(this)">🎓 Conferences</button>
+                                <button class="btn btn-warning btn-small"
+                                    data-uid="{{ user.id }}"
+                                    data-uname="{{ user.username }}"
+                                    data-email="{{ user.email }}"
+                                    data-utype="{{ user.user_type }}"
+                                    data-license="{{ user.license_type }}"
+                                    data-credits="{{ user.credits }}"
+                                    onclick="openEditModal(this)">✏️ Edit</button>
+                                <button class="btn btn-{{ 'danger' if user.is_active else 'success2' }} btn-small"
+                                    data-uid="{{ user.id }}" data-uname="{{ user.username }}"
+                                    data-active="{{ 'true' if user.is_active else 'false' }}"
+                                    onclick="toggleUser(this)">
+                                    {{ '🚫 Disable' if user.is_active else '✅ Enable' }}
+                                </button>
+                                {% if user.user_type != 'admin' or users|selectattr('user_type','equalto','admin')|list|length > 1 %}
+                                <button class="btn btn-danger btn-small"
+                                    data-uid="{{ user.id }}" data-uname="{{ user.username }}"
+                                    onclick="openDeleteModal(this)">🗑️ Delete</button>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                </div>
             </div>
-
-            <table>
-                <thead>
-                    <tr>
-                        <th>Username</th>
-                        <th>Email</th>
-                        <th>Type</th>
-                        <th>Credits</th>
-                        <th>License</th>
-                        <th>Status</th>
-                        <th>Created</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for user in users %}
-                    <tr id="row-{{ user.id }}">
-                        <td><strong>{{ user.username }}</strong></td>
-                        <td>{{ user.email }}</td>
-                        <td>
-                            <span class="badge badge-{{ user.user_type }}">{{ user.user_type|upper }}</span>
-                        </td>
-                        <td><strong id="credits-{{ user.id }}">{{ user.credits }}</strong></td>
-                        <td>{{ user.license_type|capitalize }}</td>
-                        <td>
-                            <span class="badge badge-{{ 'active' if user.is_active else 'inactive' }}" id="status-{{ user.id }}">
-                                {{ 'Active' if user.is_active else 'Inactive' }}
-                            </span>
-                        </td>
-                        <td>{{ user.created_at.strftime('%Y-%m-%d') if user.created_at else 'N/A' }}</td>
-                        <td class="action-btns">
-                            <button class="btn btn-success btn-small"
-                                data-uid="{{ user.id }}" data-uname="{{ user.username }}"
-                                onclick="openCreditsModal(this)">💳 Credits</button>
-                            <button class="btn btn-primary btn-small"
-                                data-uid="{{ user.id }}" data-uname="{{ user.username }}"
-                                data-scrapers="{{ (user.allowed_scrapers or 'all')|e }}"
-                                onclick="openScrapersModal(this)">🔧 Scrapers</button>
-                            <button class="btn btn-warning btn-small"
-                                data-uid="{{ user.id }}"
-                                data-uname="{{ user.username }}"
-                                data-email="{{ user.email }}"
-                                data-utype="{{ user.user_type }}"
-                                data-license="{{ user.license_type }}"
-                                data-credits="{{ user.credits }}"
-                                onclick="openEditModal(this)">✏️ Edit</button>
-                            <button class="btn btn-{{ 'danger' if user.is_active else 'success2' }} btn-small"
-                                data-uid="{{ user.id }}" data-uname="{{ user.username }}"
-                                data-active="{{ 'true' if user.is_active else 'false' }}"
-                                onclick="toggleUser(this)">
-                                {{ '🚫 Disable' if user.is_active else '✅ Enable' }}
-                            </button>
-                            {% if user.user_type != 'admin' or users|selectattr('user_type','equalto','admin')|list|length > 1 %}
-                            <button class="btn btn-danger btn-small"
-                                data-uid="{{ user.id }}" data-uname="{{ user.username }}"
-                                onclick="openDeleteModal(this)">🗑️ Delete</button>
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
         </div>
-    </div>
 
-    <!-- Toast notification -->
+        <!-- ══════════════════════════════════════════════════════════ -->
+        <!-- TAB: Conferences                                         -->
+        <!-- ══════════════════════════════════════════════════════════ -->
+        <div id="tab-conferences" class="tab-panel">
+            <div class="panel-card">
+                <div class="panel-header">
+                    <h2>🎓 Conference Registry</h2>
+                    <button class="btn btn-primary" onclick="openModal('createConfModal')">➕ New Conference</button>
+                </div>
+                <table id="conf-table">
+                    <thead>
+                        <tr>
+                            <th>Code</th>
+                            <th>Display Name</th>
+                            <th>Status</th>
+                            <th>Created By</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="conf-tbody">
+                        {% for conf in conferences %}
+                        <tr id="conf-row-{{ conf.code }}">
+                            <td><strong>{{ conf.code }}</strong></td>
+                            <td id="conf-name-{{ conf.code }}">{{ conf.display_name }}</td>
+                            <td>
+                                <span id="conf-status-{{ conf.code }}" class="conf-badge-{{ 'active' if conf.is_active else 'inactive' }}">
+                                    {{ 'Active' if conf.is_active else 'Inactive' }}
+                                </span>
+                            </td>
+                            <td>{{ conf.created_by }}</td>
+                            <td class="action-btns">
+                                <button class="btn btn-warning btn-small"
+                                    onclick="openEditConfModal('{{ conf.code }}', '{{ conf.display_name|e }}')">✏️ Edit</button>
+                                <button class="btn btn-small {{ 'btn-danger' if conf.is_active else 'btn-success' }}"
+                                    id="toggle-conf-btn-{{ conf.code }}"
+                                    onclick="toggleConference('{{ conf.code }}', this)">
+                                    {{ '⏸ Deactivate' if conf.is_active else '▶ Activate' }}
+                                </button>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div><!-- /container -->
+
+    <!-- Toast -->
     <div id="toast" style="display:none;position:fixed;bottom:30px;right:30px;background:#1a202c;color:#fff;padding:14px 24px;border-radius:10px;font-size:14px;font-weight:600;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,0.3);max-width:360px;"></div>
 
-    <!-- ===== CREATE USER MODAL ===== -->
+    <!-- ══════════════════════════════════════════════════════════════ -->
+    <!-- MODAL: Create User                                           -->
+    <!-- ══════════════════════════════════════════════════════════════ -->
     <div id="createUserModal" class="modal">
-        <div class="modal-content" style="max-width:600px;max-height:90vh;overflow-y:auto;">
-            <h3>Create New User</h3>
+        <div class="modal-content" style="max-width:620px;">
+            <h3>➕ Create New User</h3>
             <form method="POST" action="/admin/create-user">
+                <div class="form-group"><label>Username</label><input type="text" name="username" required autocomplete="off"></div>
+                <div class="form-group"><label>Email</label><input type="email" name="email" required autocomplete="off"></div>
                 <div class="form-group">
-                    <label>Username</label>
-                    <input type="text" name="username" required autocomplete="off">
-                </div>
-                <div class="form-group">
-                    <label>Email</label>
-                    <input type="email" name="email" required autocomplete="off">
-                </div>
-                <div class="form-group">
-                    <label>Password <small style="color:#718096;font-weight:400;">(min 8 characters, stored with bcrypt)</small></label>
+                    <label>Password <small style="color:#718096;font-weight:400;">(min 8 chars)</small></label>
                     <input type="password" name="password" required minlength="8" autocomplete="new-password">
                 </div>
-                <div class="form-group">
-                    <label>User Type</label>
-                    <select name="user_type">
-                        <option value="external">External</option>
-                        <option value="internal">Internal</option>
-                        <option value="admin">Admin</option>
-                    </select>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                    <div class="form-group">
+                        <label>User Type</label>
+                        <select name="user_type">
+                            <option value="external">External</option>
+                            <option value="internal">Internal</option>
+                            <option value="admin">Admin</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>License Type</label>
+                        <select name="license_type">
+                            <option value="multi">Multi (any machine)</option>
+                            <option value="single">Single (locked)</option>
+                        </select>
+                    </div>
                 </div>
+                <div class="form-group"><label>Initial Credits</label><input type="number" name="credits" value="100" min="0"></div>
+
+                <!-- Scrapers -->
                 <div class="form-group">
-                    <label>License Type</label>
-                    <select name="license_type">
-                        <option value="multi">Multi (any machine)</option>
-                        <option value="single">Single (locked to one machine)</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>Initial Credits</label>
-                    <input type="number" name="credits" value="100" min="0">
-                </div>
-                <div class="form-group">
-                    <label style="margin-bottom:8px;display:block;">Allowed Scrapers</label>
+                    <label>Allowed Scrapers</label>
                     <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-weight:400;">
                         <input type="checkbox" name="all_scrapers" id="create_all_scrapers" checked onchange="toggleCreateAllScrapers()">
                         <strong>Allow All Scrapers</strong>
                     </label>
-                    <div id="create_scraper_checkboxes" class="scraper-grid" style="display:none;">
+                    <div id="create_scraper_checkboxes" class="check-grid" style="display:none;">
                         <label><input type="checkbox" name="scrapers" value="bmj"> BMJ Journals</label>
                         <label><input type="checkbox" name="scrapers" value="cambridge"> Cambridge</label>
                         <label><input type="checkbox" name="scrapers" value="europepmc"> Europe PMC</label>
@@ -527,13 +336,29 @@
                         <label><input type="checkbox" name="scrapers" value="emerald"> Emerald</label>
                         <label><input type="checkbox" name="scrapers" value="mdpi"> MDPI</label>
                         <label><input type="checkbox" name="scrapers" value="pubmed"> PubMed</label>
-                        <label><input type="checkbox" name="scrapers" value="tandf"> Taylor &amp; Francis</label>
                         <label><input type="checkbox" name="scrapers" value="sciencedirect"> Science Direct</label>
                         <label><input type="checkbox" name="scrapers" value="pdf_scraper"> PDF Scraper</label>
                         <label><input type="checkbox" name="scrapers" value="taylor"> Taylor &amp; Francis</label>
                         <label><input type="checkbox" name="scrapers" value="wiley"> Wiley Online Library</label>
                     </div>
                 </div>
+
+                <!-- Conferences -->
+                <div class="form-group">
+                    <label>Allowed Conferences</label>
+                    <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-weight:400;">
+                        <input type="checkbox" name="all_conferences" id="create_all_conferences" checked onchange="toggleCreateAllConferences()">
+                        <strong>Allow All Conferences</strong>
+                    </label>
+                    <div id="create_conf_checkboxes" class="check-grid" style="display:none;">
+                        {% for conf in conferences %}
+                        {% if conf.is_active %}
+                        <label><input type="checkbox" name="conferences" value="{{ conf.code }}"> {{ conf.display_name }}</label>
+                        {% endif %}
+                        {% endfor %}
+                    </div>
+                </div>
+
                 <div class="modal-actions">
                     <button type="button" class="btn" onclick="closeModal('createUserModal')">Cancel</button>
                     <button type="submit" class="btn btn-primary">Create User</button>
@@ -542,20 +367,16 @@
         </div>
     </div>
 
-    <!-- ===== CREDITS MODAL ===== -->
+    <!-- ══════════════════════════════════════════════════════════════ -->
+    <!-- MODAL: Credits                                               -->
+    <!-- ══════════════════════════════════════════════════════════════ -->
     <div id="addCreditsModal" class="modal">
-        <div class="modal-content">
+        <div class="modal-content" style="max-width:440px;">
             <h3>💳 Manage Credits</h3>
             <p style="margin-bottom:16px;">User: <strong id="credits_username"></strong></p>
             <input type="hidden" id="credits_user_id">
-            <div class="form-group">
-                <label>Amount (negative to deduct)</label>
-                <input type="number" id="credits_amount" value="100" required>
-            </div>
-            <div class="form-group">
-                <label>Reason</label>
-                <input type="text" id="credits_reason" placeholder="e.g., Monthly allocation, Purchase" value="Admin adjustment">
-            </div>
+            <div class="form-group"><label>Amount (negative to deduct)</label><input type="number" id="credits_amount" value="100" required></div>
+            <div class="form-group"><label>Reason</label><input type="text" id="credits_reason" value="Admin adjustment"></div>
             <div class="modal-actions">
                 <button class="btn" onclick="closeModal('addCreditsModal')">Cancel</button>
                 <button class="btn btn-success" onclick="submitCredits()">Update Credits</button>
@@ -563,7 +384,9 @@
         </div>
     </div>
 
-    <!-- ===== SCRAPERS MODAL ===== -->
+    <!-- ══════════════════════════════════════════════════════════════ -->
+    <!-- MODAL: Scrapers                                              -->
+    <!-- ══════════════════════════════════════════════════════════════ -->
     <div id="manageScrapersModal" class="modal">
         <div class="modal-content" style="max-width:560px;">
             <h3>🔧 Manage Scrapers</h3>
@@ -575,7 +398,7 @@
                     <strong>Allow All Scrapers</strong>
                 </label>
             </div>
-            <div id="scraper_checkboxes" class="scraper-grid">
+            <div id="scraper_checkboxes" class="check-grid">
                 <label><input type="checkbox" class="scraper-cb" value="bmj"> BMJ Journals</label>
                 <label><input type="checkbox" class="scraper-cb" value="cambridge"> Cambridge</label>
                 <label><input type="checkbox" class="scraper-cb" value="europepmc"> Europe PMC</label>
@@ -587,7 +410,6 @@
                 <label><input type="checkbox" class="scraper-cb" value="emerald"> Emerald</label>
                 <label><input type="checkbox" class="scraper-cb" value="mdpi"> MDPI</label>
                 <label><input type="checkbox" class="scraper-cb" value="pubmed"> PubMed</label>
-                <!-- <label><input type="checkbox" class="scraper-cb" value="tandf"> Taylor &amp; Francis</label> -->
                 <label><input type="checkbox" class="scraper-cb" value="sciencedirect"> Science Direct</label>
                 <label><input type="checkbox" class="scraper-cb" value="pdf_scraper"> PDF Scraper</label>
                 <label><input type="checkbox" class="scraper-cb" value="taylor"> Taylor &amp; Francis</label>
@@ -600,19 +422,39 @@
         </div>
     </div>
 
-    <!-- ===== EDIT USER MODAL ===== -->
+    <!-- ══════════════════════════════════════════════════════════════ -->
+    <!-- MODAL: Conferences (per-user assignment)                     -->
+    <!-- ══════════════════════════════════════════════════════════════ -->
+    <div id="manageConferencesModal" class="modal">
+        <div class="modal-content" style="max-width:560px;">
+            <h3>🎓 Manage Conferences</h3>
+            <p style="margin-bottom:14px;">User: <strong id="conf_modal_username"></strong></p>
+            <input type="hidden" id="conf_modal_user_id">
+            <div class="form-group" style="margin-bottom:10px;">
+                <label style="display:flex;align-items:center;gap:8px;font-weight:400;">
+                    <input type="checkbox" id="all_conferences_check" onchange="toggleAllConferences()">
+                    <strong>Allow All Conferences</strong>
+                </label>
+            </div>
+            <div id="conf_checkboxes" class="check-grid">
+                <div class="loading-msg">Loading conferences…</div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn" onclick="closeModal('manageConferencesModal')">Cancel</button>
+                <button class="btn btn-conf" onclick="submitConferences()">Save Permissions</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════════════ -->
+    <!-- MODAL: Edit User                                             -->
+    <!-- ══════════════════════════════════════════════════════════════ -->
     <div id="editUserModal" class="modal">
-        <div class="modal-content" style="max-width:560px;max-height:90vh;overflow-y:auto;">
+        <div class="modal-content" style="max-width:560px;">
             <h3>✏️ Edit User</h3>
             <input type="hidden" id="edit_user_id">
-            <div class="form-group">
-                <label>Username</label>
-                <input type="text" id="edit_username" autocomplete="off">
-            </div>
-            <div class="form-group">
-                <label>Email</label>
-                <input type="email" id="edit_email" autocomplete="off">
-            </div>
+            <div class="form-group"><label>Username</label><input type="text" id="edit_username" autocomplete="off"></div>
+            <div class="form-group"><label>Email</label><input type="email" id="edit_email" autocomplete="off"></div>
             <div class="form-group">
                 <label>New Password <small style="color:#718096;font-weight:400;">(leave blank to keep current)</small></label>
                 <input type="password" id="edit_password" autocomplete="new-password" minlength="8" placeholder="Leave blank to keep current">
@@ -632,16 +474,7 @@
                     <option value="single">Single (locked to one machine)</option>
                 </select>
             </div>
-            <div class="form-group">
-                <label>Set Credits (absolute value)</label>
-                <input type="number" id="edit_credits" min="0">
-            </div>
-            <div class="form-group">
-                <label>Assign Conferences</label>
-                <div id="edit_conferences_list" style="border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; max-height: 200px; overflow-y: auto;">
-                    <p style="color: #718096; font-size: 14px;">Loading conferences...</p>
-                </div>
-            </div>
+            <div class="form-group"><label>Set Credits (absolute value)</label><input type="number" id="edit_credits" min="0"></div>
             <div class="modal-actions">
                 <button class="btn" onclick="closeModal('editUserModal')">Cancel</button>
                 <button class="btn btn-primary" onclick="submitEditUser()">Save Changes</button>
@@ -649,11 +482,13 @@
         </div>
     </div>
 
-    <!-- ===== DELETE CONFIRM MODAL ===== -->
+    <!-- ══════════════════════════════════════════════════════════════ -->
+    <!-- MODAL: Delete User                                           -->
+    <!-- ══════════════════════════════════════════════════════════════ -->
     <div id="deleteUserModal" class="modal">
         <div class="modal-content" style="max-width:440px;">
             <h3 style="color:#e53e3e;">🗑️ Delete User</h3>
-            <p style="margin:16px 0;">Are you sure you want to permanently delete user <strong id="delete_username"></strong>? This cannot be undone.</p>
+            <p style="margin:16px 0;">Are you sure you want to permanently delete <strong id="delete_username"></strong>? This cannot be undone.</p>
             <input type="hidden" id="delete_user_id">
             <div class="modal-actions">
                 <button class="btn" onclick="closeModal('deleteUserModal')">Cancel</button>
@@ -662,18 +497,64 @@
         </div>
     </div>
 
+    <!-- ══════════════════════════════════════════════════════════════ -->
+    <!-- MODAL: Create Conference                                     -->
+    <!-- ══════════════════════════════════════════════════════════════ -->
+    <div id="createConfModal" class="modal">
+        <div class="modal-content" style="max-width:440px;">
+            <h3>➕ New Conference</h3>
+            <div class="form-group">
+                <label>Short Code <small style="color:#718096;font-weight:400;">(e.g. NWC — max 30 chars, auto-uppercased)</small></label>
+                <input type="text" id="new_conf_code" placeholder="e.g. NWC" maxlength="30">
+            </div>
+            <div class="form-group">
+                <label>Display Name</label>
+                <input type="text" id="new_conf_name" placeholder="e.g. Neurology World Conference">
+            </div>
+            <div class="modal-actions">
+                <button class="btn" onclick="closeModal('createConfModal')">Cancel</button>
+                <button class="btn btn-primary" onclick="submitCreateConf()">Create Conference</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════════════ -->
+    <!-- MODAL: Edit Conference                                       -->
+    <!-- ══════════════════════════════════════════════════════════════ -->
+    <div id="editConfModal" class="modal">
+        <div class="modal-content" style="max-width:440px;">
+            <h3>✏️ Edit Conference</h3>
+            <input type="hidden" id="edit_conf_code">
+            <div class="form-group">
+                <label>Code (immutable)</label>
+                <input type="text" id="edit_conf_code_display" disabled style="background:#f7fafc;color:#718096;">
+            </div>
+            <div class="form-group">
+                <label>Display Name</label>
+                <input type="text" id="edit_conf_name">
+            </div>
+            <div class="modal-actions">
+                <button class="btn" onclick="closeModal('editConfModal')">Cancel</button>
+                <button class="btn btn-primary" onclick="submitEditConf()">Save</button>
+            </div>
+        </div>
+    </div>
+
     <script>
-        // ===== MODAL HELPERS =====
-        function openModal(id) { document.getElementById(id).classList.add('active'); }
+        // ── Tab switching ──────────────────────────────────────────────────
+        function switchTab(name, btn) {
+            document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            const panel = document.getElementById('tab-' + name);
+            if (panel) { panel.classList.add('active'); btn.classList.add('active'); }
+        }
+
+        // ── Modal helpers ──────────────────────────────────────────────────
+        function openModal(id)  { document.getElementById(id).classList.add('active'); }
         function closeModal(id) { document.getElementById(id).classList.remove('active'); }
+        window.addEventListener('click', e => { if (e.target.classList.contains('modal')) e.target.classList.remove('active'); });
 
-        window.addEventListener('click', function(e) {
-            if (e.target.classList.contains('modal')) {
-                e.target.classList.remove('active');
-            }
-        });
-
-        // ===== TOAST =====
+        // ── Toast ──────────────────────────────────────────────────────────
         function showToast(msg, isError) {
             const t = document.getElementById('toast');
             t.textContent = msg;
@@ -682,15 +563,21 @@
             setTimeout(() => { t.style.display = 'none'; }, 4000);
         }
 
-        // ===== CREATE USER =====
+        // ── Create user helpers ────────────────────────────────────────────
         function toggleCreateAllScrapers() {
-            const allChecked = document.getElementById('create_all_scrapers').checked;
+            const all = document.getElementById('create_all_scrapers').checked;
             const box = document.getElementById('create_scraper_checkboxes');
-            box.style.display = allChecked ? 'none' : 'grid';
-            box.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = !allChecked);
+            box.style.display = all ? 'none' : 'grid';
+            box.querySelectorAll('input').forEach(cb => cb.checked = !all);
+        }
+        function toggleCreateAllConferences() {
+            const all = document.getElementById('create_all_conferences').checked;
+            const box = document.getElementById('create_conf_checkboxes');
+            box.style.display = all ? 'none' : 'grid';
+            box.querySelectorAll('input').forEach(cb => cb.checked = !all);
         }
 
-        // ===== CREDITS =====
+        // ── Credits ───────────────────────────────────────────────────────
         function openCreditsModal(btn) {
             document.getElementById('credits_user_id').value = btn.dataset.uid;
             document.getElementById('credits_username').textContent = btn.dataset.uname;
@@ -698,41 +585,32 @@
             document.getElementById('credits_reason').value = 'Admin adjustment';
             openModal('addCreditsModal');
         }
-
         function submitCredits() {
             const userId = document.getElementById('credits_user_id').value;
             const amount = parseInt(document.getElementById('credits_amount').value);
             const reason = document.getElementById('credits_reason').value.trim();
             if (!reason) { showToast('Please enter a reason', true); return; }
             if (isNaN(amount)) { showToast('Invalid amount', true); return; }
-
             fetch('/admin/add-credits', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({user_id: userId, amount: amount, reason: reason})
-            })
-            .then(r => r.json())
-            .then(data => {
-                if (data.success) {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({user_id:userId, amount, reason})
+            }).then(r=>r.json()).then(d => {
+                if (d.success) {
                     closeModal('addCreditsModal');
-                    const el = document.getElementById('credits-' + userId);
-                    if (el) el.textContent = data.new_credits;
-                    showToast(data.message, false);
-                } else {
-                    showToast(data.error || 'Failed to update credits', true);
-                }
-            })
-            .catch(() => showToast('Network error', true));
+                    const el = document.getElementById('credits-'+userId);
+                    if (el) el.textContent = d.new_credits;
+                    showToast(d.message, false);
+                } else { showToast(d.error||'Failed', true); }
+            }).catch(()=>showToast('Network error', true));
         }
 
-        // ===== SCRAPERS =====
+        // ── Scrapers ──────────────────────────────────────────────────────
         function openScrapersModal(btn) {
             document.getElementById('scrapers_user_id').value = btn.dataset.uid;
             document.getElementById('scrapers_username').textContent = btn.dataset.uname;
             const scrapers = btn.dataset.scrapers;
             const cbs = document.querySelectorAll('.scraper-cb');
             const allCheck = document.getElementById('all_scrapers_check');
-
             if (scrapers === 'all') {
                 allCheck.checked = true;
                 cbs.forEach(cb => { cb.checked = true; cb.disabled = true; });
@@ -744,161 +622,194 @@
             }
             openModal('manageScrapersModal');
         }
-
         function toggleAllScrapers() {
-            const allChecked = document.getElementById('all_scrapers_check').checked;
-            document.querySelectorAll('.scraper-cb').forEach(cb => {
-                cb.checked = allChecked;
-                cb.disabled = allChecked;
-            });
+            const all = document.getElementById('all_scrapers_check').checked;
+            document.querySelectorAll('.scraper-cb').forEach(cb => { cb.checked = all; cb.disabled = all; });
         }
-
         function submitScrapers() {
-            const userId = document.getElementById('scrapers_user_id').value;
+            const userId     = document.getElementById('scrapers_user_id').value;
             const allChecked = document.getElementById('all_scrapers_check').checked;
-            const selected = Array.from(document.querySelectorAll('.scraper-cb:checked')).map(cb => cb.value);
-
+            const selected   = Array.from(document.querySelectorAll('.scraper-cb:checked')).map(cb=>cb.value);
             fetch('/admin/manage-scrapers', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({user_id: userId, all_scrapers: allChecked, scrapers: selected})
-            })
-            .then(r => r.json())
-            .then(data => {
-                if (data.success) {
-                    closeModal('manageScrapersModal');
-                    showToast(data.message, false);
-                } else {
-                    showToast(data.error || 'Failed to update scrapers', true);
-                }
-            })
-            .catch(() => showToast('Network error', true));
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({user_id:userId, all_scrapers:allChecked, scrapers:selected})
+            }).then(r=>r.json()).then(d => {
+                if (d.success) { closeModal('manageScrapersModal'); showToast(d.message, false); }
+                else { showToast(d.error||'Failed', true); }
+            }).catch(()=>showToast('Network error', true));
         }
 
-        // ===== EDIT USER =====
-        async function openEditModal(btn) {
-            document.getElementById('edit_user_id').value = btn.dataset.uid;
-            document.getElementById('edit_username').value = btn.dataset.uname;
-            document.getElementById('edit_email').value = btn.dataset.email;
-            document.getElementById('edit_password').value = '';
-            document.getElementById('edit_user_type').value = btn.dataset.utype;
-            document.getElementById('edit_license_type').value = btn.dataset.license;
-            document.getElementById('edit_credits').value = btn.dataset.credits;
-            
-            // Load conferences
-            await loadConferencesForUser(btn.dataset.uid);
-            
+        // ── Conferences (per-user) ─────────────────────────────────────────
+        function openConferencesModal(btn) {
+            const userId   = btn.dataset.uid;
+            const username = btn.dataset.uname;
+            document.getElementById('conf_modal_user_id').value = userId;
+            document.getElementById('conf_modal_username').textContent = username;
+            document.getElementById('all_conferences_check').checked = false;
+            document.getElementById('conf_checkboxes').innerHTML = '<div class="loading-msg">Loading…</div>';
+            openModal('manageConferencesModal');
+
+            // Fetch this user's conference permissions
+            fetch(`/admin/api/user-conferences/${userId}`)
+                .then(r => r.json())
+                .then(data => {
+                    const allowed = data.allowed; // 'all' or [codes]
+                    const allChk  = document.getElementById('all_conferences_check');
+                    const grid    = document.getElementById('conf_checkboxes');
+
+                    if (allowed === 'all') {
+                        allChk.checked = true;
+                    }
+
+                    grid.innerHTML = data.all_conferences.map(c => `
+                        <label>
+                            <input type="checkbox" class="conf-cb" value="${c.code}"
+                                ${(allowed === 'all' || (Array.isArray(allowed) && allowed.includes(c.code))) ? 'checked' : ''}
+                                ${allowed === 'all' ? 'disabled' : ''}>
+                            ${c.display_name}
+                        </label>`).join('');
+                })
+                .catch(() => {
+                    document.getElementById('conf_checkboxes').innerHTML =
+                        '<div class="loading-msg" style="color:#e53e3e;">Failed to load conferences</div>';
+                });
+        }
+        function toggleAllConferences() {
+            const all = document.getElementById('all_conferences_check').checked;
+            document.querySelectorAll('.conf-cb').forEach(cb => { cb.checked = all; cb.disabled = all; });
+        }
+        function submitConferences() {
+            const userId     = document.getElementById('conf_modal_user_id').value;
+            const allChecked = document.getElementById('all_conferences_check').checked;
+            const selected   = Array.from(document.querySelectorAll('.conf-cb:checked')).map(cb=>cb.value);
+            fetch('/admin/manage-conferences', {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({user_id:userId, all_conferences:allChecked, conferences:selected})
+            }).then(r=>r.json()).then(d => {
+                if (d.success) { closeModal('manageConferencesModal'); showToast(d.message, false); location.reload(); }
+                else { showToast(d.error||'Failed', true); }
+            }).catch(()=>showToast('Network error', true));
+        }
+
+        // ── Edit User ─────────────────────────────────────────────────────
+        function openEditModal(btn) {
+            document.getElementById('edit_user_id').value       = btn.dataset.uid;
+            document.getElementById('edit_username').value      = btn.dataset.uname;
+            document.getElementById('edit_email').value         = btn.dataset.email;
+            document.getElementById('edit_password').value      = '';
+            document.getElementById('edit_user_type').value     = btn.dataset.utype;
+            document.getElementById('edit_license_type').value  = btn.dataset.license;
+            document.getElementById('edit_credits').value       = btn.dataset.credits;
             openModal('editUserModal');
         }
-
-        async function loadConferencesForUser(userId) {
-            try {
-                const response = await fetch('/admin/api/conferences/list');
-                if (response.ok) {
-                    const data = await response.json();
-                    const container = document.getElementById('edit_conferences_list');
-                    
-                    if (data.conferences && data.conferences.length > 0) {
-                        container.innerHTML = data.conferences.map(conf => `
-                            <label style="display: flex; align-items: center; gap: 8px; padding: 8px; cursor: pointer; border-radius: 4px;">
-                                <input type="checkbox" class="conf-checkbox" value="${conf.id}" data-conf-name="${conf.name}">
-                                <span>${conf.short_form ? conf.short_form + ' - ' : ''}${conf.display_name || conf.name}</span>
-                            </label>
-                        `).join('');
-                    } else {
-                        container.innerHTML = '<p style="color: #718096; font-size: 14px;">No conferences available</p>';
-                    }
-                }
-            } catch (error) {
-                console.error('Error loading conferences:', error);
-                document.getElementById('edit_conferences_list').innerHTML = '<p style="color: #e53e3e;">Error loading conferences</p>';
-            }
-        }
-
         function submitEditUser() {
-            const userId = document.getElementById('edit_user_id').value;
             const password = document.getElementById('edit_password').value;
-            if (password && password.length < 8) {
-                showToast('Password must be at least 8 characters', true);
-                return;
-            }
+            if (password && password.length < 8) { showToast('Password must be ≥ 8 chars', true); return; }
             const payload = {
-                user_id: userId,
-                username: document.getElementById('edit_username').value.trim(),
-                email: document.getElementById('edit_email').value.trim(),
-                user_type: document.getElementById('edit_user_type').value,
+                user_id:      document.getElementById('edit_user_id').value,
+                username:     document.getElementById('edit_username').value.trim(),
+                email:        document.getElementById('edit_email').value.trim(),
+                user_type:    document.getElementById('edit_user_type').value,
                 license_type: document.getElementById('edit_license_type').value,
-                credits: document.getElementById('edit_credits').value
+                credits:      document.getElementById('edit_credits').value
             };
             if (password) payload.password = password;
-
-            // Get selected conferences
-            const selectedConferences = Array.from(document.querySelectorAll('.conf-checkbox:checked')).map(cb => cb.value);
-
             fetch('/admin/edit-user', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
+                method:'POST', headers:{'Content-Type':'application/json'},
                 body: JSON.stringify(payload)
-            })
-            .then(r => r.json())
-            .then(data => {
-                if (data.success) {
-                    // Assign conferences if any are selected
-                    if (selectedConferences.length > 0) {
-                        return assignConferencesToUser(userId, selectedConferences);
-                    }
-                    return data;
-                } else {
-                    throw new Error(data.error || 'Update failed');
-                }
-            })
-            .then(data => {
-                closeModal('editUserModal');
-                showToast(data.message || 'User updated successfully', false);
-                setTimeout(() => location.reload(), 1200);
-            })
-            .catch(err => showToast(err.message || 'Network error', true));
+            }).then(r=>r.json()).then(d => {
+                if (d.success) { closeModal('editUserModal'); showToast(d.message, false); setTimeout(()=>location.reload(), 1200); }
+                else { showToast(d.error||'Update failed', true); }
+            }).catch(()=>showToast('Network error', true));
         }
 
-        async function assignConferencesToUser(userId, conferenceIds) {
-            const results = [];
-            for (const confId of conferenceIds) {
-                try {
-                    const response = await fetch(`/admin/api/conferences/${confId}/assign-users`, {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({user_ids: [userId]})
-                    });
-                    if (response.ok) {
-                        results.push(await response.json());
-                    }
-                } catch (error) {
-                    console.error(`Error assigning conference ${confId}:`, error);
-                }
-            }
-            return {message: 'User updated and conferences assigned successfully', success: true};
-        }
-
-        // ===== TOGGLE ENABLE/DISABLE =====
+        // ── Toggle user enable/disable ─────────────────────────────────────
         function toggleUser(btn) {
-            const userId = btn.dataset.uid;
-            const username = btn.dataset.uname;
             const isActive = btn.dataset.active === 'true';
-            const action = isActive ? 'disable' : 'enable';
-            if (!confirm(`Are you sure you want to ${action} user "${username}"?`)) return;
-            window.location.href = `/admin/toggle-user/${userId}`;
+            if (!confirm(`${isActive?'Disable':'Enable'} user "${btn.dataset.uname}"?`)) return;
+            window.location.href = `/admin/toggle-user/${btn.dataset.uid}`;
         }
 
-        // ===== DELETE =====
+        // ── Delete user ────────────────────────────────────────────────────
         function openDeleteModal(btn) {
             document.getElementById('delete_user_id').value = btn.dataset.uid;
             document.getElementById('delete_username').textContent = btn.dataset.uname;
             openModal('deleteUserModal');
         }
-
         function submitDeleteUser() {
-            const userId = document.getElementById('delete_user_id').value;
-            window.location.href = `/admin/delete-user/${userId}`;
+            window.location.href = `/admin/delete-user/${document.getElementById('delete_user_id').value}`;
+        }
+
+        // ── Conference registry CRUD ───────────────────────────────────────
+        function submitCreateConf() {
+            const code = document.getElementById('new_conf_code').value.trim().toUpperCase();
+            const name = document.getElementById('new_conf_name').value.trim();
+            if (!code || !name) { showToast('Both code and name are required', true); return; }
+            fetch('/admin/conferences/create', {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({code, display_name: name})
+            }).then(r=>r.json()).then(d => {
+                if (d.success) {
+                    closeModal('createConfModal');
+                    showToast(`Conference "${d.conference.display_name}" created`, false);
+                    // Append row to table
+                    const tbody = document.getElementById('conf-tbody');
+                    const tr = document.createElement('tr');
+                    tr.id = `conf-row-${d.conference.code}`;
+                    tr.innerHTML = `
+                        <td><strong>${d.conference.code}</strong></td>
+                        <td id="conf-name-${d.conference.code}">${d.conference.display_name}</td>
+                        <td><span id="conf-status-${d.conference.code}" class="conf-badge-active">Active</span></td>
+                        <td>${d.conference.created_by}</td>
+                        <td class="action-btns">
+                            <button class="btn btn-warning btn-small" onclick="openEditConfModal('${d.conference.code}','${d.conference.display_name}')">✏️ Edit</button>
+                            <button class="btn btn-danger btn-small" id="toggle-conf-btn-${d.conference.code}" onclick="toggleConference('${d.conference.code}',this)">⏸ Deactivate</button>
+                        </td>`;
+                    tbody.prepend(tr);
+                    document.getElementById('new_conf_code').value = '';
+                    document.getElementById('new_conf_name').value = '';
+                } else { showToast(d.error||'Failed to create', true); }
+            }).catch(()=>showToast('Network error', true));
+        }
+
+        function openEditConfModal(code, name) {
+            document.getElementById('edit_conf_code').value          = code;
+            document.getElementById('edit_conf_code_display').value  = code;
+            document.getElementById('edit_conf_name').value          = name;
+            openModal('editConfModal');
+        }
+        function submitEditConf() {
+            const code = document.getElementById('edit_conf_code').value;
+            const name = document.getElementById('edit_conf_name').value.trim();
+            if (!name) { showToast('Display name is required', true); return; }
+            fetch('/admin/conferences/edit', {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({code, display_name: name})
+            }).then(r=>r.json()).then(d => {
+                if (d.success) {
+                    closeModal('editConfModal');
+                    const el = document.getElementById(`conf-name-${code}`);
+                    if (el) el.textContent = name;
+                    showToast(`Conference updated`, false);
+                } else { showToast(d.error||'Failed', true); }
+            }).catch(()=>showToast('Network error', true));
+        }
+
+        function toggleConference(code, btn) {
+            fetch(`/admin/conferences/toggle/${code}`, {method:'POST', headers:{'Content-Type':'application/json'}})
+                .then(r=>r.json())
+                .then(d => {
+                    if (d.success) {
+                        const statusEl = document.getElementById(`conf-status-${code}`);
+                        if (statusEl) {
+                            statusEl.textContent  = d.is_active ? 'Active' : 'Inactive';
+                            statusEl.className    = d.is_active ? 'conf-badge-active' : 'conf-badge-inactive';
+                        }
+                        btn.textContent  = d.is_active ? '⏸ Deactivate' : '▶ Activate';
+                        btn.className    = `btn btn-small ${d.is_active ? 'btn-danger' : 'btn-success'}`;
+                        showToast(d.message, false);
+                    } else { showToast(d.error||'Failed', true); }
+                }).catch(()=>showToast('Network error', true));
         }
     </script>
 </body>
