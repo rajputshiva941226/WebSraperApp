@@ -29,12 +29,21 @@ ExecStart=/var/www/journal-scraper/venv/bin/celery \
     --loglevel=info \
     --logfile=/var/log/journal-scraper/celery-beat.log \
     --pidfile=/tmp/celery-beat-journal-scraper.pid \
+    --schedule=/tmp/celerybeat-journal-scraper-schedule \
     --scheduler celery.beat:PersistentScheduler
 
 ExecReload=/bin/kill -s HUP $MAINPID
 
-# Remove stale PID file before restart to avoid "already running" errors
+# Kill any stale beat processes and remove lock files before starting.
+# The gdbm scheduler creates celerybeat-schedule.db (or .dir/.bak on some systems).
+# Leaving them locked causes "Errno 11 Resource temporarily unavailable".
+ExecStartPre=-/usr/bin/pkill -f "celery.*beat"
+ExecStartPre=/bin/sleep 2
 ExecStartPre=/bin/rm -f /tmp/celery-beat-journal-scraper.pid
+ExecStartPre=/bin/rm -f /tmp/celerybeat-journal-scraper-schedule
+ExecStartPre=/bin/rm -f /tmp/celerybeat-journal-scraper-schedule.db
+ExecStartPre=/bin/rm -f /var/www/journal-scraper/celerybeat-schedule
+ExecStartPre=/bin/rm -f /var/www/journal-scraper/celerybeat-schedule.db
 
 Restart=on-failure
 RestartSec=15

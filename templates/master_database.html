@@ -96,8 +96,9 @@
             <a href="/scraper">Start Scraping</a>
             <a href="/dashboard">Dashboard</a>
             <a href="/jobs">Jobs</a>
-            <span class="credit-badge" id="credit-display">Loading...</span>
-            <a href="/admin">Admin Panel</a>
+            <span class="credit-badge">💳 {% if session.get('credits', 0) >= 999990 %}∞{% else %}{{ '{:,}'.format(session.get('credits', 0)) }}{% endif %} Credits</span>
+            {% if session.get('user_type') == 'admin' %}<a href="/admin">Admin Panel</a>{% endif %}
+            <a href="/profile">👤 {{ session.get('username', '') }}</a>
             <a href="/logout">Logout</a>
         </div>
     </div>
@@ -248,18 +249,6 @@ function fmtDate(s) {
     try { return new Date(s).toLocaleDateString('en-GB', {year:'numeric',month:'short',day:'numeric'}); }
     catch(e) { return s.slice(0,10); }
 }
-
-/* ── Load credits in navbar ─────────────────────────────────── */
-(async function() {
-    try {
-        const r = await fetch('/api/user/profile');
-        if (r.ok) {
-            const d = await r.json();
-            document.getElementById('credit-display').textContent =
-                '💳 ' + (d.credits >= 999990 ? '∞' : fmt(d.credits)) + ' Credits';
-        }
-    } catch(e) {}
-})();
 
 /* ── Upload ─────────────────────────────────────────────────── */
 document.getElementById('upload-form').addEventListener('submit', async function(e) {
