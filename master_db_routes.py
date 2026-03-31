@@ -276,12 +276,13 @@ def sync_all_historical():
         existing_id = r.get(_SYNC_LOCK_KEY)
         if existing_id:
             existing_task = celery_app.AsyncResult(existing_id)
-            if existing_task.state in ('PENDING', 'STARTED', 'PROGRESS', 'RETRY'):
+            if existing_task.state in ('PENDING', 'STARTED', 'PROGRESS'):
                 return jsonify({
                     'task_id': existing_id,
                     'status':  'already_running',
                     'sync_type': 'full_historical',
                 })
+            # RETRY / FAILURE / SUCCESS → stale lock; allow fresh dispatch
     except Exception:
         pass  # Redis unavailable — proceed with dispatch
 
@@ -322,8 +323,10 @@ def sync_task_status(task_id):
             'records_skipped': meta.get('skipped', 0),
             'errors':          meta.get('errors', 0),
         })
+    elif task.state == 'RETRY':
+        return jsonify({'state': 'retry', 'message': 'Task failed and is being retried automatically.'})
     else:
-        return jsonify({'state': task.state})
+        return jsonify({'state': task.state.lower()})
 
 
 def _resolve_conference_code(conference_name: str) -> str:

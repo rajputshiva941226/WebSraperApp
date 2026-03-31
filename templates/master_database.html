@@ -435,6 +435,15 @@ Errors:         ${(d.errors || []).length}</pre>`;
                 <div style="margin-top:8px;background:#c6f6d5;border-radius:6px;height:8px;width:100%;">
                   <div style="background:#276749;border-radius:6px;height:8px;width:${pct}%;transition:width .4s;"></div>
                 </div>`;
+        } else if (d.state === 'retry') {
+            clearInterval(_pollTimer);
+            _clearSyncState();
+            banner.className = 'sync-banner error';
+            banner.style.display = 'block';
+            banner.innerHTML = `⚠️ <strong>Sync task encountered an error and was retrying.</strong><br>
+                The previous task has been cleared. Click <strong>Sync All Historical Data</strong> again to start a fresh sync.`;
+            btn.disabled = false;
+            btn.innerHTML = '🔄 Sync All Historical Data';
         } else if (d.state === 'failure') {
             clearInterval(_pollTimer);
             _clearSyncState();
@@ -442,7 +451,7 @@ Errors:         ${(d.errors || []).length}</pre>`;
             btn.disabled = false;
             btn.innerHTML = '🔄 Sync All Historical Data';
         }
-        // PENDING / STARTED / RETRY → keep polling
+        // PENDING / STARTED → keep polling
         // Track how many consecutive pending polls so we can show a helpful message
         if (d.state === 'pending') {
             _pendingCount = (_pendingCount || 0) + 1;
