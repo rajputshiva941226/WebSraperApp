@@ -324,7 +324,9 @@ def sync_task_status(task_id):
             'errors':          meta.get('errors', 0),
         })
     elif task.state == 'RETRY':
-        return jsonify({'state': 'retry', 'message': 'Task failed and is being retried automatically.'})
+        exc_info = task.info
+        err_msg = str(exc_info) if exc_info else 'unknown error'
+        return jsonify({'state': 'retry', 'message': f'Task failed ({err_msg}) — retrying automatically. Click Sync All again to start fresh.'})
     else:
         return jsonify({'state': task.state.lower()})
 
@@ -376,158 +378,170 @@ def _run_daily_sync(days_back: int = 1, dry_run: bool = False, celery_task=None)
 
     total_jobs = len(jobs)
     for job_idx, db_job in enumerate(jobs):
-        if celery_task and job_idx % 5 == 0:
-            celery_task.update_state(
-                state='PROGRESS',
-                meta={
-                    'current':  job_idx,
-                    'total':    total_jobs,
-                    'added':    total_added,
-                    'updated':  total_updated,
-                    'skipped':  total_skipped,
-                    'errors':   len(errors),
-                }
-            )
-        job = db_job.to_dict()
-        output_file = job.get('output_file', '')
-        if not output_file or not os.path.exists(output_file):
-            continue
-
-        conf_name = job.get('conference', '') or job.get('conference_name', '')
-        conf_code = _resolve_conference_code(conf_name)
-
         try:
-            # ── Pass 1: read CSV into an in-memory dict (dedup by email) ──
-            rows_dict = {}   # email → field dict
-            with open(output_file, 'r', encoding='utf-8') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    email = (
-                        row.get('Email') or row.get('email') or row.get('emails', '')
-                    ).strip().lower()
-                    if not email or '@' not in email or email == 'n/a':
-                        total_skipped += 1
-                        continue
-                    if email in rows_dict:       # duplicate within same file
-                        total_skipped += 1
-                        continue
-                    csv_code = (row.get('Conference_Code') or
-                                row.get('conference_code', '')).strip().upper()
-                    _aname = (row.get('Author_Name') or row.get('Name') or
-                               row.get('author_name') or row.get('full_name') or
-                               row.get('name') or row.get('author') or '')
-                    if not _aname or _aname.upper() in ('N/A', 'NA', 'NONE', 'NULL'):
-                        _fn = (row.get('first_name') or '').strip()
-                        _ln = (row.get('last_name') or '').strip()
-                        _aname = f'{_fn} {_ln}'.strip()
-                    if _aname.upper() in ('N/A', 'NA', 'NONE', 'NULL'):
-                        _aname = ''
-                    rows_dict[email] = {
-                        'author_name':   _aname,
-                        'affiliation':   row.get('Affiliation') or row.get('affiliation', ''),
-                        'article_url':   row.get('Article_URL') or row.get('URL') or row.get('Article URL', ''),
-                        'article_title': row.get('Title') or row.get('title', ''),
-                        'conference_code': csv_code or conf_code,
-                    }
+            if celery_task and job_idx % 5 == 0:
+                try:
+                    celery_task.update_state(
+                        state='PROGRESS',
+                        meta={
+                            'current':  job_idx,
+                            'total':    total_jobs,
+                            'added':    total_added,
+                            'updated':  total_updated,
+                            'skipped':  total_skipped,
+                            'errors':   len(errors),
+                        }
+                    )
+                except Exception:
+                    pass  # never let update_state crash the sync
 
-            if not rows_dict:
+            job = db_job.to_dict()
+            output_file = job.get('output_file', '')
+            if not output_file or not os.path.exists(output_file):
                 jobs_processed += 1
                 continue
 
-            all_emails = list(rows_dict.keys())
+            conf_name = job.get('conference', '') or job.get('conference_name', '')
+            conf_code = _resolve_conference_code(conf_name)
 
-            if not dry_run:
-                # ── Pass 2: one batch SELECT to find already-existing emails ──
-                # Chunk to keep IN clause manageable (PostgreSQL limit ~65k params)
-                _CHUNK = 2000
-                existing_set: set = set()
-                for ci in range(0, len(all_emails), _CHUNK):
-                    chunk = all_emails[ci: ci + _CHUNK]
-                    existing_set.update(
+            try:
+                # ── Pass 1: read CSV into an in-memory dict (dedup by email) ──
+                rows_dict = {}
+                with open(output_file, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        email = (
+                            row.get('Email') or row.get('email') or row.get('emails', '')
+                        ).strip().lower()
+                        if not email or '@' not in email or email == 'n/a':
+                            total_skipped += 1
+                            continue
+                        if email in rows_dict:
+                            total_skipped += 1
+                            continue
+                        csv_code = (row.get('Conference_Code') or
+                                    row.get('conference_code', '')).strip().upper()
+                        _aname = (row.get('Author_Name') or row.get('Name') or
+                                  row.get('author_name') or row.get('full_name') or
+                                  row.get('name') or row.get('author') or '')
+                        if not _aname or _aname.upper() in ('N/A', 'NA', 'NONE', 'NULL'):
+                            _fn = (row.get('first_name') or '').strip()
+                            _ln = (row.get('last_name') or '').strip()
+                            _aname = f'{_fn} {_ln}'.strip()
+                        if _aname.upper() in ('N/A', 'NA', 'NONE', 'NULL'):
+                            _aname = ''
+                        rows_dict[email] = {
+                            'author_name':    _aname,
+                            'affiliation':    row.get('Affiliation') or row.get('affiliation', ''),
+                            'article_url':    row.get('Article_URL') or row.get('URL') or row.get('Article URL', ''),
+                            'article_title':  row.get('Title') or row.get('title', ''),
+                            'conference_code': csv_code or conf_code,
+                        }
+
+                if not rows_dict:
+                    jobs_processed += 1
+                    continue
+
+                all_emails = list(rows_dict.keys())
+
+                if not dry_run:
+                    from sqlalchemy.dialects.postgresql import insert as _pg_insert
+                    _CHUNK = 2000
+                    existing_set: set = set()
+                    for ci in range(0, len(all_emails), _CHUNK):
+                        chunk = all_emails[ci: ci + _CHUNK]
+                        existing_set.update(
+                            e for (e,) in
+                            db.session.query(MasterDatabase.email)
+                                      .filter(MasterDatabase.email.in_(chunk))
+                                      .all()
+                        )
+
+                    to_insert    = []
+                    journal_name = job.get('journal_name', '')
+                    keyword_val  = job.get('keyword', '')
+                    now          = datetime.utcnow()
+
+                    for email, r in rows_dict.items():
+                        if email in existing_set:
+                            if r['author_name']:
+                                db.session.query(MasterDatabase).filter(
+                                    MasterDatabase.email == email,
+                                    db.or_(MasterDatabase.author_name == None,
+                                           MasterDatabase.author_name == ''),
+                                ).update({'author_name': r['author_name'],
+                                          'updated_at':  now},
+                                         synchronize_session=False)
+                            if r['conference_code']:
+                                db.session.query(MasterDatabase).filter(
+                                    MasterDatabase.email == email,
+                                    db.or_(MasterDatabase.conference_code == None,
+                                           MasterDatabase.conference_code == ''),
+                                ).update({'conference_code': r['conference_code'],
+                                          'updated_at':      now},
+                                         synchronize_session=False)
+                            total_updated += 1
+                        else:
+                            to_insert.append({
+                                'id':              str(uuid.uuid4()),
+                                'email':           email,
+                                'author_name':     r['author_name'],
+                                'affiliation':     r['affiliation'],
+                                'article_url':     r['article_url'],
+                                'article_title':   r['article_title'],
+                                'conference_name': conf_name,
+                                'conference_code': r['conference_code'],
+                                'journal_name':    journal_name,
+                                'keyword':         keyword_val,
+                                'job_id':          str(db_job.id),
+                                'scraped_date':    now,
+                                'created_at':      now,
+                                'updated_at':      now,
+                            })
+                            total_added += 1
+
+                    if to_insert:
+                        _IBATCH = 500
+                        for _bi in range(0, len(to_insert), _IBATCH):
+                            _batch = to_insert[_bi: _bi + _IBATCH]
+                            stmt = _pg_insert(MasterDatabase.__table__).values(_batch)
+                            stmt = stmt.on_conflict_do_nothing()
+                            db.session.execute(stmt)
+
+                    db.session.commit()
+                    db.session.expunge_all()
+
+                else:
+                    existing_set = set(
                         e for (e,) in
                         db.session.query(MasterDatabase.email)
-                                  .filter(MasterDatabase.email.in_(chunk))
+                                  .filter(MasterDatabase.email.in_(all_emails[:2000]))
                                   .all()
                     )
+                    total_updated += sum(1 for e in all_emails if e in existing_set)
+                    total_added   += sum(1 for e in all_emails if e not in existing_set)
 
-                # ── Pass 3: bulk-insert new, simple-update existing ───────
-                from sqlalchemy.dialects.postgresql import insert as _pg_insert
+                jobs_processed += 1
 
-                to_insert    = []
-                journal_name = job.get('journal_name', '')
-                keyword_val  = job.get('keyword', '')
-                now          = datetime.utcnow()
+            except Exception as exc:
+                db.session.rollback()
+                db.session.expunge_all()
+                try:
+                    _jid = str(db_job.id)
+                except Exception:
+                    _jid = 'unknown'
+                errors.append({'job_id': _jid, 'error': str(exc)[:200]})
 
-                for email, r in rows_dict.items():
-                    if email in existing_set:
-                        # Fill empty author_name / conference_code without CASE
-                        if r['author_name']:
-                            db.session.query(MasterDatabase).filter(
-                                MasterDatabase.email == email,
-                                db.or_(MasterDatabase.author_name == None,
-                                       MasterDatabase.author_name == ''),
-                            ).update({'author_name': r['author_name'],
-                                      'updated_at':  now},
-                                     synchronize_session=False)
-                        if r['conference_code']:
-                            db.session.query(MasterDatabase).filter(
-                                MasterDatabase.email == email,
-                                db.or_(MasterDatabase.conference_code == None,
-                                       MasterDatabase.conference_code == ''),
-                            ).update({'conference_code': r['conference_code'],
-                                      'updated_at':      now},
-                                     synchronize_session=False)
-                        total_updated += 1
-                    else:
-                        to_insert.append({
-                            'id':             str(uuid.uuid4()),
-                            'email':          email,
-                            'author_name':    r['author_name'],
-                            'affiliation':    r['affiliation'],
-                            'article_url':    r['article_url'],
-                            'article_title':  r['article_title'],
-                            'conference_name': conf_name,
-                            'conference_code': r['conference_code'],
-                            'journal_name':   journal_name,
-                            'keyword':        keyword_val,
-                            'job_id':         str(db_job.id),
-                            'scraped_date':   now,
-                            'created_at':     now,
-                            'updated_at':     now,
-                        })
-                        total_added += 1
-
-                if to_insert:
-                    # Insert in batches of 500 — PostgreSQL bind-param limit is
-                    # 65535; each record has ~14 cols so max safe batch ≈ 4000.
-                    # 500 keeps well within limits and avoids memory spikes.
-                    _IBATCH = 500
-                    for _bi in range(0, len(to_insert), _IBATCH):
-                        _batch = to_insert[_bi: _bi + _IBATCH]
-                        stmt = _pg_insert(MasterDatabase.__table__).values(_batch)
-                        stmt = stmt.on_conflict_do_nothing()  # catches any unique violation
-                        db.session.execute(stmt)
-
-                db.session.commit()
-                db.session.expunge_all()   # free ORM identity map between jobs
-
-            else:
-                # Dry-run: one batch SELECT is enough to count
-                existing_set = set(
-                    e for (e,) in
-                    db.session.query(MasterDatabase.email)
-                              .filter(MasterDatabase.email.in_(all_emails[:2000]))
-                              .all()
-                )
-                total_updated += sum(1 for e in all_emails if e in existing_set)
-                total_added   += sum(1 for e in all_emails if e not in existing_set)
-
-            jobs_processed += 1
-
-        except Exception as exc:
-            db.session.rollback()
-            db.session.expunge_all()
-            errors.append({'job_id': str(db_job.id), 'error': str(exc)[:120]})
+        except Exception as outer_exc:
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+            try:
+                _jid = str(db_job.id)
+            except Exception:
+                _jid = f'idx-{job_idx}'
+            errors.append({'job_id': _jid, 'error': f'outer: {str(outer_exc)[:200]}'})
 
     return {
         'success':        True,
@@ -796,16 +810,51 @@ def master_database_stats():
 @master_db_bp.route('/api/master-database/journals')
 @internal_user_required
 def master_db_journals():
-    """Return distinct journal names stored in the master database."""
-    rows = (
-        db.session.query(MasterDatabase.journal_name)
-          .filter(MasterDatabase.journal_name.isnot(None))
-          .filter(MasterDatabase.journal_name != '')
-          .distinct()
-          .order_by(MasterDatabase.journal_name)
-          .all()
-    )
-    return jsonify({'journals': [r[0] for r in rows]})
+    """Return the known scraper/journal names (matches what Job.journal_name stores)."""
+    # These values match JOURNALS[key]['name'] in app.py — the exact strings
+    # written to Job.journal_name when a job is created.
+    journals = [
+        'BMJ Journals',
+        'Cambridge University Press',
+        'Emerald Insight',
+        'Europe PMC',
+        'Lippincott',
+        'MDPI',
+        'Nature',
+        'OnlineWiley',
+        'Oxford Academic',
+        'PDF Scraper',
+        'PubMed',
+        'SAGE Journals',
+        'Science Direct',
+        'Springer',
+        'TandFonline',
+    ]
+    return jsonify({'journals': sorted(journals)})
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Clear master database (admin only)
+# ═══════════════════════════════════════════════════════════════════
+
+@master_db_bp.route('/api/master-database/clear', methods=['POST'])
+@admin_required
+def clear_master_database():
+    """Wipe all rows from master_database. Admin only."""
+    try:
+        count = db.session.query(MasterDatabase).count()
+        db.session.query(MasterDatabase).delete(synchronize_session=False)
+        db.session.commit()
+        # Also clear the Redis sync lock so a fresh sync can be dispatched
+        try:
+            r = _get_redis()
+            r.delete(_SYNC_LOCK_KEY)
+        except Exception:
+            pass
+        return jsonify({'success': True, 'deleted': count})
+    except Exception as exc:
+        db.session.rollback()
+        return jsonify({'error': str(exc)}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════
