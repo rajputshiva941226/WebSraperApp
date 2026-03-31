@@ -161,7 +161,7 @@ def append_scraped_results():
         return jsonify({'error': 'Output file not found'}), 404
 
     # Resolve conference_code from the job's conference_name
-    conf_name = job.get('conference_name', '')
+    conf_name = job.get('conference', '') or job.get('conference_name', '')
     conf_code = _resolve_conference_code(conf_name)
 
     try:
@@ -249,6 +249,25 @@ def sync_daily_manual():
     return jsonify(result)
 
 
+@master_db_bp.route('/api/master-database/sync-all', methods=['POST'])
+@admin_required
+def sync_all_historical():
+    """
+    One-time admin trigger to backfill ALL completed jobs into master DB.
+    Scans every completed job ever recorded (regardless of age).
+
+    Body (JSON, all optional):
+        dry_run  bool  — if true, counts only, no DB writes
+    """
+    data    = request.get_json(silent=True) or {}
+    dry_run = bool(data.get('dry_run', False))
+
+    # Use a very large days_back to cover all historical jobs
+    result = _run_daily_sync(days_back=36500, dry_run=dry_run)
+    result['sync_type'] = 'full_historical'
+    return jsonify(result)
+
+
 def _resolve_conference_code(conference_name: str) -> str:
     """
     Look up the short code for a conference display name.
@@ -300,7 +319,7 @@ def _run_daily_sync(days_back: int = 1, dry_run: bool = False) -> dict:
         if not output_file or not os.path.exists(output_file):
             continue
 
-        conf_name = job.get('conference_name', '')
+        conf_name = job.get('conference', '') or job.get('conference_name', '')
         conf_code = _resolve_conference_code(conf_name)
 
         try:

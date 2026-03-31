@@ -1,0 +1,51 @@
+[Unit]
+Description=Journal Scraper Celery Beat Scheduler
+After=network.target postgresql.service redis.service
+Wants=postgresql.service redis.service
+# Beat must start after the worker so tasks actually get consumed
+After=journal-scraper-celery.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/var/www/journal-scraper
+
+# ---- Environment ----
+Environment=SECRET_KEY=CHANGE_THIS_TO_A_LONG_RANDOM_SECRET
+Environment=DATABASE_URL=postgresql://scraper_user:ScraperPass2024!@localhost:5432/journal_scraper
+Environment=REDIS_URL=redis://localhost:6379/0
+Environment=UPLOAD_FOLDER=/var/www/journal-scraper/results
+Environment=DATA_FOLDER=/var/www/journal-scraper/data
+Environment=PYTHONPATH=/var/www/journal-scraper
+Environment=DISPLAY=:99
+
+# ---- Process ----
+# Only ONE beat instance should ever run — it is the scheduler.
+# It sends tasks to the broker; workers pick them up.
+ExecStart=/var/www/journal-scraper/venv/bin/celery \
+    -A celery_worker \
+    beat \
+    --loglevel=info \
+    --logfile=/var/log/journal-scraper/celery-beat.log \
+    --pidfile=/tmp/celery-beat-journal-scraper.pid \
+    --scheduler celery.beat:PersistentScheduler
+
+ExecReload=/bin/kill -s HUP $MAINPID
+
+# Remove stale PID file before restart to avoid "already running" errors
+ExecStartPre=/bin/rm -f /tmp/celery-beat-journal-scraper.pid
+
+Restart=on-failure
+RestartSec=15
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=journal-scraper-celery-beat
+
+# ---- Security ----
+PrivateTmp=false
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

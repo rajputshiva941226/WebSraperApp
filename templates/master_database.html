@@ -5,517 +5,447 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Master Database - Journal Scraper</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #fafafa; min-height: 100vh; }
 
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #fafafa;
-            min-height: 100vh;
-        }
+        .navbar { background: #000; padding: 15px 0; box-shadow: 0 2px 10px rgba(0,0,0,0.15); }
+        .nav-container { max-width: 1400px; margin: 0 auto; padding: 0 20px; display: flex; justify-content: space-between; align-items: center; }
+        .logo { color: white; font-size: 24px; font-weight: bold; text-decoration: none; }
+        .nav-links { display: flex; gap: 30px; align-items: center; }
+        .nav-links a { color: white; text-decoration: none; font-weight: 500; }
+        .nav-links a:hover { color: #9f7aea; }
+        .credit-badge { background: linear-gradient(135deg,#805ad5,#9f7aea); padding: 6px 16px; border-radius: 20px; font-size: 14px; font-weight: 600; color: white; }
 
-        .navbar {
-            background: #000000;
-            padding: 15px 0;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
-        }
+        .container { max-width: 1400px; margin: 30px auto; padding: 0 20px; }
+        .page-header { margin-bottom: 30px; }
+        .page-header h1 { font-size: 32px; color: #1a202c; margin-bottom: 6px; }
+        .page-header p { color: #718096; font-size: 15px; }
 
-        .nav-container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 0 20px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
+        /* Tabs */
+        .tab-nav { display: flex; gap: 8px; border-bottom: 2px solid #e2e8f0; margin-bottom: 28px; }
+        .tab-btn { padding: 10px 22px; border: none; background: none; font-weight: 600; font-size: 14px; color: #718096; cursor: pointer; border-bottom: 3px solid transparent; margin-bottom: -2px; transition: all 0.2s; }
+        .tab-btn.active { color: #805ad5; border-bottom-color: #805ad5; }
+        .tab-btn:hover { color: #805ad5; }
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; }
 
-        .logo {
-            color: white;
-            font-size: 24px;
-            font-weight: bold;
-            text-decoration: none;
-        }
+        .panel-card { background: white; border-radius: 12px; padding: 28px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); margin-bottom: 24px; }
+        .panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 22px; }
+        .panel-header h2 { font-size: 20px; color: #1a202c; font-weight: 700; }
 
-        .nav-links {
-            display: flex;
-            gap: 30px;
-            align-items: center;
-        }
+        .btn { padding: 10px 20px; border-radius: 8px; border: none; font-weight: 600; cursor: pointer; transition: all 0.2s; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
+        .btn-primary  { background: linear-gradient(135deg,#805ad5,#9f7aea); color: white; }
+        .btn-primary:hover  { transform: translateY(-1px); box-shadow: 0 5px 15px rgba(128,90,213,0.3); }
+        .btn-success  { background: #48bb78; color: white; }
+        .btn-success:hover  { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(72,187,120,0.3); }
+        .btn-warning  { background: #ed8936; color: white; }
+        .btn-warning:hover  { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(237,137,54,0.3); }
+        .btn-info     { background: #4299e1; color: white; }
+        .btn-info:hover     { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(66,153,225,0.3); }
+        .btn-danger   { background: #f56565; color: white; }
+        .btn:disabled { opacity: 0.55; cursor: not-allowed; transform: none !important; }
 
-        .nav-links a {
-            color: white;
-            text-decoration: none;
-            font-weight: 500;
-        }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 18px; margin-bottom: 28px; }
+        .stat-box { background: linear-gradient(135deg,#805ad5,#6b46c1); border-radius: 12px; padding: 24px; color: white; text-align: center; }
+        .stat-box .val { font-size: 40px; font-weight: 800; }
+        .stat-box .lbl { font-size: 13px; opacity: 0.85; margin-top: 4px; }
 
-        .nav-links a:hover {
-            color: #9f7aea;
-        }
+        .sync-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 22px; }
+        .sync-result { background: #f0fff4; border: 1px solid #9ae6b4; border-radius: 8px; padding: 16px; margin-top: 18px; display: none; }
+        .sync-result.error { background: #fff5f5; border-color: #fed7d7; }
+        .sync-result pre { font-size: 12px; white-space: pre-wrap; word-break: break-word; }
 
-        .credit-badge {
-            background: linear-gradient(135deg, #805ad5, #9f7aea);
-            padding: 6px 16px;
-            border-radius: 20px;
-            font-size: 14px;
-            font-weight: 600;
-            color: white;
-        }
+        table { width: 100%; border-collapse: collapse; }
+        th { background: #f7fafc; padding: 11px 12px; text-align: left; font-weight: 600; color: #4a5568; border-bottom: 2px solid #e2e8f0; font-size: 13px; }
+        td { padding: 11px 12px; border-bottom: 1px solid #e2e8f0; font-size: 13px; color: #2d3748; }
+        tr:hover td { background: #f7fafc; }
 
-        .container {
-            max-width: 1400px;
-            margin: 30px auto;
-            padding: 0 20px;
-        }
+        .form-group { margin-bottom: 18px; }
+        .form-group label { display: block; margin-bottom: 6px; font-weight: 600; color: #4a5568; font-size: 14px; }
+        .form-group input, .form-group select { width: 100%; padding: 10px 12px; border: 2px solid #e2e8f0; border-radius: 8px; font-size: 14px; }
+        .form-group input:focus, .form-group select:focus { outline: none; border-color: #805ad5; }
+        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 
-        .page-header {
-            margin-bottom: 30px;
-        }
+        .alert { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; }
+        .alert-success { background: #f0fff4; border: 1px solid #9ae6b4; color: #276749; }
+        .alert-error   { background: #fff5f5; border: 1px solid #fed7d7; color: #742a2a; }
 
-        .page-header h1 {
-            font-size: 32px;
-            color: #1a202c;
-            margin-bottom: 10px;
-        }
+        .search-bar { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+        .search-bar input, .search-bar select { padding: 9px 12px; border: 2px solid #e2e8f0; border-radius: 8px; font-size: 14px; flex: 1; min-width: 160px; }
+        .search-bar input:focus, .search-bar select:focus { outline: none; border-color: #805ad5; }
 
-        .card {
-            background: white;
-            border-radius: 12px;
-            padding: 25px;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
-            margin-bottom: 20px;
-        }
+        .pagination { display: flex; justify-content: center; gap: 8px; margin-top: 18px; }
+        .pagination button { padding: 6px 14px; border: 2px solid #e2e8f0; border-radius: 8px; background: white; cursor: pointer; font-size: 13px; font-weight: 600; }
+        .pagination button.active { background: #805ad5; color: white; border-color: #805ad5; }
+        .pagination button:disabled { opacity: 0.4; cursor: not-allowed; }
 
-        .card h2 {
-            font-size: 20px;
-            color: #1a202c;
-            margin-bottom: 20px;
-        }
+        .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.4); border-top-color: white; border-radius: 50%; animation: spin 0.7s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
 
-        .form-group {
-            margin-bottom: 20px;
-        }
-
-        .form-group label {
-            display: block;
-            margin-bottom: 8px;
-            font-weight: 600;
-            color: #4a5568;
-        }
-
-        .form-group input,
-        .form-group select,
-        .form-group textarea {
-            width: 100%;
-            padding: 10px;
-            border: 2px solid #e2e8f0;
-            border-radius: 8px;
-            font-size: 14px;
-            font-family: inherit;
-        }
-
-        .form-group input:focus,
-        .form-group select:focus,
-        .form-group textarea:focus {
-            outline: none;
-            border-color: #805ad5;
-        }
-
-        .btn {
-            padding: 10px 20px;
-            border: none;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s;
-        }
-
-        .btn-primary {
-            background: #805ad5;
-            color: white;
-        }
-
-        .btn-primary:hover {
-            background: #6b46c1;
-        }
-
-        .btn-secondary {
-            background: #e2e8f0;
-            color: #4a5568;
-        }
-
-        .btn-secondary:hover {
-            background: #cbd5e0;
-        }
-
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-            margin-bottom: 20px;
-        }
-
-        .stat-card {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 20px;
-            border-radius: 8px;
-            text-align: center;
-        }
-
-        .stat-value {
-            font-size: 28px;
-            font-weight: bold;
-            margin-bottom: 5px;
-        }
-
-        .stat-label {
-            font-size: 14px;
-            opacity: 0.9;
-        }
-
-        .data-table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 15px;
-        }
-
-        .data-table thead {
-            background: #f5f5f5;
-        }
-
-        .data-table th,
-        .data-table td {
-            padding: 12px;
-            text-align: left;
-            border-bottom: 1px solid #e2e8f0;
-        }
-
-        .data-table th {
-            font-weight: 600;
-            color: #333;
-        }
-
-        .data-table tbody tr:hover {
-            background: #f9f9f9;
-        }
-
-        .alert {
-            padding: 15px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-        }
-
-        .alert-success {
-            background: #c6f6d5;
-            color: #22543d;
-        }
-
-        .alert-error {
-            background: #fed7d7;
-            color: #742a2a;
-        }
-
-        .alert-info {
-            background: #bee3f8;
-            color: #2c5282;
-        }
-
-        .tabs {
-            display: flex;
-            gap: 10px;
-            border-bottom: 2px solid #e2e8f0;
-            margin-bottom: 20px;
-        }
-
-        .tab-button {
-            padding: 10px 20px;
-            background: none;
-            border: none;
-            cursor: pointer;
-            font-size: 16px;
-            color: #666;
-            border-bottom: 3px solid transparent;
-            transition: all 0.3s;
-        }
-
-        .tab-button.active {
-            color: #805ad5;
-            border-bottom-color: #805ad5;
-        }
-
-        .tab-button:hover {
-            color: #805ad5;
-        }
-
-        .tab-content {
-            display: none;
-        }
-
-        .tab-content.active {
-            display: block;
-        }
+        .download-bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+        .result-count { color: #718096; font-size: 13px; margin-left: auto; }
     </style>
 </head>
 <body>
-    <nav class="navbar">
-        <div class="nav-container">
-            <a href="/" class="logo">📚 Journal Scraper</a>
-            <div class="nav-links">
-                <a href="/scraper">Start Scraping</a>
-                <a href="/dashboard">Dashboard</a>
-                <a href="/jobs">Jobs</a>
-                <span class="credit-badge">💳 {{ session.get('credits', 0) }} Credits</span>
-                <a href="/admin">Admin Panel</a>
-                <a href="/profile">👤 {{ session.get('username') }}</a>
-                <a href="/logout">Logout</a>
-            </div>
+
+<!-- ── Navbar ── -->
+<nav class="navbar">
+    <div class="nav-container">
+        <a href="/" class="logo">🗂️ Journal Scraper</a>
+        <div class="nav-links">
+            <a href="/scraper">Start Scraping</a>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/jobs">Jobs</a>
+            <span class="credit-badge" id="credit-display">Loading...</span>
+            <a href="/admin">Admin Panel</a>
+            <a href="/logout">Logout</a>
         </div>
-    </nav>
+    </div>
+</nav>
 
-    <div class="container">
-        <div class="page-header">
-            <h1>💾 Master Database</h1>
-            <p>Manage and view master database records</p>
-        </div>
+<!-- ── Main ── -->
+<div class="container">
+    <div class="page-header">
+        <h1>🗄️ Master Database</h1>
+        <p>Manage and view master database records</p>
+    </div>
 
-        <div id="alert-container"></div>
+    <div class="tab-nav">
+        <button class="tab-btn active" onclick="switchTab('upload', this)">Upload Data</button>
+        <button class="tab-btn" onclick="switchTab('search', this)">Search Database</button>
+        <button class="tab-btn" onclick="switchTab('stats', this)">Statistics</button>
+    </div>
 
-        <div class="tabs">
-            <button class="tab-button active" onclick="switchTab('upload')">Upload Data</button>
-            <button class="tab-button" onclick="switchTab('search')">Search Database</button>
-            <button class="tab-button" onclick="switchTab('stats')">Statistics</button>
-        </div>
-
-        <!-- Upload Tab -->
-        <div id="upload-tab" class="tab-content active">
-            <div class="card">
-                <h2>Upload Conference Master Data</h2>
-                <form id="upload-form">
+    <!-- ══ Tab: Upload Data ══════════════════════════════════════ -->
+    <div id="tab-upload" class="tab-panel active">
+        <div class="panel-card">
+            <div class="panel-header"><h2>Upload Conference Data</h2></div>
+            <div id="upload-alert"></div>
+            <form id="upload-form" enctype="multipart/form-data">
+                <div class="form-row">
                     <div class="form-group">
-                        <label for="conference-name">Conference Name *</label>
-                        <input type="text" id="conference-name" name="conference_name" placeholder="e.g., Neurology World Conference" required>
+                        <label>Conference Name *</label>
+                        <input type="text" id="conf-name" placeholder="e.g. Infectious Diseases World Conference" required>
                     </div>
                     <div class="form-group">
-                        <label for="conference-year">Conference Year</label>
-                        <input type="number" id="conference-year" name="conference_year" placeholder="2024">
+                        <label>Conference Code</label>
+                        <input type="text" id="conf-code" placeholder="e.g. IDWC" maxlength="30">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Conference Year</label>
+                        <input type="number" id="conf-year" placeholder="2026" min="2000" max="2100">
                     </div>
                     <div class="form-group">
-                        <label for="conference-location">Conference Location</label>
-                        <input type="text" id="conference-location" name="conference_location" placeholder="e.g., Vienna, Austria">
+                        <label>Location</label>
+                        <input type="text" id="conf-location" placeholder="e.g. Vienna, Austria">
                     </div>
-                    <div class="form-group">
-                        <label for="file">CSV or XLSX File *</label>
-                        <input type="file" id="file" name="file" accept=".csv,.xlsx" required>
-                        <small style="color: #718096;">Required columns: author_name, email. Optional: affiliation</small>
-                    </div>
-                    <button type="submit" class="btn btn-primary">Upload Data</button>
-                </form>
-            </div>
-        </div>
-
-        <!-- Search Tab -->
-        <div id="search-tab" class="tab-content">
-            <div class="card">
-                <h2>Search Master Database</h2>
-                <div class="form-group">
-                    <label for="search-keyword">Keyword/Author/Email</label>
-                    <input type="text" id="search-keyword" placeholder="Search...">
                 </div>
                 <div class="form-group">
-                    <label for="search-conference">Conference</label>
-                    <input type="text" id="search-conference" placeholder="Filter by conference...">
+                    <label>CSV / XLSX File * <small style="color:#718096">(columns: author_name, email, affiliation)</small></label>
+                    <input type="file" id="upload-file" accept=".csv,.xlsx" required>
                 </div>
-                <div class="form-group">
-                    <label for="search-journal">Journal</label>
-                    <input type="text" id="search-journal" placeholder="Filter by journal...">
-                </div>
-                <button class="btn btn-primary" onclick="searchDatabase()">Search</button>
-                <button class="btn btn-secondary" onclick="downloadDatabase()">Download All</button>
-
-                <table class="data-table" id="search-results" style="display: none; margin-top: 20px;">
-                    <thead>
-                        <tr>
-                            <th>Author Name</th>
-                            <th>Email</th>
-                            <th>Conference</th>
-                            <th>Journal</th>
-                            <th>Keyword</th>
-                            <th>Date</th>
-                        </tr>
-                    </thead>
-                    <tbody id="search-results-body">
-                    </tbody>
-                </table>
-                <p id="search-message" style="color: #718096; margin-top: 20px;"></p>
-            </div>
-        </div>
-
-        <!-- Stats Tab -->
-        <div id="stats-tab" class="tab-content">
-            <div class="card">
-                <h2>Database Statistics</h2>
-                <button class="btn btn-primary" onclick="loadStats()">Load Statistics</button>
-
-                <div id="stats-container" style="display: none; margin-top: 20px;">
-                    <div class="stats-grid">
-                        <div class="stat-card">
-                            <div class="stat-value" id="stat-total">0</div>
-                            <div class="stat-label">Total Records</div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-value" id="stat-conferences">0</div>
-                            <div class="stat-label">Unique Conferences</div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-value" id="stat-journals">0</div>
-                            <div class="stat-label">Unique Journals</div>
-                        </div>
-                    </div>
-
-                    <h3 style="margin-top: 30px; margin-bottom: 15px;">Top Conferences</h3>
-                    <table class="data-table">
-                        <thead>
-                            <tr>
-                                <th>Conference</th>
-                                <th>Records</th>
-                            </tr>
-                        </thead>
-                        <tbody id="top-conferences">
-                        </tbody>
-                    </table>
-                </div>
-            </div>
+                <button type="submit" class="btn btn-primary" id="upload-btn">📤 Upload Data</button>
+            </form>
         </div>
     </div>
 
-    <script>
-        function switchTab(tabName) {
-            document.querySelectorAll('.tab-content').forEach(tab => {
-                tab.classList.remove('active');
-            });
-            document.querySelectorAll('.tab-button').forEach(btn => {
-                btn.classList.remove('active');
-            });
-            
-            document.getElementById(tabName + '-tab').classList.add('active');
-            event.target.classList.add('active');
-        }
-
-        function showAlert(message, type = 'success') {
-            const container = document.getElementById('alert-container');
-            const alert = document.createElement('div');
-            alert.className = `alert alert-${type}`;
-            alert.textContent = message;
-            container.innerHTML = '';
-            container.appendChild(alert);
-            
-            setTimeout(() => {
-                alert.style.display = 'none';
-            }, 5000);
-        }
-
-        // Upload form
-        document.getElementById('upload-form').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            
-            const formData = new FormData(e.target);
-            
-            try {
-                const response = await fetch('/api/master-database/upload', {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                const data = await response.json();
-                
-                if (response.ok) {
-                    showAlert(`Upload successful! Added: ${data.records_added}, Updated: ${data.records_updated}, Skipped: ${data.records_skipped}`, 'success');
-                    e.target.reset();
-                } else {
-                    showAlert(data.error || 'Upload failed', 'error');
-                }
-            } catch (error) {
-                console.error('Error:', error);
-                showAlert('Network error', 'error');
-            }
-        });
-
-        // Search database
-        async function searchDatabase() {
-            const keyword = document.getElementById('search-keyword').value;
-            const conference = document.getElementById('search-conference').value;
-            const journal = document.getElementById('search-journal').value;
-            
-            try {
-                const params = new URLSearchParams();
-                if (keyword) params.append('keyword', keyword);
-                if (conference) params.append('conference', conference);
-                if (journal) params.append('journal', journal);
-                
-                const response = await fetch(`/api/master-database/search?${params}`);
-                const data = await response.json();
-                
-                const tbody = document.getElementById('search-results-body');
-                const resultsTable = document.getElementById('search-results');
-                const message = document.getElementById('search-message');
-                
-                if (data.records && data.records.length > 0) {
-                    tbody.innerHTML = data.records.map(record => `
-                        <tr>
-                            <td>${record.author_name}</td>
-                            <td>${record.email}</td>
-                            <td>${record.conference_name || 'N/A'}</td>
-                            <td>${record.journal_name || 'N/A'}</td>
-                            <td>${record.keyword || 'N/A'}</td>
-                            <td>${new Date(record.scraped_date).toLocaleDateString()}</td>
-                        </tr>
-                    `).join('');
-                    resultsTable.style.display = 'table';
-                    message.textContent = `Found ${data.total} records`;
-                } else {
-                    resultsTable.style.display = 'none';
-                    message.textContent = 'No records found';
-                }
-            } catch (error) {
-                console.error('Error:', error);
-                showAlert('Search failed', 'error');
-            }
-        }
-
-        // Download database
-        function downloadDatabase() {
-            const format = confirm('Download as XLSX? (Cancel for CSV)') ? 'xlsx' : 'csv';
-            window.location.href = `/api/master-database/download?format=${format}`;
-        }
-
-        // Load statistics
-        async function loadStats() {
-            try {
-                const response = await fetch('/api/master-database/stats');
-                const data = await response.json();
-                
-                document.getElementById('stat-total').textContent = data.total_records;
-                document.getElementById('stat-conferences').textContent = data.unique_conferences;
-                document.getElementById('stat-journals').textContent = data.unique_journals;
-                
-                const tbody = document.getElementById('top-conferences');
-                tbody.innerHTML = data.top_conferences.map(conf => `
+    <!-- ══ Tab: Search Database ══════════════════════════════════ -->
+    <div id="tab-search" class="tab-panel">
+        <div class="panel-card">
+            <div class="panel-header">
+                <h2>Search Master Database</h2>
+                <div class="download-bar">
+                    <button class="btn btn-success" onclick="downloadMaster('csv')">⬇️ CSV</button>
+                    <button class="btn btn-info"    onclick="downloadMaster('xlsx')">⬇️ XLSX</button>
+                </div>
+            </div>
+            <div class="search-bar">
+                <input type="text"   id="search-keyword"    placeholder="Keyword / author / email...">
+                <input type="text"   id="search-conference" placeholder="Conference name...">
+                <input type="text"   id="search-journal"    placeholder="Journal...">
+                <button class="btn btn-primary" onclick="searchDatabase()">🔍 Search</button>
+                <button class="btn btn-warning" onclick="clearSearch()">✕ Clear</button>
+            </div>
+            <div id="search-count" class="result-count"></div>
+            <table id="search-table">
+                <thead>
                     <tr>
-                        <td>${conf.conference}</td>
-                        <td>${conf.count}</td>
+                        <th>Author</th><th>Email</th><th>Conference</th>
+                        <th>Journal</th><th>Keyword</th><th>Date</th>
                     </tr>
-                `).join('');
-                
-                document.getElementById('stats-container').style.display = 'block';
-            } catch (error) {
-                console.error('Error:', error);
-                showAlert('Failed to load statistics', 'error');
-            }
+                </thead>
+                <tbody id="search-body">
+                    <tr><td colspan="6" style="text-align:center;color:#718096;padding:30px">Enter search terms above and click Search</td></tr>
+                </tbody>
+            </table>
+            <div class="pagination" id="search-pagination"></div>
+        </div>
+    </div>
+
+    <!-- ══ Tab: Statistics ═══════════════════════════════════════ -->
+    <div id="tab-stats" class="tab-panel">
+        <div class="panel-card">
+            <div class="panel-header"><h2>Database Statistics</h2></div>
+
+            <!-- Action buttons -->
+            <div class="sync-actions">
+                <button class="btn btn-primary" onclick="loadStats()">📊 Load Statistics</button>
+                <button class="btn btn-success" onclick="syncAll(false)" id="sync-all-btn">🔄 Sync All Historical Data</button>
+                <button class="btn btn-info"    onclick="syncRecent(false)" id="sync-recent-btn">⏱️ Sync Recent (1 day)</button>
+                <button class="btn btn-warning" onclick="syncAll(true)"   id="dry-run-btn">🧪 Dry Run (count only)</button>
+            </div>
+
+            <!-- Sync result display -->
+            <div id="sync-result" class="sync-result"></div>
+
+            <!-- Stat cards -->
+            <div class="stats-grid" id="stats-cards" style="margin-top:20px">
+                <div class="stat-box"><div class="val" id="stat-total">—</div><div class="lbl">Total Records</div></div>
+                <div class="stat-box"><div class="val" id="stat-conf">—</div><div class="lbl">Unique Conferences</div></div>
+                <div class="stat-box"><div class="val" id="stat-jrnl">—</div><div class="lbl">Unique Journals</div></div>
+            </div>
+
+            <!-- Top Conferences -->
+            <h3 style="font-size:16px;color:#1a202c;margin-bottom:12px;margin-top:8px">Top Conferences</h3>
+            <table>
+                <thead><tr><th>Conference</th><th>Records</th><th>Last Updated</th></tr></thead>
+                <tbody id="top-conf-body">
+                    <tr><td colspan="3" style="text-align:center;color:#718096;padding:20px">Click "Load Statistics" to populate</td></tr>
+                </tbody>
+            </table>
+
+            <!-- Top Keywords -->
+            <h3 style="font-size:16px;color:#1a202c;margin-bottom:12px;margin-top:24px">Top Keywords</h3>
+            <table>
+                <thead><tr><th>Keyword</th><th>Records</th></tr></thead>
+                <tbody id="top-kw-body"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+/* ── Helpers ──────────────────────────────────────────────────── */
+function switchTab(name, btn) {
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('tab-' + name).classList.add('active');
+    btn.classList.add('active');
+}
+
+function showAlert(containerId, msg, type) {
+    const el = document.getElementById(containerId);
+    el.innerHTML = `<div class="alert alert-${type}">${msg}</div>`;
+    setTimeout(() => { el.innerHTML = ''; }, 6000);
+}
+
+function fmt(n) { return n === null || n === undefined ? '—' : Number(n).toLocaleString(); }
+
+function fmtDate(s) {
+    if (!s) return '—';
+    try { return new Date(s).toLocaleDateString('en-GB', {year:'numeric',month:'short',day:'numeric'}); }
+    catch(e) { return s.slice(0,10); }
+}
+
+/* ── Load credits in navbar ─────────────────────────────────── */
+(async function() {
+    try {
+        const r = await fetch('/api/user/profile');
+        if (r.ok) {
+            const d = await r.json();
+            document.getElementById('credit-display').textContent =
+                '💳 ' + (d.credits >= 999990 ? '∞' : fmt(d.credits)) + ' Credits';
         }
-    </script>
+    } catch(e) {}
+})();
+
+/* ── Upload ─────────────────────────────────────────────────── */
+document.getElementById('upload-form').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const btn = document.getElementById('upload-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Uploading…';
+
+    const fd = new FormData();
+    fd.append('conference_name', document.getElementById('conf-name').value.trim());
+    fd.append('conference_code', document.getElementById('conf-code').value.trim());
+    fd.append('conference_year', document.getElementById('conf-year').value);
+    fd.append('conference_location', document.getElementById('conf-location').value.trim());
+    fd.append('file', document.getElementById('upload-file').files[0]);
+
+    try {
+        const r = await fetch('/api/master-database/upload', { method: 'POST', body: fd });
+        const d = await r.json();
+        if (r.ok && d.success) {
+            showAlert('upload-alert',
+                `✅ Upload complete — Added: ${fmt(d.records_added)}, Updated: ${fmt(d.records_updated)}, Skipped: ${fmt(d.records_skipped)}`,
+                'success');
+            e.target.reset();
+        } else {
+            showAlert('upload-alert', '❌ ' + (d.error || 'Upload failed'), 'error');
+        }
+    } catch(err) {
+        showAlert('upload-alert', '❌ Network error: ' + err.message, 'error');
+    }
+    btn.disabled = false;
+    btn.innerHTML = '📤 Upload Data';
+});
+
+/* ── Search ─────────────────────────────────────────────────── */
+let _searchOffset = 0;
+const _searchLimit = 50;
+
+async function searchDatabase(offset) {
+    _searchOffset = offset || 0;
+    const kw   = document.getElementById('search-keyword').value.trim();
+    const conf = document.getElementById('search-conference').value.trim();
+    const jrnl = document.getElementById('search-journal').value.trim();
+    const params = new URLSearchParams({limit: _searchLimit, offset: _searchOffset});
+    if (kw)   params.set('keyword', kw);
+    if (conf) params.set('conference', conf);
+    if (jrnl) params.set('journal', jrnl);
+
+    const tbody = document.getElementById('search-body');
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:20px">Loading…</td></tr>';
+
+    try {
+        const r = await fetch('/api/master-database/search?' + params);
+        const d = await r.json();
+        document.getElementById('search-count').textContent =
+            `Showing ${d.offset + 1}–${Math.min(d.offset + d.limit, d.total)} of ${fmt(d.total)} records`;
+
+        tbody.innerHTML = d.records.length === 0
+            ? '<tr><td colspan="6" style="text-align:center;color:#718096;padding:20px">No records found</td></tr>'
+            : d.records.map(row => `
+                <tr>
+                    <td>${row.author_name || '—'}</td>
+                    <td>${row.email || '—'}</td>
+                    <td>${row.conference_name || '—'}</td>
+                    <td>${row.journal_name || '—'}</td>
+                    <td>${row.keyword || '—'}</td>
+                    <td>${fmtDate(row.created_at)}</td>
+                </tr>`).join('');
+
+        renderPagination(d.total, _searchOffset, _searchLimit);
+    } catch(err) {
+        tbody.innerHTML = `<tr><td colspan="6" style="color:#f56565;padding:20px">${err.message}</td></tr>`;
+    }
+}
+
+function clearSearch() {
+    document.getElementById('search-keyword').value = '';
+    document.getElementById('search-conference').value = '';
+    document.getElementById('search-journal').value = '';
+    document.getElementById('search-body').innerHTML =
+        '<tr><td colspan="6" style="text-align:center;color:#718096;padding:30px">Enter search terms above and click Search</td></tr>';
+    document.getElementById('search-count').textContent = '';
+    document.getElementById('search-pagination').innerHTML = '';
+}
+
+function renderPagination(total, offset, limit) {
+    const container = document.getElementById('search-pagination');
+    const totalPages = Math.ceil(total / limit);
+    const currentPage = Math.floor(offset / limit);
+    if (totalPages <= 1) { container.innerHTML = ''; return; }
+    let html = `<button onclick="searchDatabase(${Math.max(0, offset - limit)})" ${offset === 0 ? 'disabled' : ''}>‹ Prev</button>`;
+    for (let i = Math.max(0, currentPage - 2); i <= Math.min(totalPages - 1, currentPage + 2); i++) {
+        html += `<button class="${i === currentPage ? 'active' : ''}" onclick="searchDatabase(${i * limit})">${i + 1}</button>`;
+    }
+    html += `<button onclick="searchDatabase(${Math.min((totalPages - 1) * limit, offset + limit)})" ${currentPage >= totalPages - 1 ? 'disabled' : ''}>Next ›</button>`;
+    container.innerHTML = html;
+}
+
+function downloadMaster(fmt) {
+    const conf = document.getElementById('search-conference').value.trim();
+    const kw   = document.getElementById('search-keyword').value.trim();
+    const params = new URLSearchParams({ format: fmt });
+    if (conf) params.set('conference', conf);
+    if (kw)   params.set('keyword', kw);
+    window.location.href = '/api/master-database/download?' + params;
+}
+
+/* ── Statistics ─────────────────────────────────────────────── */
+async function loadStats() {
+    document.getElementById('stat-total').textContent = '…';
+    document.getElementById('stat-conf').textContent  = '…';
+    document.getElementById('stat-jrnl').textContent  = '…';
+    document.getElementById('top-conf-body').innerHTML =
+        '<tr><td colspan="3" style="text-align:center;padding:14px">Loading…</td></tr>';
+
+    try {
+        const r = await fetch('/api/master-database/stats');
+        const d = await r.json();
+        document.getElementById('stat-total').textContent = fmt(d.total_records);
+        document.getElementById('stat-conf').textContent  = fmt(d.unique_conferences);
+        document.getElementById('stat-jrnl').textContent  = fmt(d.unique_journals);
+
+        const confBody = document.getElementById('top-conf-body');
+        confBody.innerHTML = (d.top_conferences || []).length === 0
+            ? '<tr><td colspan="3" style="text-align:center;color:#718096;padding:20px">No conference data yet</td></tr>'
+            : d.top_conferences.map(c => `
+                <tr>
+                    <td>${c.conference || c.conference_code || '—'}</td>
+                    <td>${fmt(c.count)}</td>
+                    <td>${fmtDate(c.last_updated)}</td>
+                </tr>`).join('');
+
+        const kwBody = document.getElementById('top-kw-body');
+        kwBody.innerHTML = (d.top_keywords || []).length === 0
+            ? '<tr><td colspan="2" style="text-align:center;color:#718096;padding:20px">No keyword data yet</td></tr>'
+            : d.top_keywords.map(k => `<tr><td>${k.keyword}</td><td>${fmt(k.count)}</td></tr>`).join('');
+    } catch(err) {
+        document.getElementById('stat-total').textContent = 'Error';
+    }
+}
+
+async function _runSync(endpoint, dryRun, btnId, label) {
+    const btn = document.getElementById(btnId);
+    const resultDiv = document.getElementById('sync-result');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Running…';
+    resultDiv.style.display = 'none';
+
+    try {
+        const r = await fetch(endpoint, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ dry_run: dryRun })
+        });
+        const d = await r.json();
+        const isError = !r.ok || d.error;
+        resultDiv.className = 'sync-result' + (isError ? ' error' : '');
+        resultDiv.style.display = 'block';
+        if (isError) {
+            resultDiv.innerHTML = `<strong>❌ Error:</strong> ${d.error || 'Unknown error'}`;
+        } else {
+            resultDiv.innerHTML = `
+                <strong>${dryRun ? '🧪 Dry Run' : '✅'} ${label} complete</strong>
+                <pre style="margin-top:10px">Jobs scanned:   ${fmt(d.jobs_scanned)}
+Jobs processed: ${fmt(d.jobs_processed)}
+Records added:  ${fmt(d.records_added)}
+Records updated:${fmt(d.records_updated)}
+Records skipped:${fmt(d.records_skipped)}
+Errors:         ${(d.errors || []).length}
+Synced at:      ${d.synced_at ? new Date(d.synced_at).toLocaleString() : '—'}</pre>
+                ${(d.errors || []).length > 0 ? '<details><summary style="cursor:pointer;margin-top:8px">View errors</summary><pre style="font-size:11px;color:#c53030">' + JSON.stringify(d.errors, null, 2) + '</pre></details>' : ''}`;
+            // Auto-reload stats after a real sync
+            if (!dryRun && d.records_added > 0) loadStats();
+        }
+    } catch(err) {
+        resultDiv.className = 'sync-result error';
+        resultDiv.style.display = 'block';
+        resultDiv.innerHTML = `<strong>❌ Network error:</strong> ${err.message}`;
+    }
+    btn.disabled = false;
+    btn.innerHTML = label.includes('All') ? '🔄 Sync All Historical Data'
+                  : label.includes('Dry') ? '🧪 Dry Run (count only)'
+                  : '⏱️ Sync Recent (1 day)';
+}
+
+function syncAll(dryRun)    { _runSync('/api/master-database/sync-all',    dryRun, dryRun ? 'dry-run-btn' : 'sync-all-btn',    'Sync All'); }
+function syncRecent(dryRun) { _runSync('/api/master-database/sync-daily',  dryRun, 'sync-recent-btn', 'Sync Recent'); }
+</script>
 </body>
 </html>
