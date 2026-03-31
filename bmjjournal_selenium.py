@@ -1293,7 +1293,7 @@ class BMJJournalScraper(ChromeDisplayMixin):
 
                                     author_name_final = author_name.split(",")[0].strip()
                                     self.logger.info(f"Extracted: {author_name_final} - {email}")
-                                    author_info.append([article_url, author_name_final, email])
+                                    author_info.append([article_url, author_name_final, email, self.conference_name])
 
                         else:
                             # New style author extraction
@@ -1328,18 +1328,18 @@ class BMJJournalScraper(ChromeDisplayMixin):
                                     author_name = div_ele.find_element(By.CSS_SELECTOR, 'p[data-testid="popover-title "]').text.strip()
 
                                     self.logger.info(f"Extracted: {author_name} - {email}")
-                                    author_info.append([article_url, author_name, email])
+                                    author_info.append([article_url, author_name, email, self.conference_name])
                                 except Exception as inner_e:
                                     self.logger.warning(f"Failed to extract from envelope: {inner_e}")
                                     continue
 
                         if author_info:
-                            self.save_to_csv(author_info, self.authors_csv, header=["Article_URL", "Author_Name", "Email"])
+                            self.save_to_csv(author_info, self.authors_csv, header=["Article_URL", "Author_Name", "Email", "Conference_Name"])
                             authors_found += len(
                                 [a for a in author_info if a[2] not in ("N/A", "ERROR")]
                             )
                         else:
-                            self.save_to_csv([[article_url, "N/A", "N/A"]], self.authors_csv, header=["Article_URL", "Author_Name", "Email"])
+                            self.save_to_csv([[article_url, "N/A", "N/A", self.conference_name]], self.authors_csv, header=["Article_URL", "Author_Name", "Email", "Conference_Name"])
 
                         pct = int(40 + (_idx / total) * 55)   # 40 → 95%
                         self._report_progress(
@@ -1360,11 +1360,11 @@ class BMJJournalScraper(ChromeDisplayMixin):
                             time.sleep(5)
                         else:
                             self.logger.error(f"Max retries reached for {article_url}, skipping...")
-                            self.save_to_csv([[article_url, "ERROR", "ERROR"]], self.authors_csv, header=["Article_URL", "Author_Name", "Email"])
+                            self.save_to_csv([[article_url, "ERROR", "ERROR", self.conference_name]], self.authors_csv, header=["Article_URL", "Author_Name", "Email", "Conference_Name"])
                     
                     except Exception as e:
                         self.logger.error(f"Failed to extract author info from {article_url}: {e}")
-                        self.save_to_csv([[article_url, "N/A", "N/A"]], self.authors_csv, header=["Article_URL", "Author_Name", "Email"])
+                        self.save_to_csv([[article_url, "N/A", "N/A", self.conference_name]], self.authors_csv, header=["Article_URL", "Author_Name", "Email", "Conference_Name"])
                         break
 
     def run(self):
@@ -1425,25 +1425,27 @@ class BMJJournalScraper(ChromeDisplayMixin):
             except Exception:
                 pass
 
+            # Fix URL path encoding BEFORE checking total pages.
+            # Form submit encodes spaces as "+" in the path but BMJ's
+            # Varnish cache rejects "+" in URL paths (returns 503).
+            from urllib.parse import urlparse, urlunparse
+            raw_url = self.driver.current_url
+            p = urlparse(raw_url)
+            clean_path = (p.path
+                .replace('%252B', '%20')   # double-encoded +
+                .replace('%2B',   '%20')   # single-encoded +
+                .replace('+',     '%20'))  # literal +
+            clean_url = urlunparse(p._replace(path=clean_path))
+            if clean_url != raw_url:
+                self.logger.info(f"BMJ ==> Fixed URL path encoding: {clean_url[:120]}")
+                self.driver.get(clean_url)
+                time.sleep(5)
+                self._bypass_cloudflare(timeout=120, target_url="https://journals.bmj.com")
+
             total_pages = self.get_total_pages()
             if total_pages > 0:
-                # Fix URL path encoding: form submit encodes spaces as "+" in the path
-                # but Varnish rejects "+" in URL paths (only valid in query strings).
-                # Replace "+" → "%20" in the path segment only.
-                raw_url = self.driver.current_url
-                from urllib.parse import urlparse, urlunparse
-                p = urlparse(raw_url)
-                # Fix all encoding variants of space in path:
-                # %252B = double-encoded +, %2B = encoded +, + = literal +
-                clean_path = (p.path
-                    .replace('%252B', '%20')   # double-encoded +
-                    .replace('%2B',   '%20')   # single-encoded +
-                    .replace('+',     '%20'))  # literal +
-                clean_url  = urlunparse(p._replace(path=clean_path))
-                if clean_url != raw_url:
-                    self.logger.info(f"BMJ ==> Fixed URL path encoding: {clean_url[:80]}")
                 query_params = {"base_url": clean_url, "page": 0}
-                self._report_progress(5, f"Found {total_pages} page(s) — collecting URLs...")
+                self._report_progress(5, f"Found {total_pages} page(s) \u2014 collecting URLs...")
                 self.extract_article_links(total_pages, query_params)
                 self._report_progress(40, "PHASE 2: Extracting author emails...")
                 self.extract_author_info()
