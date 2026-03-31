@@ -18,6 +18,7 @@ from auth import admin_required, internal_user_required, get_current_user
 from werkzeug.utils import secure_filename
 import os
 import csv
+import uuid
 import pandas as pd
 from datetime import datetime, timedelta
 import io
@@ -393,63 +394,120 @@ def _run_daily_sync(days_back: int = 1, dry_run: bool = False, celery_task=None)
         conf_code = _resolve_conference_code(conf_name)
 
         try:
+            # ── Pass 1: read CSV into an in-memory dict (dedup by email) ──
+            rows_dict = {}   # email → field dict
             with open(output_file, 'r', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
                 for row in reader:
                     email = (
                         row.get('Email') or row.get('email') or row.get('emails', '')
                     ).strip().lower()
-                    author_name   = (row.get('Author_Name') or row.get('Name') or row.get('author_name') or
-                       row.get('full_name') or row.get('name') or row.get('first_name') or
-                       row.get('author') or '')
-                    affiliation   = row.get('Affiliation') or row.get('affiliation', '')
-                    article_url   = row.get('Article_URL') or row.get('URL') or row.get('Article URL', '')
-                    article_title = row.get('Title') or row.get('title', '')
-                    csv_code      = (row.get('Conference_Code') or row.get('conference_code', '')).strip().upper()
-                    effective_code = csv_code or conf_code
-
                     if not email or '@' not in email or email == 'n/a':
                         total_skipped += 1
                         continue
+                    if email in rows_dict:       # duplicate within same file
+                        total_skipped += 1
+                        continue
+                    csv_code = (row.get('Conference_Code') or
+                                row.get('conference_code', '')).strip().upper()
+                    rows_dict[email] = {
+                        'author_name':   (row.get('Author_Name') or row.get('Name') or
+                                          row.get('author_name') or row.get('full_name') or
+                                          row.get('name') or row.get('first_name') or
+                                          row.get('author') or ''),
+                        'affiliation':   row.get('Affiliation') or row.get('affiliation', ''),
+                        'article_url':   row.get('Article_URL') or row.get('URL') or row.get('Article URL', ''),
+                        'article_title': row.get('Title') or row.get('title', ''),
+                        'conference_code': csv_code or conf_code,
+                    }
 
-                    if not dry_run:
-                        existing = MasterDatabase.query.filter_by(email=email).first()
-                        if existing:
-                            existing.author_name   = author_name  or existing.author_name
-                            existing.affiliation   = affiliation  or existing.affiliation
-                            existing.article_url   = article_url  or existing.article_url
-                            existing.article_title = article_title or existing.article_title
-                            existing.conference_code = effective_code or existing.conference_code
-                            existing.updated_at    = datetime.utcnow()
-                            total_updated += 1
-                        else:
-                            db.session.add(MasterDatabase(
-                                author_name=author_name,
-                                email=email,
-                                affiliation=affiliation,
-                                conference_name=conf_name,
-                                conference_code=effective_code,
-                                journal_name=job.get('journal_name', ''),
-                                article_title=article_title,
-                                article_url=article_url,
-                                keyword=job.get('keyword', ''),
-                                job_id=db_job.id,
-                            ))
-                            total_added += 1
-                    else:
-                        # Dry-run: just count
-                        exists = MasterDatabase.query.filter_by(email=email).first()
-                        if exists:
-                            total_updated += 1
-                        else:
-                            total_added += 1
+            if not rows_dict:
+                jobs_processed += 1
+                continue
+
+            all_emails = list(rows_dict.keys())
 
             if not dry_run:
+                # ── Pass 2: one batch SELECT to find already-existing emails ──
+                # Chunk to keep IN clause manageable (PostgreSQL limit ~65k params)
+                _CHUNK = 2000
+                existing_set: set = set()
+                for ci in range(0, len(all_emails), _CHUNK):
+                    chunk = all_emails[ci: ci + _CHUNK]
+                    existing_set.update(
+                        e for (e,) in
+                        db.session.query(MasterDatabase.email)
+                                  .filter(MasterDatabase.email.in_(chunk))
+                                  .all()
+                    )
+
+                # ── Pass 3: bulk-insert new, bulk-update existing ─────────
+                to_insert = []
+                journal_name = job.get('journal_name', '')
+                keyword_val  = job.get('keyword', '')
+
+                for email, r in rows_dict.items():
+                    if email in existing_set:
+                        # UPDATE only empty fields — avoid N SELECT queries
+                        db.session.query(MasterDatabase).filter(
+                            MasterDatabase.email == email
+                        ).update({
+                            MasterDatabase.author_name: db.case(
+                                (db.or_(MasterDatabase.author_name == None,
+                                        MasterDatabase.author_name == ''),
+                                 r['author_name']),
+                                else_=MasterDatabase.author_name,
+                            ),
+                            MasterDatabase.conference_code: db.case(
+                                (db.or_(MasterDatabase.conference_code == None,
+                                        MasterDatabase.conference_code == ''),
+                                 r['conference_code']),
+                                else_=MasterDatabase.conference_code,
+                            ),
+                            MasterDatabase.updated_at: datetime.utcnow(),
+                        }, synchronize_session=False)
+                        total_updated += 1
+                    else:
+                        to_insert.append({
+                            'id':             str(uuid.uuid4()),
+                            'email':          email,
+                            'author_name':    r['author_name'],
+                            'affiliation':    r['affiliation'],
+                            'article_url':    r['article_url'],
+                            'article_title':  r['article_title'],
+                            'conference_name': conf_name,
+                            'conference_code': r['conference_code'],
+                            'journal_name':   journal_name,
+                            'keyword':        keyword_val,
+                            'job_id':         str(db_job.id),
+                            'scraped_date':   datetime.utcnow(),
+                            'created_at':     datetime.utcnow(),
+                            'updated_at':     datetime.utcnow(),
+                        })
+                        total_added += 1
+
+                if to_insert:
+                    db.session.bulk_insert_mappings(MasterDatabase, to_insert)
+
                 db.session.commit()
+                db.session.expunge_all()   # free ORM object cache after each job
+
+            else:
+                # Dry-run: one batch SELECT is enough to count
+                existing_set = set(
+                    e for (e,) in
+                    db.session.query(MasterDatabase.email)
+                              .filter(MasterDatabase.email.in_(all_emails[:2000]))
+                              .all()
+                )
+                total_updated += sum(1 for e in all_emails if e in existing_set)
+                total_added   += sum(1 for e in all_emails if e not in existing_set)
+
             jobs_processed += 1
 
         except Exception as exc:
             db.session.rollback()
+            db.session.expunge_all()
             errors.append({'job_id': str(db_job.id), 'error': str(exc)[:120]})
 
     return {
