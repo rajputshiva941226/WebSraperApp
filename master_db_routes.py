@@ -253,19 +253,30 @@ def sync_daily_manual():
 @admin_required
 def sync_all_historical():
     """
-    One-time admin trigger to backfill ALL completed jobs into master DB.
-    Scans every completed job ever recorded (regardless of age).
-
-    Body (JSON, all optional):
-        dry_run  bool  — if true, counts only, no DB writes
+    Async trigger to backfill ALL completed jobs into master DB via Celery.
+    Returns immediately with a task_id; poll /api/master-database/task-status/<id>.
     """
-    data    = request.get_json(silent=True) or {}
-    dry_run = bool(data.get('dry_run', False))
+    from celery_worker import sync_master_database_daily
+    task = sync_master_database_daily.apply_async(kwargs={'days_back': 36500, 'dry_run': False})
+    return jsonify({'task_id': task.id, 'status': 'started', 'sync_type': 'full_historical'})
 
-    # Use a very large days_back to cover all historical jobs
-    result = _run_daily_sync(days_back=36500, dry_run=dry_run)
-    result['sync_type'] = 'full_historical'
-    return jsonify(result)
+
+@master_db_bp.route('/api/master-database/task-status/<task_id>')
+@admin_required
+def sync_task_status(task_id):
+    """Poll the status of an async sync task."""
+    from celery_worker import celery_app
+    task = celery_app.AsyncResult(task_id)
+    if task.state == 'PENDING':
+        return jsonify({'state': 'pending'})
+    elif task.state == 'SUCCESS':
+        result = task.result or {}
+        result['state'] = 'success'
+        return jsonify(result)
+    elif task.state == 'FAILURE':
+        return jsonify({'state': 'failure', 'error': str(task.result)})
+    else:
+        return jsonify({'state': task.state})
 
 
 def _resolve_conference_code(conference_name: str) -> str:
