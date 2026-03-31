@@ -635,7 +635,7 @@ def sync_master_database_daily(self, days_back: int = 1, dry_run: bool = False):
     try:
         with flask_app.app_context():
             from master_db_routes import _run_daily_sync
-            result = _run_daily_sync(days_back=days_back, dry_run=dry_run)
+            result = _run_daily_sync(days_back=days_back, dry_run=dry_run, celery_task=self)
  
         logger.info(
             "[MasterDB Sync] Done — jobs_processed=%d  added=%d  updated=%d  skipped=%d  errors=%d",

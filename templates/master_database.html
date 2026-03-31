@@ -423,6 +423,14 @@ Errors:         ${(d.errors || []).length}</pre>`;
             btn.disabled = false;
             btn.innerHTML = '🔄 Sync All Historical Data';
             if ((d.records_added || 0) > 0 || (d.records_updated || 0) > 0) loadStats();
+        } else if (d.state === 'progress') {
+            const pct   = d.total > 0 ? Math.round(d.current / d.total * 100) : 0;
+            banner.className = 'sync-banner running';
+            banner.innerHTML = `⏳ <strong>Syncing… ${d.current}/${d.total} jobs (${pct}%)</strong>
+                &nbsp;·&nbsp; +${fmt(d.records_added)} added &nbsp;·&nbsp; ${fmt(d.records_updated)} updated
+                <div style="margin-top:8px;background:#c6f6d5;border-radius:6px;height:8px;width:100%;">
+                  <div style="background:#276749;border-radius:6px;height:8px;width:${pct}%;transition:width .4s;"></div>
+                </div>`;
         } else if (d.state === 'failure') {
             clearInterval(_pollTimer);
             _clearSyncState();

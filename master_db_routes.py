@@ -275,6 +275,17 @@ def sync_task_status(task_id):
         return jsonify(result)
     elif task.state == 'FAILURE':
         return jsonify({'state': 'failure', 'error': str(task.result)})
+    elif task.state == 'PROGRESS':
+        meta = task.info or {}
+        return jsonify({
+            'state':           'progress',
+            'current':         meta.get('current', 0),
+            'total':           meta.get('total', 0),
+            'records_added':   meta.get('added', 0),
+            'records_updated': meta.get('updated', 0),
+            'records_skipped': meta.get('skipped', 0),
+            'errors':          meta.get('errors', 0),
+        })
     else:
         return jsonify({'state': task.state})
 
@@ -300,7 +311,7 @@ def _resolve_conference_code(conference_name: str) -> str:
         return ''
 
 
-def _run_daily_sync(days_back: int = 1, dry_run: bool = False) -> dict:
+def _run_daily_sync(days_back: int = 1, dry_run: bool = False, celery_task=None) -> dict:
     """
     Core sync logic shared by the manual endpoint and Celery Beat task.
 
@@ -324,7 +335,20 @@ def _run_daily_sync(days_back: int = 1, dry_run: bool = False) -> dict:
     jobs_processed = 0
     errors = []
 
-    for db_job in jobs:
+    total_jobs = len(jobs)
+    for job_idx, db_job in enumerate(jobs):
+        if celery_task and job_idx % 5 == 0:
+            celery_task.update_state(
+                state='PROGRESS',
+                meta={
+                    'current':  job_idx,
+                    'total':    total_jobs,
+                    'added':    total_added,
+                    'updated':  total_updated,
+                    'skipped':  total_skipped,
+                    'errors':   len(errors),
+                }
+            )
         job = db_job.to_dict()
         output_file = job.get('output_file', '')
         if not output_file or not os.path.exists(output_file):
