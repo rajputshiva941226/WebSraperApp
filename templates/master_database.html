@@ -364,7 +364,8 @@ async function loadStats() {
 /* NOT stop it. We store the task_id in localStorage so we can  */
 /* resume polling when the user returns to this page.           */
 const SYNC_KEY = 'masterdb_sync_task';
-let _pollTimer = null;
+let _pollTimer    = null;
+let _pendingCount = 0;
 
 function _saveSyncState(taskId) {
     localStorage.setItem(SYNC_KEY, JSON.stringify({task_id: taskId, started_at: new Date().toISOString()}));
@@ -398,6 +399,9 @@ async function syncAllAsync() {
         }
         _saveSyncState(d.task_id);
         btn.innerHTML = '<span class="spinner"></span> Running…';
+        if (d.status === 'already_running') {
+            banner.innerHTML = '⏳ A sync is already running — reconnecting to existing task…';
+        }
         _pollTimer = setInterval(() => _pollSyncTask(d.task_id, btn), 5000);
     } catch(err) {
         _showSyncError(err.message);
@@ -439,6 +443,18 @@ Errors:         ${(d.errors || []).length}</pre>`;
             btn.innerHTML = '🔄 Sync All Historical Data';
         }
         // PENDING / STARTED / RETRY → keep polling
+        // Track how many consecutive pending polls so we can show a helpful message
+        if (d.state === 'pending') {
+            _pendingCount = (_pendingCount || 0) + 1;
+            const waitSec = _pendingCount * 5;
+            if (_pendingCount >= 3) {
+                banner.innerHTML = `⌛ <strong>Queued</strong> — task is waiting for a Celery worker slot (${waitSec}s). `
+                    + `This is normal if the worker is busy with other jobs. `
+                    + `The sync will start automatically when a slot frees up.`;
+            }
+        } else {
+            _pendingCount = 0;
+        }
     } catch(err) {
         clearInterval(_pollTimer);
         _clearSyncState();

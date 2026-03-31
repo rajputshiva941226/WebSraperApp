@@ -249,15 +249,48 @@ def sync_daily_manual():
     return jsonify(result)
 
 
+# Redis key that tracks the currently active sync task_id
+_SYNC_LOCK_KEY = 'masterdb:sync:current_task_id'
+
+
+def _get_redis():
+    import redis as redis_lib
+    return redis_lib.from_url(os.environ.get('REDIS_URL', 'redis://localhost:6379/0'),
+                              decode_responses=True)
+
+
 @master_db_bp.route('/api/master-database/sync-all', methods=['POST'])
 @admin_required
 def sync_all_historical():
     """
     Async trigger to backfill ALL completed jobs into master DB via Celery.
     Returns immediately with a task_id; poll /api/master-database/task-status/<id>.
+    Prevents duplicate dispatches — if a sync is already running returns the
+    existing task_id instead of queuing a second one.
     """
-    from celery_worker import sync_master_database_daily
+    from celery_worker import celery_app, sync_master_database_daily
+
+    try:
+        r = _get_redis()
+        existing_id = r.get(_SYNC_LOCK_KEY)
+        if existing_id:
+            existing_task = celery_app.AsyncResult(existing_id)
+            if existing_task.state in ('PENDING', 'STARTED', 'PROGRESS', 'RETRY'):
+                return jsonify({
+                    'task_id': existing_id,
+                    'status':  'already_running',
+                    'sync_type': 'full_historical',
+                })
+    except Exception:
+        pass  # Redis unavailable — proceed with dispatch
+
     task = sync_master_database_daily.apply_async(kwargs={'days_back': 36500, 'dry_run': False})
+
+    try:
+        r.set(_SYNC_LOCK_KEY, task.id, ex=172800)  # expire after 2 days
+    except Exception:
+        pass
+
     return jsonify({'task_id': task.id, 'status': 'started', 'sync_type': 'full_historical'})
 
 
@@ -267,7 +300,9 @@ def sync_task_status(task_id):
     """Poll the status of an async sync task."""
     from celery_worker import celery_app
     task = celery_app.AsyncResult(task_id)
-    if task.state == 'PENDING':
+    if task.state in ('PENDING', 'STARTED'):
+        # PENDING = task is queued but no worker has picked it up yet.
+        # STARTED = worker claimed it but update_state hasn't fired yet.
         return jsonify({'state': 'pending'})
     elif task.state == 'SUCCESS':
         result = task.result or {}
