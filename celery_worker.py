@@ -18,7 +18,7 @@ import billiard as _billiard
 import billiard.process as _billiard_process
 import billiard.context as _billiard_context
 import billiard.pool as _billiard_pool
-
+from celery.schedules import crontab
 _sys.modules['multiprocessing']         = _billiard
 _sys.modules['multiprocessing.process'] = _billiard_process
 _sys.modules['multiprocessing.context'] = _billiard_context
@@ -126,10 +126,23 @@ celery_app.conf.update(
         'visibility_timeout': 32_400,  # 9 h — must be > task_time_limit
         'max_retries': 5,
     },
-
-    # ── Result backend ─────────────────────────────────────────
+            # ── Celery Beat periodic tasks ────────────────────────────
+    beat_schedule = {
+            # Daily master-DB sync: runs every day at 00:30 UTC.
+            # Processes all jobs completed in the previous 24 h.
+            'sync-master-db-daily': {
+                'task':     'celery_worker.sync_master_database_daily',
+                'schedule': crontab(hour=0, minute=30),
+                'kwargs':   {'days_back': 1},
+            },
+        },
+    beat_scheduler = 'celery.beat:PersistentScheduler',  # stores beat state on disk
     redis_max_connections = 20,
-)
+    
+    
+    )
+    # ── Result backend ─────────────────────────────────────────
+
 
 
 # ── Helpers ──────────────────────────────────────────────────────
@@ -590,3 +603,55 @@ def run_scraper_task(
 def ping():
     """Lightweight task for load-balancer / uptime health checks."""
     return {'status': 'ok', 'ts': datetime.utcnow().isoformat()}
+
+@celery_app.task(
+    name='celery_worker.sync_master_database_daily',
+    bind=True,
+    max_retries=3,
+    default_retry_delay=300,   # 5-minute retry delay
+)
+def sync_master_database_daily(self, days_back: int = 1, dry_run: bool = False):
+    """
+    Celery Beat periodic task: sync completed job results → master database.
+ 
+    Runs daily at 00:30 UTC (configured in beat_schedule above).
+    Can also be triggered ad-hoc from the admin panel via the
+    POST /api/master-database/sync-daily endpoint.
+ 
+    Args:
+        days_back: How many days of completed jobs to re-process.
+                   Default 1 = only yesterday's jobs.
+                   Set to 7 for a weekly full-resync if needed.
+        dry_run:   If True, counts changes but does not write to DB.
+                   Useful for sanity-checks before production syncs.
+    """
+    flask_app = _get_flask_app()
+ 
+    logger.info(
+        "[MasterDB Sync] Starting daily sync (days_back=%d, dry_run=%s)",
+        days_back, dry_run
+    )
+ 
+    try:
+        with flask_app.app_context():
+            from master_db_routes import _run_daily_sync
+            result = _run_daily_sync(days_back=days_back, dry_run=dry_run)
+ 
+        logger.info(
+            "[MasterDB Sync] Done — jobs_processed=%d  added=%d  updated=%d  skipped=%d  errors=%d",
+            result['jobs_processed'],
+            result['records_added'],
+            result['records_updated'],
+            result['records_skipped'],
+            len(result.get('errors', [])),
+        )
+        if result.get('errors'):
+            for err in result['errors']:
+                logger.warning("[MasterDB Sync] Job %s error: %s", err['job_id'], err['error'])
+ 
+        return result
+ 
+    except Exception as exc:
+        logger.exception("[MasterDB Sync] Failed: %s", exc)
+        # Auto-retry up to max_retries times before giving up
+        raise self.retry(exc=exc)

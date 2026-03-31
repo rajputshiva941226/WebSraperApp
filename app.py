@@ -60,7 +60,9 @@ if 'postgresql' in _db_url:
 
 # Initialize database
 init_db(app)
-
+from conferences_config import seed_conferences
+with app.app_context():
+    seed_conferences(app)
 # Register blueprints
 app.register_blueprint(auth_bp)
 app.register_blueprint(credit_bp)

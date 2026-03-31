@@ -58,6 +58,7 @@ class User(db.Model):
     is_active = db.Column(db.Boolean, default=True)
     is_verified = db.Column(db.Boolean, default=False)
     allowed_scrapers = db.Column(db.Text, default='all')  # JSON list of allowed scrapers or 'all'
+    allowed_conferences = db.Column(db.Text, default='all')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_login = db.Column(db.DateTime)
     
@@ -112,7 +113,24 @@ class User(db.Model):
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'last_login': self.last_login.isoformat() if self.last_login else None
         }
-
+    def get_allowed_conferences(self):
+        """
+        Returns a list of allowed conference codes, or the string 'all'.
+        Mirrors the pattern used by get_allowed_scrapers().
+        """
+        val = self.allowed_conferences or 'all'
+        if val == 'all':
+            return 'all'
+        try:
+            return json.loads(val)
+        except (ValueError, TypeError):
+            return 'all'
+ 
+    def can_access_conference(self, code: str) -> bool:
+        """Returns True if this user may submit jobs for the given conference code."""
+        allowed = self.get_allowed_conferences()
+        return allowed == 'all' or code in allowed
+ 
 
 class CreditTransaction(db.Model):
     """Track all credit transactions"""
@@ -198,6 +216,7 @@ class MasterDatabase(db.Model):
     
     # Source information
     conference_name = db.Column(db.String(255), index=True)
+    conference_code = db.Column(db.String(30),  default='', index=True)
     journal_name = db.Column(db.String(100), index=True)
     article_title = db.Column(db.Text)
     article_url = db.Column(db.String(500))
@@ -392,7 +411,30 @@ class SearchHistory(db.Model):
             'searched_at': self.searched_at.isoformat() if self.searched_at else None
         }
 
-
+class Conference(db.Model):
+    """
+    Stores conference definitions (code + display name).
+    Seeded from CONFERENCES dict in conferences_config.py;
+    admins can also create new ones at runtime via the admin panel.
+    """
+    __tablename__ = 'conferences'
+ 
+    id           = db.Column(db.Integer, primary_key=True)
+    code         = db.Column(db.String(30), unique=True, nullable=False, index=True)
+    display_name = db.Column(db.String(200), nullable=False)
+    is_active    = db.Column(db.Boolean, default=True, nullable=False)
+    created_at   = db.Column(db.DateTime, default=datetime.utcnow)
+    created_by   = db.Column(db.String(100), default='system')   # 'system' or admin username
+ 
+    def to_dict(self):
+        return {
+            'id':           self.id,
+            'code':         self.code,
+            'display_name': self.display_name,
+            'is_active':    self.is_active,
+            'created_at':   self.created_at.isoformat() if self.created_at else None,
+            'created_by':   self.created_by,
+        }
 # Utility functions
 
 def init_db(app):

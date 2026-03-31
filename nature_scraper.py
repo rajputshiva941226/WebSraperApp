@@ -735,22 +735,45 @@ class NatureScraper(ChromeDisplayMixin):
 
     # ── Cookie consent ────────────────────────────────────────────────────────
 
-    def accept_cookies(self):
-        if self.cookies_accepted:
+    def accept_cookies(self, force: bool = False, timeout: int = 3) -> None:
+        """
+        Dismiss the cookie/consent banner.
+ 
+        Args:
+            force:   If True, always attempt even if already accepted this session.
+                     Use force=True on every article page (short timeout).
+            timeout: Seconds to wait for each selector before trying the next.
+        """
+        if self.cookies_accepted and not force:
             return
-        try:
-            btn = WebDriverWait(self.driver, 5).until(
-                EC.element_to_be_clickable(
-                    (By.CSS_SELECTOR, 'button[data-cc-action="accept"]')
+ 
+        # Nature uses data-cc-action; fallback selectors cover CDN-loaded
+        # consent managers (OneTrust, CookieYes, etc.) that can appear on
+        # article sub-pages independently of the search-results page.
+        _SELECTORS = (
+            'button[data-cc-action="accept"]',
+            'button#onetrust-accept-btn-handler',
+            'button.cc-btn.cc-allow',
+            'button[class*="cookie"][class*="accept"]',
+            'button[aria-label*="ccept all"]',
+            '#cookie-consent button, #cookie-banner button[class*="accept"]',
+        )
+ 
+        for selector in _SELECTORS:
+            try:
+                btn = WebDriverWait(self.driver, timeout).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
                 )
-            )
-            btn.click()
-            self.logger.info("Nature ==> Cookies accepted")
-            self.cookies_accepted = True
-            time.sleep(1)
-        except Exception:
-            self.cookies_accepted = True  # no banner or already accepted
-
+                btn.click()
+                self.logger.info("Nature ==> Cookie banner dismissed via: %s", selector)
+                self.cookies_accepted = True
+                time.sleep(0.8)
+                return
+            except Exception:
+                continue
+ 
+        # No banner found — mark done so normal (non-forced) calls skip the loop.
+        self.cookies_accepted = True
     # ── Phase 1: collect article URLs ─────────────────────────────────────────
 
     def _get_total_results(self, url: str) -> int:
@@ -800,18 +823,181 @@ class NatureScraper(ChromeDisplayMixin):
 
     # ── Phase 2: extract author emails ────────────────────────────────────────
 
+    # def extract_author_emails(self, article_url: str) -> list:
+    #     """
+    #     Extract authors + emails from one Nature article page.
+    #     Returns list of [url, author_name, email] rows.
+    #     """
+    #     results = []
+    #     try:
+    #         self.driver.get(article_url)
+    #         time.sleep(2)
+    #         self.accept_cookies()
+    #         time.sleep(0.5)
+
+    #         # Wait for author list
+    #         try:
+    #             WebDriverWait(self.driver, 5).until(
+    #                 EC.presence_of_element_located(
+    #                     (By.CSS_SELECTOR, '[data-test="authors-list"]')
+    #                 )
+    #             )
+    #         except TimeoutException:
+    #             self.logger.info(f"Nature ==> No author list on {article_url}")
+    #             return results
+
+    #         # Expand "Show authors" if present
+    #         try:
+    #             show_btn = WebDriverWait(self.driver, 3).until(
+    #                 EC.presence_of_element_located(
+    #                     (By.CSS_SELECTOR, "button.c-article-author-list__button")
+    #                 )
+    #             )
+    #             self.driver.execute_script(
+    #                 "arguments[0].scrollIntoView({block:'center'});", show_btn
+    #             )
+    #             time.sleep(0.8)
+    #             for _ in range(3):
+    #                 try:
+    #                     WebDriverWait(self.driver, 2).until(
+    #                         EC.element_to_be_clickable(
+    #                             (By.CSS_SELECTOR,
+    #                              "button.c-article-author-list__button")
+    #                         )
+    #                     ).click()
+    #                     break
+    #                 except (ElementClickInterceptedException, TimeoutException):
+    #                     try:
+    #                         self.driver.execute_script(
+    #                             "arguments[0].click();", show_btn
+    #                         )
+    #                         break
+    #                     except Exception:
+    #                         time.sleep(0.5)
+    #             time.sleep(1.5)
+    #         except TimeoutException:
+    #             pass
+
+    #         author_links = self.driver.find_elements(
+    #             By.CSS_SELECTOR,
+    #             '[data-test="authors-list"] a[data-test="author-name"]'
+    #         )
+    #         self.logger.info(
+    #             f"Nature ==> {len(author_links)} authors on {article_url}"
+    #         )
+
+    #         for idx in range(len(author_links)):
+    #             try:
+    #                 # Re-fetch after DOM may change
+    #                 author_links = self.driver.find_elements(
+    #                     By.CSS_SELECTOR,
+    #                     '[data-test="authors-list"] a[data-test="author-name"]'
+    #                 )
+    #                 if idx >= len(author_links):
+    #                     break
+    #                 lnk         = author_links[idx]
+    #                 author_name = lnk.text.strip().replace("✉", "").strip()
+    #                 safe_name   = re.sub(r"[^a-zA-Z0-9]", "-", author_name)
+
+    #                 # Skip authors without mail icon
+    #                 try:
+    #                     lnk.find_element(
+    #                         By.CSS_SELECTOR,
+    #                         'svg use[href*="mail"], svg use[*|href*="mail"]'
+    #                     )
+    #                 except NoSuchElementException:
+    #                     continue
+
+    #                 # Click to open popup
+    #                 self.driver.execute_script(
+    #                     "arguments[0].scrollIntoView({block:'center'});", lnk
+    #                 )
+    #                 time.sleep(0.5)
+    #                 lnk.click()
+    #                 time.sleep(0.8)
+
+    #                 # Find popup
+    #                 popup_sel = f"div[id*='popup-auth-{safe_name[:5]}']"
+    #                 try:
+    #                     popup = WebDriverWait(self.driver, 5).until(
+    #                         EC.visibility_of_element_located(
+    #                             (By.CSS_SELECTOR, popup_sel)
+    #                         )
+    #                     )
+    #                 except TimeoutException:
+    #                     popup = WebDriverWait(self.driver, 3).until(
+    #                         EC.visibility_of_element_located(
+    #                             (By.CSS_SELECTOR, ".app-researcher-popup")
+    #                         )
+    #                     )
+
+    #                 # Extract email from popup
+    #                 try:
+    #                     email_el = WebDriverWait(self.driver, 3).until(
+    #                         EC.visibility_of_element_located(
+    #                             (By.CSS_SELECTOR,
+    #                              f"{popup_sel} a[href^='mailto:']")
+    #                         )
+    #                     )
+    #                     email = email_el.get_attribute("href").replace(
+    #                         "mailto:", ""
+    #                     ).strip()
+    #                     if email and "@" in email:
+    #                         results.append([article_url, author_name, email, self.conference_name])
+    #                         self.logger.info(f"Nature ==> {author_name} — {email}")
+    #                 except TimeoutException:
+    #                     pass
+
+    #                 # Close popup
+    #                 try:
+    #                     WebDriverWait(self.driver, 2).until(
+    #                         EC.element_to_be_clickable(
+    #                             (By.CSS_SELECTOR, "button.c-popup__close")
+    #                         )
+    #                     ).click()
+    #                     WebDriverWait(self.driver, 3).until(
+    #                         EC.invisibility_of_element_located(
+    #                             (By.CSS_SELECTOR, "button.c-popup__close")
+    #                         )
+    #                     )
+    #                 except Exception:
+    #                     self.driver.execute_script("document.body.click();")
+    #                     time.sleep(0.3)
+
+    #             except Exception as e:
+    #                 self.logger.warning(
+    #                     f"Nature ==> Author {idx+1} failed: {str(e)[:60]}"
+    #                 )
+    #                 continue
+
+    #     except Exception as e:
+    #         self.logger.error(
+    #             f"Nature ==> Error on {article_url}: {str(e)[:80]}"
+    #         )
+    #     return results
+
     def extract_author_emails(self, article_url: str) -> list:
         """
         Extract authors + emails from one Nature article page.
-        Returns list of [url, author_name, email] rows.
+        Returns list of [url, author_name, email, conference_name] rows.
+ 
+        Cookie fix: force-checks for consent banner on every article page
+        with a short 2-second timeout so there is no meaningful slowdown
+        when no banner is present.
         """
         results = []
         try:
             self.driver.get(article_url)
             time.sleep(2)
-            self.accept_cookies()
-            time.sleep(0.5)
-
+ 
+            # ── COOKIE FIX ──────────────────────────────────────────────────
+            # Always try to dismiss, even if cookies were "accepted" earlier.
+            # Nature may re-show the banner on article pages served from a
+            # different subdomain/context.  Timeout=2 so it's fast when absent.
+            self.accept_cookies(force=True, timeout=2)
+            time.sleep(0.4)
+            # ── END COOKIE FIX ──────────────────────────────────────────────
+ 
             # Wait for author list
             try:
                 WebDriverWait(self.driver, 5).until(
@@ -820,10 +1006,10 @@ class NatureScraper(ChromeDisplayMixin):
                     )
                 )
             except TimeoutException:
-                self.logger.info(f"Nature ==> No author list on {article_url}")
+                self.logger.info("Nature ==> No author list on %s", article_url)
                 return results
-
-            # Expand "Show authors" if present
+ 
+            # Expand "Show authors" button if the list is collapsed
             try:
                 show_btn = WebDriverWait(self.driver, 3).until(
                     EC.presence_of_element_located(
@@ -853,30 +1039,32 @@ class NatureScraper(ChromeDisplayMixin):
                             time.sleep(0.5)
                 time.sleep(1.5)
             except TimeoutException:
-                pass
-
+                pass  # Author list already fully visible
+ 
             author_links = self.driver.find_elements(
                 By.CSS_SELECTOR,
                 '[data-test="authors-list"] a[data-test="author-name"]'
             )
             self.logger.info(
-                f"Nature ==> {len(author_links)} authors on {article_url}"
+                "Nature ==> %d author link(s) found on %s",
+                len(author_links), article_url
             )
-
+ 
             for idx in range(len(author_links)):
                 try:
-                    # Re-fetch after DOM may change
+                    # Re-fetch after each popup interaction as DOM may change
                     author_links = self.driver.find_elements(
                         By.CSS_SELECTOR,
                         '[data-test="authors-list"] a[data-test="author-name"]'
                     )
                     if idx >= len(author_links):
                         break
+ 
                     lnk         = author_links[idx]
-                    author_name = lnk.text.strip().replace("✉", "").strip()
+                    author_name = lnk.text.strip().replace("\u2709", "").strip()
                     safe_name   = re.sub(r"[^a-zA-Z0-9]", "-", author_name)
-
-                    # Skip authors without mail icon
+ 
+                    # Skip authors without an envelope/mail icon
                     try:
                         lnk.find_element(
                             By.CSS_SELECTOR,
@@ -884,16 +1072,20 @@ class NatureScraper(ChromeDisplayMixin):
                         )
                     except NoSuchElementException:
                         continue
-
-                    # Click to open popup
+ 
+                    # Dismiss any overlay that might have appeared since the
+                    # last author click (e.g. consent banner re-triggered by JS)
+                    self.accept_cookies(force=True, timeout=1)
+ 
+                    # Scroll + click to open author popup
                     self.driver.execute_script(
                         "arguments[0].scrollIntoView({block:'center'});", lnk
                     )
                     time.sleep(0.5)
                     lnk.click()
                     time.sleep(0.8)
-
-                    # Find popup
+ 
+                    # Wait for the author popup
                     popup_sel = f"div[id*='popup-auth-{safe_name[:5]}']"
                     try:
                         popup = WebDriverWait(self.driver, 5).until(
@@ -907,24 +1099,29 @@ class NatureScraper(ChromeDisplayMixin):
                                 (By.CSS_SELECTOR, ".app-researcher-popup")
                             )
                         )
-
+ 
                     # Extract email from popup
                     try:
                         email_el = WebDriverWait(self.driver, 3).until(
                             EC.visibility_of_element_located(
                                 (By.CSS_SELECTOR,
-                                 f"{popup_sel} a[href^='mailto:']")
+                                 f"{popup_sel} a[href^='mailto:'],"
+                                 f".app-researcher-popup a[href^='mailto:']")
                             )
                         )
                         email = email_el.get_attribute("href").replace(
                             "mailto:", ""
                         ).strip()
                         if email and "@" in email:
-                            results.append([article_url, author_name, email, self.conference_name])
-                            self.logger.info(f"Nature ==> {author_name} — {email}")
+                            results.append(
+                                [article_url, author_name, email, self.conference_name]
+                            )
+                            self.logger.info(
+                                "Nature ==> %s — %s", author_name, email
+                            )
                     except TimeoutException:
                         pass
-
+ 
                     # Close popup
                     try:
                         WebDriverWait(self.driver, 2).until(
@@ -940,19 +1137,19 @@ class NatureScraper(ChromeDisplayMixin):
                     except Exception:
                         self.driver.execute_script("document.body.click();")
                         time.sleep(0.3)
-
+ 
                 except Exception as e:
                     self.logger.warning(
-                        f"Nature ==> Author {idx+1} failed: {str(e)[:60]}"
+                        "Nature ==> Author %d failed on %s: %s",
+                        idx + 1, article_url, str(e)[:80]
                     )
                     continue
-
+ 
         except Exception as e:
             self.logger.error(
-                f"Nature ==> Error on {article_url}: {str(e)[:80]}"
+                "Nature ==> Error processing %s: %s", article_url, str(e)[:80]
             )
         return results
-
     # ── Main entry point ──────────────────────────────────────────────────────
 
     def run(self):

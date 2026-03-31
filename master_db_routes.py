@@ -1,146 +1,155 @@
 """
 Master Database Routes
-Handles master database operations, conference data upload, and auto-append logic
+──────────────────────
+Handles master database operations, conference data upload,
+daily auto-sync from completed jobs, and admin downloads.
+
+Changes vs original:
+  • download_master_database  — supports conference_code and keyword filters
+  • append_scraped_results     — writes conference_code alongside conference_name
+  • sync_daily                 — NEW: manual admin trigger for daily sync
+  • master_database_stats      — extended with per-conference + per-keyword breakdown
+  • conferences_dropdown       — NEW: active conferences for job-submission forms
 """
 
-from flask import Blueprint, request, jsonify, render_template, send_file
+from flask import Blueprint, request, jsonify, render_template, send_file, session
 from models import db, MasterDatabase, ConferenceMaster, User
 from auth import admin_required, internal_user_required, get_current_user
 from werkzeug.utils import secure_filename
 import os
 import csv
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import io
 
 master_db_bp = Blueprint('master_db', __name__)
 
 ALLOWED_EXTENSIONS = {'csv', 'xlsx'}
 
+
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
+# ═══════════════════════════════════════════════════════════════════
+# Pages
+# ═══════════════════════════════════════════════════════════════════
+
 @master_db_bp.route('/master-database')
 @internal_user_required
 def master_database_page():
-    """Master database management page (internal users only)"""
+    """Master database management page (internal users only)."""
     return render_template('master_database.html')
 
+
+# ═══════════════════════════════════════════════════════════════════
+# Upload conference master data (CSV / XLSX)
+# ═══════════════════════════════════════════════════════════════════
 
 @master_db_bp.route('/api/master-database/upload', methods=['POST'])
 @internal_user_required
 def upload_conference_data():
     """
-    Upload conference master data (internal users only)
-    Expects CSV/XLSX with columns: author_name, email, affiliation (optional)
+    Upload conference master data.
+    Expects CSV/XLSX with columns: author_name, email, affiliation (optional).
+    Also accepts conference_code in the form fields to stamp records.
     """
     user = get_current_user()
-    
+
     if 'file' not in request.files:
         return jsonify({'error': 'No file provided'}), 400
-    
+
     file = request.files['file']
     if file.filename == '':
         return jsonify({'error': 'No file selected'}), 400
-    
+
     if not allowed_file(file.filename):
         return jsonify({'error': 'Invalid file format. Use CSV or XLSX'}), 400
-    
-    # Get conference info from form
-    conference_name = request.form.get('conference_name')
-    conference_year = request.form.get('conference_year', type=int)
+
+    conference_name     = request.form.get('conference_name')
+    conference_code     = (request.form.get('conference_code') or '').strip().upper()
+    conference_year     = request.form.get('conference_year', type=int)
     conference_location = request.form.get('conference_location', '')
-    
+
     if not conference_name:
         return jsonify({'error': 'Conference name is required'}), 400
-    
-    # Read file
+
     try:
         filename = secure_filename(file.filename)
-        
-        if filename.endswith('.csv'):
-            df = pd.read_csv(file)
-        else:
-            df = pd.read_excel(file)
-        
-        # Validate columns
-        required_columns = ['author_name', 'email']
-        missing_columns = [col for col in required_columns if col not in df.columns]
-        if missing_columns:
-            return jsonify({'error': f'Missing required columns: {", ".join(missing_columns)}'}), 400
-        
-        # Process records
-        records_added = 0
-        records_updated = 0
-        records_skipped = 0
-        
+        df = pd.read_csv(file) if filename.endswith('.csv') else pd.read_excel(file)
+
+        missing = [c for c in ['author_name', 'email'] if c not in df.columns]
+        if missing:
+            return jsonify({'error': f'Missing required columns: {", ".join(missing)}'}), 400
+
+        added = updated = skipped = 0
+
         for _, row in df.iterrows():
-            email = str(row['email']).strip().lower()
+            email       = str(row['email']).strip().lower()
             author_name = str(row['author_name']).strip()
             affiliation = str(row.get('affiliation', '')).strip() if 'affiliation' in row else ''
-            
+
             if not email or '@' not in email:
-                records_skipped += 1
+                skipped += 1
                 continue
-            
-            # Check if exists
+
             existing = ConferenceMaster.query.filter_by(
-                conference_name=conference_name,
-                email=email
+                conference_name=conference_name, email=email
             ).first()
-            
+
             if existing:
-                # Update existing record
-                existing.author_name = author_name
-                existing.affiliation = affiliation
-                existing.conference_year = conference_year
+                existing.author_name        = author_name
+                existing.affiliation        = affiliation
+                existing.conference_year    = conference_year
                 existing.conference_location = conference_location
-                records_updated += 1
+                existing.conference_code    = conference_code
+                updated += 1
             else:
-                # Create new record
-                record = ConferenceMaster(
+                db.session.add(ConferenceMaster(
                     conference_name=conference_name,
+                    conference_code=conference_code,
                     conference_year=conference_year,
                     conference_location=conference_location,
                     author_name=author_name,
                     email=email,
                     affiliation=affiliation,
                     uploaded_by=user.id,
-                    source_file=filename
-                )
-                db.session.add(record)
-                records_added += 1
-        
+                    source_file=filename,
+                ))
+                added += 1
+
         db.session.commit()
-        
         return jsonify({
             'success': True,
-            'message': f'Upload complete',
-            'records_added': records_added,
-            'records_updated': records_updated,
-            'records_skipped': records_skipped,
-            'total_processed': records_added + records_updated + records_skipped
+            'message': 'Upload complete',
+            'records_added': added,
+            'records_updated': updated,
+            'records_skipped': skipped,
+            'total_processed': added + updated + skipped,
         })
-        
+
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': f'Failed to process file: {str(e)}'}), 500
 
 
+# ═══════════════════════════════════════════════════════════════════
+# Append scraped results → master DB (called after job completes)
+# ═══════════════════════════════════════════════════════════════════
+
 @master_db_bp.route('/api/master-database/append-scraped', methods=['POST'])
 @internal_user_required
 def append_scraped_results():
     """
-    Auto-append scraped results to master database
-    Deduplicates based on email
+    Auto-append scraped results to master database.
+    Deduplicates based on email. Stamps conference_code when available.
     """
-    data = request.json
+    data   = request.json
     job_id = data.get('job_id')
-    
+
     if not job_id:
         return jsonify({'error': 'Job ID is required'}), 400
-    
+
     from models import Job as JobModel
     db_job = JobModel.query.get(job_id)
     if not db_job:
@@ -150,218 +159,519 @@ def append_scraped_results():
     output_file = job.get('output_file')
     if not output_file or not os.path.exists(output_file):
         return jsonify({'error': 'Output file not found'}), 404
-    
-    # Read CSV and append to master database
+
+    # Resolve conference_code from the job's conference_name
+    conf_name = job.get('conference_name', '')
+    conf_code = _resolve_conference_code(conf_name)
+
     try:
-        records_added = 0
-        records_updated = 0
-        records_skipped = 0
-        
+        added = updated = skipped = 0
+
         with open(output_file, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
-            
             for row in reader:
-                # Extract fields (handle different column names)
-                email = row.get('Email') or row.get('email') or row.get('emails', '')
-                author_name = row.get('Author_Name') or row.get('Name') or row.get('author_name') or row.get('Names', '')
-                affiliation = row.get('Affiliation') or row.get('affiliation', '')
-                article_url = row.get('Article_URL') or row.get('URL') or row.get('Article URL', '')
+                email        = (row.get('Email') or row.get('email') or row.get('emails', '')).strip().lower()
+                author_name  = row.get('Author_Name') or row.get('Name') or row.get('author_name') or row.get('Names', '')
+                affiliation  = row.get('Affiliation') or row.get('affiliation', '')
+                article_url  = row.get('Article_URL') or row.get('URL') or row.get('Article URL', '')
                 article_title = row.get('Title') or row.get('title', '')
-                
-                email = email.strip().lower()
+
+                # Override conf_code with CSV column if present
+                csv_conf_code = (row.get('Conference_Code') or row.get('conference_code', '')).strip().upper()
+                effective_code = csv_conf_code or conf_code
+
                 if not email or '@' not in email or email == 'n/a':
-                    records_skipped += 1
+                    skipped += 1
                     continue
-                
-                # Check if exists in master database
+
                 existing = MasterDatabase.query.filter_by(email=email).first()
-                
                 if existing:
-                    # Update existing record with new info
-                    existing.author_name = author_name
-                    existing.affiliation = affiliation or existing.affiliation
-                    existing.article_url = article_url or existing.article_url
+                    existing.author_name   = author_name  or existing.author_name
+                    existing.affiliation   = affiliation  or existing.affiliation
+                    existing.article_url   = article_url  or existing.article_url
                     existing.article_title = article_title or existing.article_title
-                    existing.updated_at = datetime.utcnow()
-                    records_updated += 1
+                    existing.conference_code = effective_code or existing.conference_code
+                    existing.updated_at    = datetime.utcnow()
+                    updated += 1
                 else:
-                    # Create new record
-                    record = MasterDatabase(
+                    db.session.add(MasterDatabase(
                         author_name=author_name,
                         email=email,
                         affiliation=affiliation,
-                        conference_name=job.get('conference_name', ''),
+                        conference_name=conf_name,
+                        conference_code=effective_code,
                         journal_name=job.get('journal_name', ''),
                         article_title=article_title,
                         article_url=article_url,
                         keyword=job.get('keyword', ''),
-                        job_id=job_id
-                    )
-                    db.session.add(record)
-                    records_added += 1
-        
+                        job_id=job_id,
+                    ))
+                    added += 1
+
         db.session.commit()
-        
         return jsonify({
             'success': True,
             'message': 'Results appended to master database',
-            'records_added': records_added,
-            'records_updated': records_updated,
-            'records_skipped': records_skipped,
-            'total_processed': records_added + records_updated + records_skipped
+            'records_added': added,
+            'records_updated': updated,
+            'records_skipped': skipped,
+            'total_processed': added + updated + skipped,
         })
-        
+
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': f'Failed to append results: {str(e)}'}), 500
 
 
+# ═══════════════════════════════════════════════════════════════════
+# NEW: Daily sync (manual admin trigger + called by Celery Beat)
+# ═══════════════════════════════════════════════════════════════════
+
+@master_db_bp.route('/api/master-database/sync-daily', methods=['POST'])
+@admin_required
+def sync_daily_manual():
+    """
+    Manual admin trigger for the daily master-DB sync.
+    Scans completed jobs from the last N days (default 1) and merges
+    unique emails into the master database.
+
+    Body (JSON, all optional):
+        days_back  int   — how many days of history to sync (default 1)
+        dry_run    bool  — if true, counts only, no DB writes
+
+    This is the same logic used by the Celery Beat scheduled task.
+    """
+    data     = request.get_json(silent=True) or {}
+    days_back = int(data.get('days_back', 1))
+    dry_run   = bool(data.get('dry_run', False))
+
+    result = _run_daily_sync(days_back=days_back, dry_run=dry_run)
+    return jsonify(result)
+
+
+def _resolve_conference_code(conference_name: str) -> str:
+    """
+    Look up the short code for a conference display name.
+    Falls back to an empty string if not found.
+    """
+    if not conference_name:
+        return ''
+    from models import Conference
+    try:
+        conf = Conference.query.filter_by(display_name=conference_name).first()
+        if conf:
+            return conf.code
+        # Try case-insensitive match
+        conf = Conference.query.filter(
+            db.func.lower(Conference.display_name) == conference_name.strip().lower()
+        ).first()
+        return conf.code if conf else ''
+    except Exception:
+        return ''
+
+
+def _run_daily_sync(days_back: int = 1, dry_run: bool = False) -> dict:
+    """
+    Core sync logic shared by the manual endpoint and Celery Beat task.
+
+    Finds all completed jobs updated within `days_back` days, reads their
+    output CSV files, and merges unique emails into MasterDatabase.
+
+    Returns a summary dict.
+    """
+    from models import Job as JobModel
+
+    cutoff   = datetime.utcnow() - timedelta(days=days_back)
+    jobs     = JobModel.query.filter(
+        JobModel.status    == 'completed',
+        JobModel.end_time  >= cutoff,
+        JobModel.output_file.isnot(None),
+    ).all()
+
+    total_added   = 0
+    total_updated = 0
+    total_skipped = 0
+    jobs_processed = 0
+    errors = []
+
+    for db_job in jobs:
+        job = db_job.to_dict()
+        output_file = job.get('output_file', '')
+        if not output_file or not os.path.exists(output_file):
+            continue
+
+        conf_name = job.get('conference_name', '')
+        conf_code = _resolve_conference_code(conf_name)
+
+        try:
+            with open(output_file, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    email = (
+                        row.get('Email') or row.get('email') or row.get('emails', '')
+                    ).strip().lower()
+                    author_name   = row.get('Author_Name') or row.get('Name') or row.get('author_name', '')
+                    affiliation   = row.get('Affiliation') or row.get('affiliation', '')
+                    article_url   = row.get('Article_URL') or row.get('URL') or row.get('Article URL', '')
+                    article_title = row.get('Title') or row.get('title', '')
+                    csv_code      = (row.get('Conference_Code') or row.get('conference_code', '')).strip().upper()
+                    effective_code = csv_code or conf_code
+
+                    if not email or '@' not in email or email == 'n/a':
+                        total_skipped += 1
+                        continue
+
+                    if not dry_run:
+                        existing = MasterDatabase.query.filter_by(email=email).first()
+                        if existing:
+                            existing.author_name   = author_name  or existing.author_name
+                            existing.affiliation   = affiliation  or existing.affiliation
+                            existing.article_url   = article_url  or existing.article_url
+                            existing.article_title = article_title or existing.article_title
+                            existing.conference_code = effective_code or existing.conference_code
+                            existing.updated_at    = datetime.utcnow()
+                            total_updated += 1
+                        else:
+                            db.session.add(MasterDatabase(
+                                author_name=author_name,
+                                email=email,
+                                affiliation=affiliation,
+                                conference_name=conf_name,
+                                conference_code=effective_code,
+                                journal_name=job.get('journal_name', ''),
+                                article_title=article_title,
+                                article_url=article_url,
+                                keyword=job.get('keyword', ''),
+                                job_id=db_job.id,
+                            ))
+                            total_added += 1
+                    else:
+                        # Dry-run: just count
+                        exists = MasterDatabase.query.filter_by(email=email).first()
+                        if exists:
+                            total_updated += 1
+                        else:
+                            total_added += 1
+
+            if not dry_run:
+                db.session.commit()
+            jobs_processed += 1
+
+        except Exception as exc:
+            db.session.rollback()
+            errors.append({'job_id': str(db_job.id), 'error': str(exc)[:120]})
+
+    return {
+        'success':        True,
+        'dry_run':        dry_run,
+        'days_back':      days_back,
+        'jobs_scanned':   len(jobs),
+        'jobs_processed': jobs_processed,
+        'records_added':  total_added,
+        'records_updated': total_updated,
+        'records_skipped': total_skipped,
+        'errors':         errors,
+        'synced_at':      datetime.utcnow().isoformat(),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Search
+# ═══════════════════════════════════════════════════════════════════
+
 @master_db_bp.route('/api/master-database/search')
 @internal_user_required
 def search_master_database():
-    """Search master database with filters"""
-    keyword = request.args.get('keyword', '').strip()
-    conference = request.args.get('conference', '').strip()
-    journal = request.args.get('journal', '').strip()
-    limit = request.args.get('limit', 100, type=int)
-    offset = request.args.get('offset', 0, type=int)
-    
+    """Search master database with keyword, conference, and journal filters."""
+    keyword   = request.args.get('keyword', '').strip()
+    conference = request.args.get('conference', '').strip()  # display name
+    conf_code  = request.args.get('conference_code', '').strip().upper()  # short code
+    journal    = request.args.get('journal', '').strip()
+    limit      = request.args.get('limit', 100, type=int)
+    offset     = request.args.get('offset', 0, type=int)
+
     query = MasterDatabase.query
-    
+
     if keyword:
-        query = query.filter(
-            db.or_(
-                MasterDatabase.author_name.ilike(f'%{keyword}%'),
-                MasterDatabase.email.ilike(f'%{keyword}%'),
-                MasterDatabase.keyword.ilike(f'%{keyword}%')
-            )
-        )
-    
+        query = query.filter(db.or_(
+            MasterDatabase.author_name.ilike(f'%{keyword}%'),
+            MasterDatabase.email.ilike(f'%{keyword}%'),
+            MasterDatabase.keyword.ilike(f'%{keyword}%'),
+        ))
     if conference:
         query = query.filter(MasterDatabase.conference_name.ilike(f'%{conference}%'))
-    
+    if conf_code:
+        query = query.filter(MasterDatabase.conference_code == conf_code)
     if journal:
         query = query.filter(MasterDatabase.journal_name.ilike(f'%{journal}%'))
-    
-    total = query.count()
+
+    total   = query.count()
     records = query.order_by(MasterDatabase.created_at.desc())\
-        .limit(limit)\
-        .offset(offset)\
-        .all()
-    
+                   .limit(limit).offset(offset).all()
+
     return jsonify({
-        'total': total,
-        'limit': limit,
-        'offset': offset,
-        'records': [r.to_dict() for r in records]
+        'total':   total,
+        'limit':   limit,
+        'offset':  offset,
+        'records': [r.to_dict() for r in records],
     })
 
+
+# ═══════════════════════════════════════════════════════════════════
+# Download (admin only) — supports conference_code + keyword filters
+# ═══════════════════════════════════════════════════════════════════
 
 @master_db_bp.route('/api/master-database/download')
 @admin_required
 def download_master_database():
-    """Admin only: Download entire master database"""
+    """
+    Admin only: Download master database as CSV or XLSX.
+
+    Query params:
+        format          csv | xlsx  (default: csv)
+        conference_code short code, e.g. NWC  (optional, filters by code)
+        conference      display-name substring  (optional)
+        keyword         keyword substring        (optional)
+    """
     file_format = request.args.get('format', 'csv')
-    
-    # Get all records
-    records = MasterDatabase.query.order_by(MasterDatabase.created_at.desc()).all()
-    
+    conf_code   = request.args.get('conference_code', '').strip().upper()
+    conference  = request.args.get('conference', '').strip()
+    keyword     = request.args.get('keyword', '').strip()
+
+    query = MasterDatabase.query
+
+    if conf_code:
+        query = query.filter(MasterDatabase.conference_code == conf_code)
+    elif conference:
+        query = query.filter(MasterDatabase.conference_name.ilike(f'%{conference}%'))
+    if keyword:
+        query = query.filter(db.or_(
+            MasterDatabase.keyword.ilike(f'%{keyword}%'),
+            MasterDatabase.author_name.ilike(f'%{keyword}%'),
+        ))
+
+    records = query.order_by(MasterDatabase.created_at.desc()).all()
+
+    # Build a descriptive filename suffix
+    suffix_parts = []
+    if conf_code:
+        suffix_parts.append(conf_code)
+    elif conference:
+        suffix_parts.append(conference[:20].replace(' ', '_'))
+    if keyword:
+        suffix_parts.append(keyword[:20].replace(' ', '_'))
+    suffix_parts.append(datetime.now().strftime('%Y%m%d_%H%M%S'))
+    file_suffix = '_'.join(suffix_parts)
+
+    fieldnames = [
+        'author_name', 'email', 'affiliation',
+        'conference_name', 'conference_code',
+        'journal_name', 'article_title', 'article_url',
+        'keyword', 'scraped_date', 'created_at',
+    ]
+
     if file_format == 'xlsx':
-        # Create Excel file
         data = [r.to_dict() for r in records]
-        df = pd.DataFrame(data)
-        
+        df   = pd.DataFrame(data)
+        # Ensure all expected columns exist
+        for col in fieldnames:
+            if col not in df.columns:
+                df[col] = ''
+        df = df[[c for c in fieldnames if c in df.columns]]
+
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df.to_excel(writer, sheet_name='Master Database', index=False)
         output.seek(0)
-        
         return send_file(
             output,
             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             as_attachment=True,
-            download_name=f'master_database_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
-        )
-    
-    else:
-        # Create CSV file
-        output = io.StringIO()
-        if records:
-            fieldnames = ['author_name', 'email', 'affiliation', 'conference_name', 
-                         'journal_name', 'article_title', 'article_url', 'keyword', 
-                         'scraped_date', 'created_at']
-            writer = csv.DictWriter(output, fieldnames=fieldnames)
-            writer.writeheader()
-            
-            for record in records:
-                row = record.to_dict()
-                writer.writerow({k: row.get(k, '') for k in fieldnames})
-        
-        output.seek(0)
-        return send_file(
-            io.BytesIO(output.getvalue().encode('utf-8')),
-            mimetype='text/csv',
-            as_attachment=True,
-            download_name=f'master_database_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+            download_name=f'master_database_{file_suffix}.xlsx',
         )
 
+    # CSV
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+    for record in records:
+        row = record.to_dict()
+        writer.writerow({k: row.get(k, '') for k in fieldnames})
+    output.seek(0)
+
+    return send_file(
+        io.BytesIO(output.getvalue().encode('utf-8')),
+        mimetype='text/csv',
+        as_attachment=True,
+        download_name=f'master_database_{file_suffix}.csv',
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Stats (admin only) — extended with per-conference + per-keyword breakdown
+# ═══════════════════════════════════════════════════════════════════
 
 @master_db_bp.route('/api/master-database/stats')
-@internal_user_required
+@admin_required
 def master_database_stats():
-    """Get master database statistics"""
-    total_records = MasterDatabase.query.count()
-    unique_conferences = db.session.query(MasterDatabase.conference_name)\
-        .distinct()\
-        .filter(MasterDatabase.conference_name != '')\
-        .count()
-    unique_journals = db.session.query(MasterDatabase.journal_name)\
-        .distinct()\
-        .filter(MasterDatabase.journal_name != '')\
-        .count()
-    
-    # Recent additions
+    """
+    Admin-only statistics view for the master database.
+
+    Returns:
+      • total_records, unique_conferences, unique_journals
+      • recent_records  — last 10 additions
+      • top_conferences — top 10 by record count (includes display name)
+      • top_keywords    — top 10 keywords
+      • daily_additions — record count per day for the last 30 days
+      • conference_breakdown — every conference with its count and last-updated date
+    """
+    from models import Conference
+
+    total_records       = MasterDatabase.query.count()
+    unique_conferences  = db.session.query(MasterDatabase.conference_name)\
+                            .distinct()\
+                            .filter(MasterDatabase.conference_name != '')\
+                            .count()
+    unique_journals     = db.session.query(MasterDatabase.journal_name)\
+                            .distinct()\
+                            .filter(MasterDatabase.journal_name != '')\
+                            .count()
+
     recent_records = MasterDatabase.query\
-        .order_by(MasterDatabase.created_at.desc())\
-        .limit(10)\
-        .all()
-    
-    # Conference breakdown
-    conference_counts = db.session.query(
+                        .order_by(MasterDatabase.created_at.desc())\
+                        .limit(10).all()
+
+    # Top conferences by record count — join with Conference for display name
+    conf_counts = db.session.query(
+        MasterDatabase.conference_code,
         MasterDatabase.conference_name,
-        db.func.count(MasterDatabase.id).label('count')
+        db.func.count(MasterDatabase.id).label('count'),
+        db.func.max(MasterDatabase.updated_at).label('last_updated'),
     ).filter(MasterDatabase.conference_name != '')\
-     .group_by(MasterDatabase.conference_name)\
+     .group_by(MasterDatabase.conference_code, MasterDatabase.conference_name)\
      .order_by(db.text('count DESC'))\
-     .limit(10)\
+     .limit(10).all()
+
+    top_conferences = []
+    for row in conf_counts:
+        # Try to get the canonical display name from the Conference table
+        conf_obj  = Conference.query.filter_by(code=row.conference_code).first() if row.conference_code else None
+        top_conferences.append({
+            'conference_code': row.conference_code or '',
+            'conference':      conf_obj.display_name if conf_obj else row.conference_name,
+            'count':           row.count,
+            'last_updated':    row.last_updated.isoformat() if row.last_updated else None,
+        })
+
+    # Top keywords
+    kw_counts = db.session.query(
+        MasterDatabase.keyword,
+        db.func.count(MasterDatabase.id).label('count'),
+    ).filter(MasterDatabase.keyword != '')\
+     .group_by(MasterDatabase.keyword)\
+     .order_by(db.text('count DESC'))\
+     .limit(10).all()
+    top_keywords = [{'keyword': k[0], 'count': k[1]} for k in kw_counts]
+
+    # Daily additions — last 30 days
+    thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+    daily_raw = db.session.query(
+        db.func.date(MasterDatabase.created_at).label('day'),
+        db.func.count(MasterDatabase.id).label('count'),
+    ).filter(MasterDatabase.created_at >= thirty_days_ago)\
+     .group_by(db.func.date(MasterDatabase.created_at))\
+     .order_by(db.text('day ASC'))\
      .all()
-    
+    daily_additions = [{'date': str(r.day), 'count': r.count} for r in daily_raw]
+
+    # Full conference breakdown (all active conferences + their counts)
+    all_active_conferences = Conference.query.filter_by(is_active=True)\
+                                             .order_by(Conference.display_name).all()
+    conference_breakdown = []
+    for conf in all_active_conferences:
+        count = MasterDatabase.query.filter_by(conference_code=conf.code).count()
+        last_record = MasterDatabase.query\
+                        .filter_by(conference_code=conf.code)\
+                        .order_by(MasterDatabase.updated_at.desc())\
+                        .first()
+        conference_breakdown.append({
+            'code':         conf.code,
+            'display_name': conf.display_name,
+            'total_records': count,
+            'last_updated': (
+                last_record.updated_at.isoformat()
+                if last_record and last_record.updated_at else None
+            ),
+        })
+
     return jsonify({
-        'total_records': total_records,
-        'unique_conferences': unique_conferences,
-        'unique_journals': unique_journals,
-        'recent_records': [r.to_dict() for r in recent_records],
-        'top_conferences': [{'conference': c[0], 'count': c[1]} for c in conference_counts]
+        'total_records':        total_records,
+        'unique_conferences':   unique_conferences,
+        'unique_journals':      unique_journals,
+        'recent_records':       [r.to_dict() for r in recent_records],
+        'top_conferences':      top_conferences,
+        'top_keywords':         top_keywords,
+        'daily_additions':      daily_additions,
+        'conference_breakdown': conference_breakdown,
     })
 
+
+# ═══════════════════════════════════════════════════════════════════
+# Conference master list (unchanged from original)
+# ═══════════════════════════════════════════════════════════════════
 
 @master_db_bp.route('/api/conference-master/list')
 @internal_user_required
 def list_conference_masters():
-    """List uploaded conference master data"""
+    """List uploaded conference master data."""
     conference = request.args.get('conference', '').strip()
-    limit = request.args.get('limit', 100, type=int)
-    
+    limit      = request.args.get('limit', 100, type=int)
+
     query = ConferenceMaster.query
-    
     if conference:
         query = query.filter(ConferenceMaster.conference_name.ilike(f'%{conference}%'))
-    
-    records = query.order_by(ConferenceMaster.upload_date.desc())\
-        .limit(limit)\
-        .all()
-    
+
+    records = query.order_by(ConferenceMaster.upload_date.desc()).limit(limit).all()
+    return jsonify({'records': [r.to_dict() for r in records], 'total': query.count()})
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Public conferences dropdown (used by job-submission UI)
+# ═══════════════════════════════════════════════════════════════════
+
+@master_db_bp.route('/api/conferences')
+def conferences_list():
+    """
+    Returns active conferences that the current user is allowed to select.
+    Used to populate the conference dropdown in the job-submission form.
+    Auth: session required.
+    """
+    from models import Conference
+
+    if 'user_id' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
+
+    user = User.query.get(session['user_id'])
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    all_active = Conference.query.filter_by(is_active=True)\
+                                 .order_by(Conference.display_name).all()
+
+    allowed_raw = getattr(user, 'allowed_conferences', 'all') or 'all'
+    if allowed_raw == 'all':
+        visible = all_active
+    else:
+        try:
+            import json
+            allowed_codes = set(json.loads(allowed_raw))
+        except (ValueError, TypeError):
+            allowed_codes = set()
+        visible = [c for c in all_active if c.code in allowed_codes]
+
     return jsonify({
-        'records': [r.to_dict() for r in records],
-        'total': query.count()
+        'conferences': [
+            {'code': c.code, 'display_name': c.display_name}
+            for c in visible
+        ]
     })
