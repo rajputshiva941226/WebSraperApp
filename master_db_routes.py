@@ -441,31 +441,33 @@ def _run_daily_sync(days_back: int = 1, dry_run: bool = False, celery_task=None)
                                   .all()
                     )
 
-                # ── Pass 3: bulk-insert new, bulk-update existing ─────────
-                to_insert = []
+                # ── Pass 3: bulk-insert new, simple-update existing ───────
+                from sqlalchemy.dialects.postgresql import insert as _pg_insert
+
+                to_insert    = []
                 journal_name = job.get('journal_name', '')
                 keyword_val  = job.get('keyword', '')
+                now          = datetime.utcnow()
 
                 for email, r in rows_dict.items():
                     if email in existing_set:
-                        # UPDATE only empty fields — avoid N SELECT queries
-                        db.session.query(MasterDatabase).filter(
-                            MasterDatabase.email == email
-                        ).update({
-                            MasterDatabase.author_name: db.case(
-                                (db.or_(MasterDatabase.author_name == None,
-                                        MasterDatabase.author_name == ''),
-                                 r['author_name']),
-                                else_=MasterDatabase.author_name,
-                            ),
-                            MasterDatabase.conference_code: db.case(
-                                (db.or_(MasterDatabase.conference_code == None,
-                                        MasterDatabase.conference_code == ''),
-                                 r['conference_code']),
-                                else_=MasterDatabase.conference_code,
-                            ),
-                            MasterDatabase.updated_at: datetime.utcnow(),
-                        }, synchronize_session=False)
+                        # Fill empty author_name / conference_code without CASE
+                        if r['author_name']:
+                            db.session.query(MasterDatabase).filter(
+                                MasterDatabase.email == email,
+                                db.or_(MasterDatabase.author_name == None,
+                                       MasterDatabase.author_name == ''),
+                            ).update({'author_name': r['author_name'],
+                                      'updated_at':  now},
+                                     synchronize_session=False)
+                        if r['conference_code']:
+                            db.session.query(MasterDatabase).filter(
+                                MasterDatabase.email == email,
+                                db.or_(MasterDatabase.conference_code == None,
+                                       MasterDatabase.conference_code == ''),
+                            ).update({'conference_code': r['conference_code'],
+                                      'updated_at':      now},
+                                     synchronize_session=False)
                         total_updated += 1
                     else:
                         to_insert.append({
@@ -480,17 +482,21 @@ def _run_daily_sync(days_back: int = 1, dry_run: bool = False, celery_task=None)
                             'journal_name':   journal_name,
                             'keyword':        keyword_val,
                             'job_id':         str(db_job.id),
-                            'scraped_date':   datetime.utcnow(),
-                            'created_at':     datetime.utcnow(),
-                            'updated_at':     datetime.utcnow(),
+                            'scraped_date':   now,
+                            'created_at':     now,
+                            'updated_at':     now,
                         })
                         total_added += 1
 
                 if to_insert:
-                    db.session.bulk_insert_mappings(MasterDatabase, to_insert)
+                    # ON CONFLICT DO NOTHING handles duplicates that appear in
+                    # multiple jobs within the same sync run.
+                    stmt = _pg_insert(MasterDatabase.__table__).values(to_insert)
+                    stmt = stmt.on_conflict_do_nothing(index_elements=['email'])
+                    db.session.execute(stmt)
 
                 db.session.commit()
-                db.session.expunge_all()   # free ORM object cache after each job
+                db.session.expunge_all()   # free ORM identity map between jobs
 
             else:
                 # Dry-run: one batch SELECT is enough to count
