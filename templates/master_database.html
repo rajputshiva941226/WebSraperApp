@@ -115,18 +115,21 @@
 
             <!-- Filter row -->
             <div class="search-bar">
-                <input type="text" id="search-keyword"    placeholder="Keyword / author / email...">
-                <input type="text" id="search-conference" placeholder="Conference name...">
-                <input type="text" id="search-journal"    placeholder="Journal...">
+                <input type="text" id="search-keyword"  placeholder="Scraper keyword (e.g. Cardiovascular Diseases)">
+                <select id="search-conference" style="padding:9px 12px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px;flex:1;min-width:160px;">
+                    <option value="">— All Conferences —</option>
+                </select>
+                <input type="text" id="search-journal"  placeholder="Journal (e.g. PubMed)">
+                <input type="text" id="search-author"   placeholder="Author name or email...">
             </div>
 
             <!-- Action row: search + download together -->
             <div class="search-actions">
-                <button class="btn btn-primary" onclick="searchDatabase()">� Search</button>
+                <button class="btn btn-primary" onclick="searchDatabase()">🔍 Search</button>
                 <button class="btn btn-warning" onclick="clearSearch()">✕ Clear</button>
                 <div style="flex:1"></div>
-                <button class="btn btn-success" onclick="downloadFiltered('csv')" id="dl-csv-btn">⬇️ Download CSV</button>
-                <button class="btn btn-teal"    onclick="downloadFiltered('xlsx')" id="dl-xlsx-btn">⬇️ Download XLSX</button>
+                <button class="btn btn-success" onclick="downloadFiltered('csv')">⬇️ Download CSV</button>
+                <button class="btn btn-teal"    onclick="downloadFiltered('xlsx')">⬇️ Download XLSX</button>
             </div>
 
             <div id="search-count" class="result-count" style="margin-bottom:12px"></div>
@@ -151,9 +154,10 @@
         <div class="panel-card">
             <div class="panel-header"><h2>Database Statistics</h2></div>
 
-            <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap;">
+            <div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap;align-items:center;">
                 <button class="btn btn-primary" onclick="loadStats()" id="stats-btn">📊 Load Statistics</button>
                 <button class="btn btn-success" onclick="syncAllAsync()" id="sync-all-btn">🔄 Sync All Historical Data</button>
+                <span id="last-synced-info" style="font-size:13px;color:#718096;margin-left:8px;"></span>
             </div>
 
             <!-- Progress / result banner -->
@@ -201,19 +205,45 @@ function fmtDate(s) {
     catch(e) { return String(s).slice(0, 10); }
 }
 
+function timeAgo(iso) {
+    if (!iso) return '';
+    const diff = Math.floor((Date.now() - new Date(iso)) / 1000);
+    if (diff < 60)   return diff + 's ago';
+    if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+    if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
+    return Math.floor(diff/86400) + 'd ago';
+}
+
+/* ── Populate conference dropdown ───────────────────────────── */
+async function loadConferences() {
+    try {
+        const r = await fetch('/admin/conferences');
+        const d = await r.json();
+        const sel = document.getElementById('search-conference');
+        (d.conferences || []).forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c.code;
+            opt.textContent = c.display_name;
+            sel.appendChild(opt);
+        });
+    } catch(e) {}
+}
+
 /* ── Search / Browse ────────────────────────────────────────── */
 let _offset = 0;
 const _limit = 50;
 
 async function searchDatabase(offset) {
     _offset = offset || 0;
-    const kw   = document.getElementById('search-keyword').value.trim();
-    const conf = document.getElementById('search-conference').value.trim();
-    const jrnl = document.getElementById('search-journal').value.trim();
+    const kw        = document.getElementById('search-keyword').value.trim();
+    const confCode  = document.getElementById('search-conference').value.trim();
+    const jrnl      = document.getElementById('search-journal').value.trim();
+    const author    = document.getElementById('search-author').value.trim();
     const params = new URLSearchParams({limit: _limit, offset: _offset});
-    if (kw)   params.set('keyword', kw);
-    if (conf) params.set('conference', conf);
-    if (jrnl) params.set('journal', jrnl);
+    if (kw)       params.set('keyword', kw);
+    if (confCode) params.set('conference_code', confCode);
+    if (jrnl)     params.set('journal', jrnl);
+    if (author)   params.set('author', author);
 
     const tbody = document.getElementById('search-body');
     tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:24px">Loading…</td></tr>';
@@ -244,7 +274,10 @@ async function searchDatabase(offset) {
 }
 
 function clearSearch() {
-    ['search-keyword','search-conference','search-journal'].forEach(id => document.getElementById(id).value = '');
+    document.getElementById('search-keyword').value = '';
+    document.getElementById('search-conference').value = '';
+    document.getElementById('search-journal').value = '';
+    document.getElementById('search-author').value = '';
     document.getElementById('search-body').innerHTML =
         '<tr><td colspan="6" style="text-align:center;color:#718096;padding:30px">Use the filters above and click Search</td></tr>';
     document.getElementById('search-count').textContent = '';
@@ -264,15 +297,15 @@ function renderPagination(total, offset, limit) {
     container.innerHTML = html;
 }
 
-/* Download respects current filter fields */
+/* Download — respects current filter fields */
 function downloadFiltered(format) {
-    const kw   = document.getElementById('search-keyword').value.trim();
-    const conf = document.getElementById('search-conference').value.trim();
-    const jrnl = document.getElementById('search-journal').value.trim();
-    const params = new URLSearchParams({ format });
-    if (kw)   params.set('keyword', kw);
-    if (conf) params.set('conference', conf);
-    if (jrnl) params.set('journal', jrnl);
+    const kw       = document.getElementById('search-keyword').value.trim();
+    const confCode = document.getElementById('search-conference').value.trim();
+    const jrnl     = document.getElementById('search-journal').value.trim();
+    const params   = new URLSearchParams({ format });
+    if (kw)       params.set('keyword', kw);
+    if (confCode) params.set('conference_code', confCode);
+    if (jrnl)     params.set('journal', jrnl);
     window.location.href = '/api/master-database/download?' + params;
 }
 
@@ -291,6 +324,20 @@ async function loadStats() {
         document.getElementById('stat-total').textContent = fmt(d.total_records);
         document.getElementById('stat-conf').textContent  = fmt(d.unique_conferences);
         document.getElementById('stat-jrnl').textContent  = fmt(d.unique_journals);
+
+        const syncedEl = document.getElementById('last-synced-info');
+        if (syncedEl && d.last_synced_at) {
+            const ago = timeAgo(d.last_synced_at);
+            const syncDate = new Date(d.last_synced_at);
+            const hoursSince = (Date.now() - syncDate) / 3600000;
+            syncedEl.textContent = `Last synced: ${syncDate.toLocaleString()} (${ago})`;
+            syncedEl.style.color = hoursSince < 25 ? '#276749' : '#718096';
+
+            const btn2 = document.getElementById('sync-all-btn');
+            if (hoursSince < 25) {
+                btn2.title = 'Database was synced within the last 24 hours — run again only if new jobs completed';
+            }
+        }
 
         document.getElementById('top-conf-body').innerHTML =
             (d.top_conferences || []).length === 0
@@ -312,8 +359,18 @@ async function loadStats() {
     btn.innerHTML = '📊 Load Statistics';
 }
 
-/* ── Sync All — async with polling ──────────────────────────── */
+/* ── Sync All — async Celery task + localStorage persistence ── */
+/* The Celery worker runs on the SERVER — navigating away does  */
+/* NOT stop it. We store the task_id in localStorage so we can  */
+/* resume polling when the user returns to this page.           */
+const SYNC_KEY = 'masterdb_sync_task';
 let _pollTimer = null;
+
+function _saveSyncState(taskId) {
+    localStorage.setItem(SYNC_KEY, JSON.stringify({task_id: taskId, started_at: new Date().toISOString()}));
+}
+function _clearSyncState() { localStorage.removeItem(SYNC_KEY); }
+function _getSyncState()   { try { return JSON.parse(localStorage.getItem(SYNC_KEY)); } catch(e) { return null; } }
 
 async function syncAllAsync() {
     const btn    = document.getElementById('sync-all-btn');
@@ -322,7 +379,7 @@ async function syncAllAsync() {
     btn.innerHTML = '<span class="spinner"></span> Dispatching…';
     banner.className = 'sync-banner running';
     banner.style.display = 'block';
-    banner.innerHTML = '⏳ Sync task submitted — running in the background. This may take a few minutes for large datasets…';
+    banner.innerHTML = '⏳ Sync task submitted — running on the server. You can navigate away; come back to this page to see the result.';
 
     if (_pollTimer) clearInterval(_pollTimer);
 
@@ -339,10 +396,9 @@ async function syncAllAsync() {
             btn.innerHTML = '🔄 Sync All Historical Data';
             return;
         }
-        const taskId = d.task_id;
+        _saveSyncState(d.task_id);
         btn.innerHTML = '<span class="spinner"></span> Running…';
-        // Poll every 5 seconds
-        _pollTimer = setInterval(() => _pollSyncTask(taskId, btn), 5000);
+        _pollTimer = setInterval(() => _pollSyncTask(d.task_id, btn), 5000);
     } catch(err) {
         _showSyncError(err.message);
         btn.disabled = false;
@@ -357,6 +413,7 @@ async function _pollSyncTask(taskId, btn) {
         const d = await r.json();
         if (d.state === 'success') {
             clearInterval(_pollTimer);
+            _clearSyncState();
             banner.className = 'sync-banner success';
             banner.innerHTML = `✅ <strong>Sync complete</strong><pre>Jobs processed: ${fmt(d.jobs_processed)}
 Records added:  ${fmt(d.records_added)}
@@ -368,13 +425,15 @@ Errors:         ${(d.errors || []).length}</pre>`;
             if ((d.records_added || 0) > 0 || (d.records_updated || 0) > 0) loadStats();
         } else if (d.state === 'failure') {
             clearInterval(_pollTimer);
+            _clearSyncState();
             _showSyncError(d.error || 'Task failed');
             btn.disabled = false;
             btn.innerHTML = '🔄 Sync All Historical Data';
         }
-        // pending / started / retry → keep polling
+        // PENDING / STARTED / RETRY → keep polling
     } catch(err) {
         clearInterval(_pollTimer);
+        _clearSyncState();
         _showSyncError(err.message);
         btn.disabled = false;
         btn.innerHTML = '🔄 Sync All Historical Data';
@@ -387,6 +446,25 @@ function _showSyncError(msg) {
     banner.style.display = 'block';
     banner.innerHTML = `❌ <strong>Error:</strong> ${msg}`;
 }
+
+/* ── On page load: populate dropdown + resume any running sync ─ */
+document.addEventListener('DOMContentLoaded', () => {
+    loadConferences();
+
+    const saved = _getSyncState();
+    if (saved && saved.task_id) {
+        const btn    = document.getElementById('sync-all-btn');
+        const banner = document.getElementById('sync-banner');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Running…';
+        banner.className = 'sync-banner running';
+        banner.style.display = 'block';
+        const startedAgo = timeAgo(saved.started_at);
+        banner.innerHTML = `⏳ Sync still running (started ${startedAgo}). Polling for result…`;
+        if (_pollTimer) clearInterval(_pollTimer);
+        _pollTimer = setInterval(() => _pollSyncTask(saved.task_id, btn), 5000);
+    }
+});
 </script>
 </body>
 </html>

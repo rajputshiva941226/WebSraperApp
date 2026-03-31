@@ -340,7 +340,9 @@ def _run_daily_sync(days_back: int = 1, dry_run: bool = False) -> dict:
                     email = (
                         row.get('Email') or row.get('email') or row.get('emails', '')
                     ).strip().lower()
-                    author_name   = row.get('Author_Name') or row.get('Name') or row.get('author_name', '')
+                    author_name   = (row.get('Author_Name') or row.get('Name') or row.get('author_name') or
+                       row.get('full_name') or row.get('name') or row.get('first_name') or
+                       row.get('author') or '')
                     affiliation   = row.get('Affiliation') or row.get('affiliation', '')
                     article_url   = row.get('Article_URL') or row.get('URL') or row.get('Article URL', '')
                     article_title = row.get('Title') or row.get('title', '')
@@ -413,9 +415,10 @@ def _run_daily_sync(days_back: int = 1, dry_run: bool = False) -> dict:
 @internal_user_required
 def search_master_database():
     """Search master database with keyword, conference, and journal filters."""
-    keyword   = request.args.get('keyword', '').strip()
-    conference = request.args.get('conference', '').strip()  # display name
-    conf_code  = request.args.get('conference_code', '').strip().upper()  # short code
+    keyword    = request.args.get('keyword', '').strip()       # scraper search term
+    author     = request.args.get('author', '').strip()        # author name or email
+    conference = request.args.get('conference', '').strip()    # display name substring
+    conf_code  = request.args.get('conference_code', '').strip().upper()  # exact code
     journal    = request.args.get('journal', '').strip()
     limit      = request.args.get('limit', 100, type=int)
     offset     = request.args.get('offset', 0, type=int)
@@ -423,15 +426,16 @@ def search_master_database():
     query = MasterDatabase.query
 
     if keyword:
+        query = query.filter(MasterDatabase.keyword.ilike(f'%{keyword}%'))
+    if author:
         query = query.filter(db.or_(
-            MasterDatabase.author_name.ilike(f'%{keyword}%'),
-            MasterDatabase.email.ilike(f'%{keyword}%'),
-            MasterDatabase.keyword.ilike(f'%{keyword}%'),
+            MasterDatabase.author_name.ilike(f'%{author}%'),
+            MasterDatabase.email.ilike(f'%{author}%'),
         ))
-    if conference:
-        query = query.filter(MasterDatabase.conference_name.ilike(f'%{conference}%'))
     if conf_code:
         query = query.filter(MasterDatabase.conference_code == conf_code)
+    elif conference:
+        query = query.filter(MasterDatabase.conference_name.ilike(f'%{conference}%'))
     if journal:
         query = query.filter(MasterDatabase.journal_name.ilike(f'%{journal}%'))
 
@@ -634,6 +638,8 @@ def master_database_stats():
             ),
         })
 
+    last_synced_at = db.session.query(db.func.max(MasterDatabase.updated_at)).scalar()
+
     return jsonify({
         'total_records':        total_records,
         'unique_conferences':   unique_conferences,
@@ -643,6 +649,7 @@ def master_database_stats():
         'top_keywords':         top_keywords,
         'daily_additions':      daily_additions,
         'conference_breakdown': conference_breakdown,
+        'last_synced_at':       last_synced_at.isoformat() if last_synced_at else None,
     })
 
 

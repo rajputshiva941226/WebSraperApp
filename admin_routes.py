@@ -688,6 +688,20 @@ def edit_conference():
     return _render_admin(f'Conference "{code}" updated', 'success')
 
 
+@admin_bp.route('/conferences/delete/<string:code>', methods=['POST'])
+@admin_required
+def delete_conference(code):
+    """Permanently delete a conference record."""
+    from models import Conference
+    conf = Conference.query.filter_by(code=code.upper()).first()
+    if not conf:
+        return jsonify({'success': False, 'error': 'Conference not found'}), 404
+    display_name = conf.display_name
+    db.session.delete(conf)
+    db.session.commit()
+    return jsonify({'success': True, 'message': f'Conference "{display_name}" deleted'})
+
+
 @admin_bp.route('/manage-conferences', methods=['POST'])
 @admin_required
 def manage_conferences():

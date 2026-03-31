@@ -273,6 +273,8 @@
                                     onclick="toggleConference('{{ conf.code }}', this)">
                                     {{ '⏸ Deactivate' if conf.is_active else '▶ Activate' }}
                                 </button>
+                                <button class="btn btn-danger btn-small"
+                                    onclick="deleteConference('{{ conf.code }}', '{{ conf.display_name|e }}')">&#128465; Delete</button>
                             </td>
                         </tr>
                         {% endfor %}
@@ -764,6 +766,7 @@
                         <td class="action-btns">
                             <button class="btn btn-warning btn-small" onclick="openEditConfModal('${d.conference.code}','${d.conference.display_name}')">✏️ Edit</button>
                             <button class="btn btn-danger btn-small" id="toggle-conf-btn-${d.conference.code}" onclick="toggleConference('${d.conference.code}',this)">⏸ Deactivate</button>
+                            <button class="btn btn-danger btn-small" onclick="deleteConference('${d.conference.code}','${d.conference.display_name}')">🗑️ Delete</button>
                         </td>`;
                     tbody.prepend(tr);
                     document.getElementById('new_conf_code').value = '';
@@ -809,6 +812,19 @@
                         btn.className    = `btn btn-small ${d.is_active ? 'btn-danger' : 'btn-success'}`;
                         showToast(d.message, false);
                     } else { showToast(d.error||'Failed', true); }
+                }).catch(()=>showToast('Network error', true));
+        }
+
+        function deleteConference(code, name) {
+            if (!confirm(`Permanently delete conference "${name}" (${code})?\n\nThis cannot be undone. Records in the master database will NOT be deleted.`)) return;
+            fetch(`/admin/conferences/delete/${code}`, {method:'POST', headers:{'Content-Type':'application/json'}})
+                .then(r=>r.json())
+                .then(d => {
+                    if (d.success) {
+                        const row = document.getElementById(`conf-row-${code}`);
+                        if (row) row.remove();
+                        showToast(d.message, false);
+                    } else { showToast(d.error||'Delete failed', true); }
                 }).catch(()=>showToast('Network error', true));
         }
     </script>
