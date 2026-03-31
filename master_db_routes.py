@@ -413,11 +413,17 @@ def _run_daily_sync(days_back: int = 1, dry_run: bool = False, celery_task=None)
                         continue
                     csv_code = (row.get('Conference_Code') or
                                 row.get('conference_code', '')).strip().upper()
+                    _aname = (row.get('Author_Name') or row.get('Name') or
+                               row.get('author_name') or row.get('full_name') or
+                               row.get('name') or row.get('author') or '')
+                    if not _aname or _aname.upper() in ('N/A', 'NA', 'NONE', 'NULL'):
+                        _fn = (row.get('first_name') or '').strip()
+                        _ln = (row.get('last_name') or '').strip()
+                        _aname = f'{_fn} {_ln}'.strip()
+                    if _aname.upper() in ('N/A', 'NA', 'NONE', 'NULL'):
+                        _aname = ''
                     rows_dict[email] = {
-                        'author_name':   (row.get('Author_Name') or row.get('Name') or
-                                          row.get('author_name') or row.get('full_name') or
-                                          row.get('name') or row.get('first_name') or
-                                          row.get('author') or ''),
+                        'author_name':   _aname,
                         'affiliation':   row.get('Affiliation') or row.get('affiliation', ''),
                         'article_url':   row.get('Article_URL') or row.get('URL') or row.get('Article URL', ''),
                         'article_title': row.get('Title') or row.get('title', ''),
@@ -492,11 +498,15 @@ def _run_daily_sync(days_back: int = 1, dry_run: bool = False, celery_task=None)
                         total_added += 1
 
                 if to_insert:
-                    # ON CONFLICT DO NOTHING handles duplicates that appear in
-                    # multiple jobs within the same sync run.
-                    stmt = _pg_insert(MasterDatabase.__table__).values(to_insert)
-                    stmt = stmt.on_conflict_do_nothing(index_elements=['email'])
-                    db.session.execute(stmt)
+                    # Insert in batches of 500 — PostgreSQL bind-param limit is
+                    # 65535; each record has ~14 cols so max safe batch ≈ 4000.
+                    # 500 keeps well within limits and avoids memory spikes.
+                    _IBATCH = 500
+                    for _bi in range(0, len(to_insert), _IBATCH):
+                        _batch = to_insert[_bi: _bi + _IBATCH]
+                        stmt = _pg_insert(MasterDatabase.__table__).values(_batch)
+                        stmt = stmt.on_conflict_do_nothing()  # catches any unique violation
+                        db.session.execute(stmt)
 
                 db.session.commit()
                 db.session.expunge_all()   # free ORM identity map between jobs
@@ -777,6 +787,25 @@ def master_database_stats():
         'conference_breakdown': conference_breakdown,
         'last_synced_at':       last_synced_at.isoformat() if last_synced_at else None,
     })
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Journals dropdown (distinct journal_name values in the master DB)
+# ═══════════════════════════════════════════════════════════════════
+
+@master_db_bp.route('/api/master-database/journals')
+@internal_user_required
+def master_db_journals():
+    """Return distinct journal names stored in the master database."""
+    rows = (
+        db.session.query(MasterDatabase.journal_name)
+          .filter(MasterDatabase.journal_name.isnot(None))
+          .filter(MasterDatabase.journal_name != '')
+          .distinct()
+          .order_by(MasterDatabase.journal_name)
+          .all()
+    )
+    return jsonify({'journals': [r[0] for r in rows]})
 
 
 # ═══════════════════════════════════════════════════════════════════

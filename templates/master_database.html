@@ -119,7 +119,9 @@
                 <select id="search-conference" style="padding:9px 12px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px;flex:1;min-width:160px;">
                     <option value="">— All Conferences —</option>
                 </select>
-                <input type="text" id="search-journal"  placeholder="Journal (e.g. PubMed)">
+                <select id="search-journal" style="padding:9px 12px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px;flex:1;min-width:160px;">
+                    <option value="">— All Journals —</option>
+                </select>
                 <input type="text" id="search-author"   placeholder="Author name or email...">
             </div>
 
@@ -229,6 +231,21 @@ async function loadConferences() {
     } catch(e) {}
 }
 
+/* ── Populate journal dropdown ───────────────────────────────── */
+async function loadJournals() {
+    try {
+        const r = await fetch('/api/master-database/journals');
+        const d = await r.json();
+        const sel = document.getElementById('search-journal');
+        (d.journals || []).forEach(j => {
+            const opt = document.createElement('option');
+            opt.value = j;
+            opt.textContent = j;
+            sel.appendChild(opt);
+        });
+    } catch(e) {}
+}
+
 /* ── Search / Browse ────────────────────────────────────────── */
 let _offset = 0;
 const _limit = 50;
@@ -237,7 +254,7 @@ async function searchDatabase(offset) {
     _offset = offset || 0;
     const kw        = document.getElementById('search-keyword').value.trim();
     const confCode  = document.getElementById('search-conference').value.trim();
-    const jrnl      = document.getElementById('search-journal').value.trim();
+    const jrnl      = document.getElementById('search-journal').value;
     const author    = document.getElementById('search-author').value.trim();
     const params = new URLSearchParams({limit: _limit, offset: _offset});
     if (kw)       params.set('keyword', kw);
@@ -259,7 +276,7 @@ async function searchDatabase(offset) {
         tbody.innerHTML = d.records.length === 0
             ? '<tr><td colspan="6" style="text-align:center;color:#718096;padding:24px">No records found</td></tr>'
             : d.records.map(row => `<tr>
-                <td>${row.author_name || '—'}</td>
+                <td>${(row.author_name && row.author_name.toUpperCase() !== 'N/A') ? row.author_name : '—'}</td>
                 <td>${row.email || '—'}</td>
                 <td>${row.conference_name || '—'}</td>
                 <td>${row.journal_name || '—'}</td>
@@ -276,7 +293,7 @@ async function searchDatabase(offset) {
 function clearSearch() {
     document.getElementById('search-keyword').value = '';
     document.getElementById('search-conference').value = '';
-    document.getElementById('search-journal').value = '';
+    document.getElementById('search-journal').selectedIndex = 0;
     document.getElementById('search-author').value = '';
     document.getElementById('search-body').innerHTML =
         '<tr><td colspan="6" style="text-align:center;color:#718096;padding:30px">Use the filters above and click Search</td></tr>';
@@ -301,7 +318,7 @@ function renderPagination(total, offset, limit) {
 function downloadFiltered(format) {
     const kw       = document.getElementById('search-keyword').value.trim();
     const confCode = document.getElementById('search-conference').value.trim();
-    const jrnl     = document.getElementById('search-journal').value.trim();
+    const jrnl     = document.getElementById('search-journal').value;
     const params   = new URLSearchParams({ format });
     if (kw)       params.set('keyword', kw);
     if (confCode) params.set('conference_code', confCode);
@@ -483,6 +500,7 @@ function _showSyncError(msg) {
 /* ── On page load: populate dropdown + resume any running sync ─ */
 document.addEventListener('DOMContentLoaded', () => {
     loadConferences();
+    loadJournals();
 
     const saved = _getSyncState();
     if (saved && saved.task_id) {
