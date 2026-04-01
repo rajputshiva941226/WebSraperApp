@@ -210,7 +210,7 @@ class MasterDatabase(db.Model):
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     
     # Author information
-    author_name = db.Column(db.String(255), nullable=False)
+    author_name = db.Column(db.Text, nullable=False)
     email = db.Column(db.String(255), unique=True, nullable=False, index=True)
     affiliation = db.Column(db.Text)
     
@@ -219,7 +219,7 @@ class MasterDatabase(db.Model):
     conference_code = db.Column(db.String(30),  default='', index=True)
     journal_name = db.Column(db.String(100), index=True)
     article_title = db.Column(db.Text)
-    article_url = db.Column(db.String(500))
+    article_url = db.Column(db.Text)
     
     # Metadata
     keyword = db.Column(db.String(255), index=True)
