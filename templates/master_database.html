@@ -130,6 +130,7 @@
                 <input type="text" id="search-keyword"  placeholder="Scraper keyword (e.g. Cardiovascular Diseases)">
                 <select id="search-conference" style="padding:9px 12px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px;flex:1;min-width:160px;">
                     <option value="">— All Conferences —</option>
+                    <option value="old_conferences">old_conferences (pre-dropdown jobs)</option>
                 </select>
                 <select id="search-journal" style="padding:9px 12px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px;flex:1;min-width:160px;">
                     <option value="">— All Journals —</option>
@@ -330,7 +331,8 @@ async function searchDatabase(offset) {
     const author    = document.getElementById('search-author').value.trim();
     const params = new URLSearchParams({limit: _limit, offset: _offset});
     if (kw)       params.set('keyword', kw);
-    if (confCode) params.set('conference_code', confCode);
+    if (confCode === 'old_conferences') params.set('conference', 'old_conferences');
+    else if (confCode) params.set('conference_code', confCode);
     if (jrnl)     params.set('journal', jrnl);
     if (author)   params.set('author', author);
 
@@ -393,7 +395,8 @@ function downloadFiltered(format) {
     const jrnl     = document.getElementById('search-journal').value;
     const params   = new URLSearchParams({ format });
     if (kw)       params.set('keyword', kw);
-    if (confCode) params.set('conference_code', confCode);
+    if (confCode === 'old_conferences') params.set('conference', 'old_conferences');
+    else if (confCode) params.set('conference_code', confCode);
     if (jrnl)     params.set('journal', jrnl);
     window.location.href = '/api/master-database/download?' + params;
 }
