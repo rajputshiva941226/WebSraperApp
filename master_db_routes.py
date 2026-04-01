@@ -572,7 +572,7 @@ def _run_daily_sync(days_back: int = 1, dry_run: bool = False, celery_task=None)
                                 'conference_code': r['conference_code'],
                                 'journal_name':    journal_name,
                                 'keyword':         keyword_val,
-                                'job_id':          str(db_job.id),
+                                'job_id':          job.get('_job_id_str', ''),
                                 'scraped_date':    now,
                                 'created_at':      now,
                                 'updated_at':      now,
