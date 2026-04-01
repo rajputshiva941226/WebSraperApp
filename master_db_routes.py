@@ -456,8 +456,21 @@ def _run_daily_sync(days_back: int = 1, dry_run: bool = False, celery_task=None)
     jobs_processed = 0
     errors = []
 
-    total_jobs = len(jobs)
-    for job_idx, db_job in enumerate(jobs):
+    # Materialise every ORM object into a plain dict BEFORE the loop.
+    # expunge_all() is called after each commit, which would detach the
+    # remaining db_job instances and raise DetachedInstanceError on
+    # every subsequent iteration.
+    jobs_snapshot = []
+    for db_job in jobs:
+        try:
+            d = db_job.to_dict()
+            d['_job_id_str'] = str(db_job.id)
+            jobs_snapshot.append(d)
+        except Exception:
+            pass
+
+    total_jobs = len(jobs_snapshot)
+    for job_idx, job in enumerate(jobs_snapshot):
         try:
             if celery_task and job_idx % 5 == 0:
                 try:
@@ -475,7 +488,6 @@ def _run_daily_sync(days_back: int = 1, dry_run: bool = False, celery_task=None)
                 except Exception:
                     pass  # never let update_state crash the sync
 
-            job = db_job.to_dict()
             output_file = job.get('output_file', '')
             if not output_file or not os.path.exists(output_file):
                 jobs_processed += 1
@@ -593,10 +605,7 @@ def _run_daily_sync(days_back: int = 1, dry_run: bool = False, celery_task=None)
             except Exception as exc:
                 db.session.rollback()
                 db.session.expunge_all()
-                try:
-                    _jid = str(db_job.id)
-                except Exception:
-                    _jid = 'unknown'
+                _jid = job.get('_job_id_str', f'idx-{job_idx}')
                 errors.append({'job_id': _jid, 'error': str(exc)[:200]})
 
         except Exception as outer_exc:
@@ -604,10 +613,7 @@ def _run_daily_sync(days_back: int = 1, dry_run: bool = False, celery_task=None)
                 db.session.rollback()
             except Exception:
                 pass
-            try:
-                _jid = str(db_job.id)
-            except Exception:
-                _jid = f'idx-{job_idx}'
+            _jid = job.get('_job_id_str', f'idx-{job_idx}')
             errors.append({'job_id': _jid, 'error': f'outer: {str(outer_exc)[:200]}'})
 
     return {
