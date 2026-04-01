@@ -989,3 +989,40 @@ def conferences_list():
             for c in visible
         ]
     })
+
+
+# ═══════════════════════════════════════════════════════════════════
+# One-time column migration (admin only)
+# GET /api/master-database/migrate-columns
+# ═══════════════════════════════════════════════════════════════════
+@master_db_bp.route('/api/master-database/migrate-columns')
+@admin_required
+def migrate_master_db_columns():
+    """
+    Widen article_url and author_name to TEXT so long values no longer
+    cause StringDataRightTruncation.  Safe to call multiple times.
+    """
+    from sqlalchemy import inspect, text
+
+    results = {}
+    inspector = inspect(db.engine)
+    cols = {c['name']: str(c['type']).upper()
+            for c in inspector.get_columns('master_database')}
+
+    for col, sql in [
+        ('article_url', 'ALTER TABLE master_database ALTER COLUMN article_url TYPE TEXT'),
+        ('author_name', 'ALTER TABLE master_database ALTER COLUMN author_name TYPE TEXT'),
+    ]:
+        current_type = cols.get(col, '')
+        if 'TEXT' in current_type or 'CLOB' in current_type:
+            results[col] = 'already TEXT — skipped'
+            continue
+        try:
+            db.session.execute(text(sql))
+            db.session.commit()
+            results[col] = 'altered to TEXT ✅'
+        except Exception as exc:
+            db.session.rollback()
+            results[col] = f'ERROR: {exc}'
+
+    return jsonify({'migration': results})
