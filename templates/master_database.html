@@ -549,11 +549,22 @@ async function _pollSyncTask(taskId, btn) {
             clearInterval(_pollTimer);
             _clearSyncState();
             banner.className = 'sync-banner success';
+            const errList = d.errors || [];
+            let errHtml = '';
+            if (errList.length > 0) {
+                const sample = errList.slice(0, 5)
+                    .map(e => `<li style="font-family:monospace;font-size:11px;">${(e.job_id||'').slice(0,8)}…: ${e.error}</li>`)
+                    .join('');
+                errHtml = `<details style="margin-top:8px;">
+                    <summary style="cursor:pointer;font-size:12px;color:#744210;">⚠️ ${errList.length} job error(s) — click to expand</summary>
+                    <ul style="margin:4px 0 0 0;padding-left:16px;">${sample}${errList.length > 5 ? `<li>…and ${errList.length - 5} more</li>` : ''}</ul>
+                </details>`;
+            }
             banner.innerHTML = `✅ <strong>Sync complete</strong><pre>Jobs processed: ${fmt(d.jobs_processed)}
 Records added:  ${fmt(d.records_added)}
 Records updated:${fmt(d.records_updated)}
 Records skipped:${fmt(d.records_skipped)}
-Errors:         ${(d.errors || []).length}</pre>`;
+Errors:         ${errList.length}</pre>${errHtml}`;
             btn.disabled = false;
             btn.innerHTML = '🔄 Sync All Historical Data';
             if ((d.records_added || 0) > 0 || (d.records_updated || 0) > 0) loadStats();

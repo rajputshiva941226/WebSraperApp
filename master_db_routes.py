@@ -352,6 +352,86 @@ def _resolve_conference_code(conference_name: str) -> str:
         return ''
 
 
+def _normalize_csv_rows(filepath: str) -> list:
+    """
+    Read a scraper output CSV and return a list of normalised dicts.
+
+    Handles every known scraper column format without touching scraper code:
+      Selenium scrapers  : Article_URL | Author_Name | Email [| Conference_Name]
+      Cambridge          : Article URL | Name | Email | Match Score | Conference Name
+      Emerald            : Article URL | Author Name | Email
+      EuropePMC          : pmid | title | doi | first_name | last_name | full_name | email
+      MDPI               : email | first_name | last_name | full_name | title | doi | pub_url
+      PubMed (adapter)   : author_name | email | affiliation | journal | title | pmid
+      Nature API         : DOI | URL | Title | Authors (pipe-sep) | Emails (pipe-sep)
+    """
+    import io as _io
+    try:
+        with open(filepath, 'r', encoding='utf-8', errors='replace', newline='') as fh:
+            content = fh.read()
+    except Exception:
+        return []
+    if not content:
+        return []
+
+    rows_out = []
+    try:
+        reader = csv.DictReader(_io.StringIO(content))
+    except Exception:
+        return []
+
+    for raw_row in reader:
+        row   = {(k.strip() if k else ''): (v or '').strip() for k, v in raw_row.items()}
+        row_l = {k.lower(): v for k, v in row.items()}
+
+        def _get(*keys):
+            for k in keys:
+                if k in row:
+                    return row[k]
+                if k.lower() in row_l:
+                    return row_l[k.lower()]
+            return ''
+
+        raw_email  = _get('Email', 'email', 'Emails', 'emails',
+                          'Email Address', 'email_address')
+        raw_author = _get('Author_Name', 'Author Name', 'Author name',
+                          'Name', 'author_name', 'full_name',
+                          'Authors', 'Author', 'author')
+        if not raw_author or raw_author.upper() in ('N/A', 'NA', 'NONE', 'NULL'):
+            fn = _get('first_name', 'First_Name', 'First Name', 'firstname')
+            ln = _get('last_name',  'Last_Name',  'Last Name',  'lastname')
+            raw_author = f'{fn} {ln}'.strip()
+        if raw_author.upper() in ('N/A', 'NA', 'NONE', 'NULL'):
+            raw_author = ''
+
+        article_url   = _get('Article_URL', 'Article URL', 'pub_url',
+                             'URL', 'url', 'article_url', 'link', 'Link', 'DOI', 'doi')
+        article_title = _get('Title', 'title', 'article_title', 'Article_Title')
+        affiliation   = _get('Affiliation', 'affiliation', 'Affiliations',
+                             'Institution', 'institution')
+        conf_code_csv = _get('Conference_Code', 'conference_code')
+
+        emails  = [e.strip().lower() for e in raw_email.split('|') if e.strip()]
+        authors = [a.strip() for a in raw_author.split('|') if a.strip()] if raw_author else []
+
+        for i, email in enumerate(emails):
+            if not email or '@' not in email or email in ('n/a', 'na'):
+                continue
+            author = authors[i] if i < len(authors) else (authors[0] if authors else '')
+            if author.upper() in ('N/A', 'NA', 'NONE', 'NULL'):
+                author = ''
+            rows_out.append({
+                'email':               email,
+                'author_name':         author,
+                'affiliation':         affiliation,
+                'article_url':         article_url,
+                'article_title':       article_title,
+                'conference_code_csv': conf_code_csv,
+            })
+
+    return rows_out
+
+
 def _run_daily_sync(days_back: int = 1, dry_run: bool = False, celery_task=None) -> dict:
     """
     Core sync logic shared by the manual endpoint and Celery Beat task.
@@ -403,44 +483,31 @@ def _run_daily_sync(days_back: int = 1, dry_run: bool = False, celery_task=None)
 
             conf_name = job.get('conference', '') or job.get('conference_name', '')
             conf_code = _resolve_conference_code(conf_name)
+            # Jobs created before the conference dropdown existed have no
+            # resolvable conference code — group them under 'old_conferences'
+            if not conf_code:
+                conf_name = 'old_conferences'
 
             try:
                 # ── Pass 1: read CSV into an in-memory dict (dedup by email) ──
-                rows_dict = {}
-                with open(output_file, 'r', encoding='utf-8') as f:
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        email = (
-                            row.get('Email') or row.get('email') or row.get('emails', '')
-                        ).strip().lower()
-                        if not email or '@' not in email or email == 'n/a':
-                            total_skipped += 1
-                            continue
-                        if email in rows_dict:
-                            total_skipped += 1
-                            continue
-                        csv_code = (row.get('Conference_Code') or
-                                    row.get('conference_code', '')).strip().upper()
-                        _aname = (row.get('Author_Name') or row.get('Name') or
-                                  row.get('author_name') or row.get('full_name') or
-                                  row.get('name') or row.get('author') or '')
-                        if not _aname or _aname.upper() in ('N/A', 'NA', 'NONE', 'NULL'):
-                            _fn = (row.get('first_name') or '').strip()
-                            _ln = (row.get('last_name') or '').strip()
-                            _aname = f'{_fn} {_ln}'.strip()
-                        if _aname.upper() in ('N/A', 'NA', 'NONE', 'NULL'):
-                            _aname = ''
-                        rows_dict[email] = {
-                            'author_name':    _aname,
-                            'affiliation':    row.get('Affiliation') or row.get('affiliation', ''),
-                            'article_url':    row.get('Article_URL') or row.get('URL') or row.get('Article URL', ''),
-                            'article_title':  row.get('Title') or row.get('title', ''),
-                            'conference_code': csv_code or conf_code,
-                        }
-
-                if not rows_dict:
+                normalized = _normalize_csv_rows(output_file)
+                if not normalized:
                     jobs_processed += 1
                     continue
+
+                rows_dict = {}
+                for nr in normalized:
+                    email = nr['email']
+                    if email in rows_dict:
+                        total_skipped += 1
+                        continue
+                    rows_dict[email] = {
+                        'author_name':    nr['author_name'],
+                        'affiliation':    nr['affiliation'],
+                        'article_url':    nr['article_url'],
+                        'article_title':  nr['article_title'],
+                        'conference_code': (nr['conference_code_csv'] or conf_code).upper(),
+                    }
 
                 all_emails = list(rows_dict.keys())
 
