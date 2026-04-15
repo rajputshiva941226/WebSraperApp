@@ -703,7 +703,23 @@ def jobs_page():
         return render_template('login.html', 
             error='Please login to access jobs. Contact admin@email.com to create an account.')
     
-    return render_template('jobs.html')
+    import json
+    allowed_scrapers = session.get('allowed_scrapers', 'all')
+    enabled_journals = {}
+    for k, v in JOURNALS.items():
+        if not v['enabled']:
+            continue
+        if allowed_scrapers == 'all':
+            enabled_journals[k] = v
+        else:
+            try:
+                allowed_list = json.loads(allowed_scrapers)
+                if k in allowed_list:
+                    enabled_journals[k] = v
+            except Exception:
+                enabled_journals[k] = v
+
+    return render_template('jobs.html', journals=enabled_journals)
 
 @app.route('/api/start-scraping', methods=['POST'])
 def start_scraping():
@@ -1043,15 +1059,24 @@ def stop_job(job_id):
         if db_job.status not in ['running', 'pending']:
             return jsonify({'error': f'Job already {db_job.status}'}), 400
 
-        # Set DB flag - worker checks this cooperatively
-        db_job.stop_requested = True
-        db_job.message = 'Stop requested...'
+        if db_job.status == 'pending':
+            # Job hasn't started yet — kill it immediately so polling stops
+            db_job.status        = 'stopped'
+            db_job.stop_requested = True
+            db_job.message       = 'Stopped before starting'
+            db_job.end_time      = datetime.utcnow()
+        else:
+            # Running — cooperative stop: worker checks flag and raises KeyboardInterrupt
+            db_job.stop_requested = True
+            db_job.message        = 'Stop requested...'
+
         db.session.commit()
 
         # Also set in-memory flag for immediate effect on current thread
         job_stop_flags[job_id] = True
         if job_id in active_jobs:
-            active_jobs[job_id]['message'] = 'Stop requested...'
+            active_jobs[job_id]['status']  = db_job.status
+            active_jobs[job_id]['message'] = db_job.message
 
         return jsonify({'success': True, 'message': f'Stop requested for job {job_id}'})
     except Exception as e:

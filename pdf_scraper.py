@@ -95,12 +95,24 @@ class PDFScraper:
 
     # ── Internal helpers ──────────────────────────────────────────────────────
     def _p(self, pct: int, msg: str, **kw):
+        self._last_pct = pct
         if self.progress_cb:
             try:
                 self.progress_cb(pct, msg, **kw)
+            except KeyboardInterrupt:
+                raise  # propagate cooperative stop signal
             except Exception:
                 pass
         logger.info('[PDFScraper] %d%% — %s', pct, msg)
+
+    def _stop_check(self):
+        """Force a stop check without updating displayed progress."""
+        pct = getattr(self, '_last_pct', 0)
+        if self.progress_cb:
+            try:
+                self.progress_cb(pct, '')
+            except KeyboardInterrupt:
+                raise
 
     def _grobid_alive(self) -> bool:
         try:
@@ -108,6 +120,15 @@ class PDFScraper:
             return r.status_code == 200
         except Exception:
             return False
+
+    def _warn_no_grobid(self):
+        """Log and surface a user-visible warning when GROBID is not reachable."""
+        msg = (
+            f'GROBID not reachable at {self.grobid_url} '
+            '(Docker not running?). Falling back to PyMuPDF for extraction.'
+        )
+        logger.warning('[PDFScraper] %s', msg)
+        return msg
 
     # ── Phase 1 : direct email extraction from raw PDF text ──────────────────
     def _extract_direct_emails(self) -> List[Dict]:
@@ -388,8 +409,16 @@ class PDFScraper:
         direct = self._extract_direct_emails()
         logger.info('[PDFScraper] Direct emails: %d', len(direct))
 
+        # ── Phase 1.5 : stop check before slow phase ──
+        self._stop_check()
+
         # ── Phase 2 ──
-        self._p(30, 'Extracting author/affiliation structure (GROBID / PyMuPDF)…')
+        grobid_up = self._grobid_alive()
+        if not grobid_up:
+            fallback_msg = self._warn_no_grobid()
+            self._p(30, f'⚠ {fallback_msg}')
+        else:
+            self._p(30, 'Extracting author/affiliation structure via GROBID…')
         structural = self._extract_structural()
         logger.info('[PDFScraper] Structural authors: %d', len(structural))
 
@@ -450,6 +479,9 @@ class PDFScraper:
                     records[key]['Affiliation'] = s['affiliation']
                 if not records[key]['Author_Name'] and aname:
                     records[key]['Author_Name'] = aname
+
+        # ── Stop check after structural phase ──
+        self._stop_check()
 
         # ── Phase 3 : API email search for authors still missing emails ──
         no_email = [r for r in records.values()
