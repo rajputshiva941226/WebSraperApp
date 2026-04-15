@@ -278,6 +278,21 @@ class ScraperAdapter:
                 }
                 return final_output, summary
 
+            # ── PDF Scraper — no Chrome needed, runs in-process ────────────────────
+            if scraper_type == 'pdf_scraper':
+                # `keyword` carries the uploaded PDF file path
+                scraper = scraper_class(
+                    pdf_path=keyword,
+                    output_dir=self.output_dir,
+                    job_id=self.job_id,
+                    conference_name=conference_name,
+                )
+                scraper.set_progress_callback(self.progress_callback)
+                self._report_progress(40, 'Running PDF extraction pipeline…')
+                output_file, summary = scraper.run()
+                self._report_progress(100, 'PDF scraping completed')
+                return output_file, summary
+
             # ── All Selenium scrapers (including Nature) via SeleniumScraperWrapper ────
 
             # ── All other Selenium scrapers via SeleniumScraperWrapper ────

@@ -5,6 +5,7 @@ Features: Dashboard, Metrics, Multi-journal support, Job tracking
 """
 
 import os
+import re
 import json
 import threading
 import time
@@ -204,7 +205,7 @@ JOURNALS = {
     'pdf_scraper': {
         'name': 'PDF Scraper',
         'full_name': 'PDF Author Email Extractor',
-        'type': 'selenium',
+        'type': 'document',
         'enabled': True,
         'description': 'Extract author emails from uploaded PDF files'
     }
@@ -378,11 +379,11 @@ def run_scraper_task(job_id, user_id, journal, keyword, start_date, end_date,
         from scraper_adapter import ScraperAdapter
         
         # Only install ChromeDriver for Selenium-based scrapers
-        # API scrapers (europepmc, pubmed) don't need Chrome
-        api_scrapers = {'europepmc', 'pubmed'}
+        # API scrapers and document scrapers (pdf_scraper) don't need Chrome
+        _no_chrome = {'europepmc', 'pubmed', 'pdf_scraper'}
         driver_path = None
         
-        if journal not in api_scrapers:
+        if journal not in _no_chrome:
             from webdriver_manager.chrome import ChromeDriverManager
             driver_path = ChromeDriverManager().install()
 
@@ -837,6 +838,104 @@ def start_scraping():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
+@app.route('/api/start-pdf-scraping', methods=['POST'])
+def start_pdf_scraping():
+    """
+    Accept a PDF file upload + form fields, create a pdf_scraper job,
+    and dispatch it via Celery (or thread fallback).
+
+    Form fields (multipart/form-data):
+        pdf_file         – the PDF binary (required)
+        conference_code  – conference code (required)
+        conference_name  – human-readable conference name
+    """
+    if 'user_id' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
+
+    try:
+        if 'pdf_file' not in request.files:
+            return jsonify({'error': 'No PDF file provided'}), 400
+        pdf_file = request.files['pdf_file']
+        if not pdf_file or pdf_file.filename == '':
+            return jsonify({'error': 'Empty file name'}), 400
+        if not pdf_file.filename.lower().endswith('.pdf'):
+            return jsonify({'error': 'Only PDF files are accepted'}), 400
+
+        conference_code = request.form.get('conference_code', '')
+        conference_name = request.form.get('conference_name', conference_code or 'default')
+        if not conference_code:
+            return jsonify({'error': 'Conference is required'}), 400
+
+        user_id = session.get('user_id')
+        job_id  = str(uuid.uuid4())
+
+        # Per-job output directory (created before saving the PDF)
+        job_output_dir = os.path.join(app.config['UPLOAD_FOLDER'], user_id, job_id)
+        os.makedirs(job_output_dir, exist_ok=True)
+
+        # Sanitise filename: spaces → underscores, keep only safe chars
+        raw_name  = secure_filename(pdf_file.filename)
+        safe_name = re.sub(r'[^\w\-.]', '_', raw_name.replace(' ', '_'))
+        pdf_path  = os.path.join(job_output_dir, safe_name)
+        pdf_file.save(pdf_path)
+
+        # Persist job to DB
+        try:
+            db_job = Job(
+                id=job_id,
+                user_id=user_id,
+                journal='pdf_scraper',
+                journal_name=JOURNALS['pdf_scraper']['name'],
+                keyword=pdf_path,          # keyword carries the file path
+                conference=conference_name,
+                start_date='N/A',
+                end_date='N/A',
+                status='pending',
+                progress=0,
+                message='PDF job queued',
+                created_at=datetime.utcnow(),
+            )
+            db.session.add(db_job)
+            db.session.commit()
+        except Exception as db_err:
+            print(f'[DB] Failed to save PDF job: {db_err}')
+            db.session.rollback()
+
+        job_stop_flags[job_id] = False
+
+        if _USE_CELERY:
+            queue = 'api'  # No Chrome needed — use lightweight queue
+            task  = _celery_run_scraper.apply_async(
+                args=(job_id, user_id, 'pdf_scraper', pdf_path,
+                      'N/A', 'N/A', conference_name, 'all'),
+                queue=queue,
+            )
+            try:
+                db_j = Job.query.get(job_id)
+                if db_j:
+                    db_j.worker_task_id = task.id
+                    db.session.commit()
+            except Exception:
+                pass
+        else:
+            thread = threading.Thread(
+                target=run_scraper_task,
+                args=(job_id, user_id, 'pdf_scraper', pdf_path,
+                      'N/A', 'N/A', conference_name, 'all', 0),
+            )
+            thread.daemon = True
+            thread.start()
+            job_threads[job_id] = thread
+
+        return jsonify({
+            'success': True,
+            'job_id':  job_id,
+            'message': f'PDF scraping job started for {safe_name}',
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/jobs')

@@ -63,9 +63,10 @@ celery_app = Celery(
 SELENIUM_SCRAPERS = {
     'springer', 'cambridge', 'bmj', 'nature',
     'oxford', 'lippincott', 'sage', 'emerald', 'mdpi',
-    'tandf', 'wiley', 'sciencedirect', 'pdf_scraper',
+    'tandf', 'wiley', 'sciencedirect',
 }
 API_SCRAPERS = {'europepmc', 'pubmed'}
+DOCUMENT_SCRAPERS = {'pdf_scraper'}  # No Chrome — runs GROBID/PyMuPDF in-process
 
 _selenium_exchange = Exchange('selenium', type='direct')
 _api_exchange       = Exchange('api',      type='direct')
@@ -465,9 +466,9 @@ def run_scraper_task(
         from scraper_adapter import ScraperAdapter
 
         # Only install ChromeDriver for Selenium scrapers.
-        # API scrapers never touch Chrome.
+        # API and document scrapers never touch Chrome.
         driver_path = None
-        if journal in SELENIUM_SCRAPERS:
+        if journal in SELENIUM_SCRAPERS and journal not in DOCUMENT_SCRAPERS:
             from webdriver_manager.chrome import ChromeDriverManager
             driver_path = ChromeDriverManager().install()
             logger.info("[%s] ChromeDriver installed at %s", journal.upper(), driver_path)

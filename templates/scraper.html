@@ -130,6 +130,46 @@
             .date-range { grid-template-columns: 1fr; }
             .nav-links { display: none; }
         }
+
+        /* ── PDF Scraper card ───────────────────────────────────── */
+        .pdf-section {
+            background: #fffbf0; border: 2px solid #ed8936;
+            border-radius: 8px; padding: 20px; margin-bottom: 20px;
+        }
+        .pdf-section h3 { color: #c05621; margin-bottom: 15px; font-size: 18px; }
+
+        .file-drop-zone {
+            border: 2px dashed #ed8936; border-radius: 8px; padding: 30px;
+            text-align: center; cursor: pointer; transition: all 0.3s;
+            background: #fff8f0;
+        }
+        .file-drop-zone:hover, .file-drop-zone.drag-over {
+            border-color: #c05621; background: #feefdc;
+        }
+        .file-drop-zone input[type="file"] { display: none; }
+        .file-drop-zone .drop-icon { font-size: 36px; margin-bottom: 8px; }
+        .file-drop-zone .drop-text { color: #744210; font-weight: 500; }
+        .file-drop-zone .drop-sub  { color: #a0aec0; font-size: 13px; margin-top: 4px; }
+
+        .file-preview {
+            display: none; background: #f0fff4; border: 1px solid #9ae6b4;
+            border-radius: 6px; padding: 12px 16px; margin-top: 10px;
+            font-size: 14px; color: #22543d;
+        }
+        .file-preview .sanitized { color: #a0aec0; font-size: 12px; margin-top: 4px; }
+        .btn-orange {
+            background: white; color: #c05621; border: 2px solid #ed8936;
+            padding: 14px 30px; border-radius: 8px; font-size: 16px; font-weight: 600;
+            cursor: pointer; transition: all 0.3s ease; width: 100%;
+        }
+        .btn-orange:hover {
+            background: #ed8936; color: white; transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(237,137,54,0.3);
+        }
+        .btn-orange:disabled {
+            background: #e2e8f0; border-color: #cbd5e0; color: #a0aec0;
+            cursor: not-allowed; transform: none;
+        }
     </style>
 </head>
 <body>
@@ -218,7 +258,7 @@
                     <button type="button" class="select-all-btn" onclick="deselectAllJournals()">Deselect All</button>
                     <div class="journals-grid" id="journals-container">
                         {% for key, journal in journals.items() %}
-                        {% if key != 'pubmed' %}
+                        {% if key != 'pubmed' and key != 'pdf_scraper' %}
                         <div class="journal-checkbox {% if key == 'europepmc' %}fast-scraper{% else %}slow-scraper{% endif %}" onclick="toggleJournal(this)">
                             <input type="checkbox" name="journals" value="{{ key }}" id="journal-{{ key }}">
                             <label for="journal-{{ key }}">
@@ -268,6 +308,60 @@
                 <button type="submit" class="btn" id="submit-btn">Start Scraping</button>
             </form>
         </div>
+
+        <!-- ══════════════════════════════════════════════════════════ -->
+        <!-- PDF SCRAPER CARD                                         -->
+        <!-- ══════════════════════════════════════════════════════════ -->
+        {% if 'pdf_scraper' in journals %}
+        <div class="card">
+            <h2>📄 PDF Author Email Extractor</h2>
+            <p style="color:#718096; margin-bottom:20px; font-size:14px;">
+                Upload a conference proceedings or journal PDF. The system extracts
+                author names, affiliations, and emails directly from the document
+                and via Semantic Scholar / OpenAlex APIs.
+            </p>
+
+            <div id="pdf-alert-container"></div>
+
+            <form id="pdf-form" enctype="multipart/form-data">
+
+                <div class="form-group">
+                    <label for="pdf_conference_code">
+                        Conference <span class="required">*</span>
+                    </label>
+                    <select id="pdf_conference_code" name="conference_code" required disabled>
+                        <option value="">Loading conferences…</option>
+                    </select>
+                    <input type="hidden" id="pdf_conference_name" name="conference_name">
+                    <div class="help-text">Associate this PDF job with a conference</div>
+                </div>
+
+                <div class="form-group">
+                    <label>PDF File <span class="required">*</span></label>
+                    <div class="pdf-section">
+                        <h3>📎 Upload PDF</h3>
+                        <div class="file-drop-zone" id="drop-zone"
+                             onclick="document.getElementById('pdf_file_input').click()">
+                            <div class="drop-icon">📁</div>
+                            <div class="drop-text">Click to select or drag &amp; drop a PDF</div>
+                            <div class="drop-sub">Maximum file size: 100 MB</div>
+                            <input type="file" id="pdf_file_input" name="pdf_file"
+                                   accept=".pdf" required>
+                        </div>
+                        <div class="file-preview" id="file-preview">
+                            <strong id="file-orig-name"></strong>
+                            <div class="sanitized">Will be saved as: <span id="file-safe-name"></span></div>
+                        </div>
+                    </div>
+                    <div class="help-text">Only PDF files are accepted</div>
+                </div>
+
+                <button type="submit" class="btn-orange" id="pdf-submit-btn">
+                    Extract Author Emails from PDF
+                </button>
+            </form>
+        </div>
+        {% endif %}
     </div>
 
     <script>
@@ -455,6 +549,146 @@
 
         // Init
         loadConferences();
+
+        // ── PDF Conference Dropdown ──────────────────────────────────────────
+        async function loadPdfConferences() {
+            const sel = document.getElementById('pdf_conference_code');
+            if (!sel) return;
+            try {
+                const res  = await fetch('/api/conferences');
+                const data = await res.json();
+                if (!res.ok || !data.conferences) throw new Error(data.error || 'Failed');
+                sel.innerHTML = '<option value="">Select a conference…</option>';
+                data.conferences.forEach(conf => {
+                    const opt = document.createElement('option');
+                    opt.value = conf.code;
+                    opt.textContent = conf.display_name;
+                    opt.dataset.displayName = conf.display_name;
+                    sel.appendChild(opt);
+                });
+                sel.disabled = false;
+            } catch (err) {
+                sel.innerHTML = '<option value="">Failed to load conferences</option>';
+            }
+        }
+
+        const pdfSel = document.getElementById('pdf_conference_code');
+        if (pdfSel) {
+            pdfSel.addEventListener('change', function () {
+                const opt = this.options[this.selectedIndex];
+                document.getElementById('pdf_conference_name').value =
+                    opt && opt.dataset.displayName ? opt.dataset.displayName : '';
+            });
+            loadPdfConferences();
+        }
+
+        // ── Filename sanitization helper ─────────────────────────────────────
+        function sanitizeFilename(name) {
+            return name.replace(/\s+/g, '_').replace(/[^\w\-.]/g, '_');
+        }
+
+        // ── File input / drag-and-drop ───────────────────────────────────────
+        const fileInput  = document.getElementById('pdf_file_input');
+        const dropZone   = document.getElementById('drop-zone');
+        const filePreview = document.getElementById('file-preview');
+
+        function handleFile(file) {
+            if (!file) return;
+            if (!file.name.toLowerCase().endsWith('.pdf')) {
+                showPdfAlert('Only PDF files are accepted.', 'error');
+                fileInput.value = '';
+                filePreview.style.display = 'none';
+                return;
+            }
+            document.getElementById('file-orig-name').textContent = file.name;
+            document.getElementById('file-safe-name').textContent = sanitizeFilename(file.name);
+            filePreview.style.display = 'block';
+        }
+
+        if (fileInput) {
+            fileInput.addEventListener('change', () => handleFile(fileInput.files[0]));
+        }
+        if (dropZone) {
+            dropZone.addEventListener('dragover', e => {
+                e.preventDefault();
+                dropZone.classList.add('drag-over');
+            });
+            dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+            dropZone.addEventListener('drop', e => {
+                e.preventDefault();
+                dropZone.classList.remove('drag-over');
+                const file = e.dataTransfer.files[0];
+                if (file) {
+                    // Assign to the file input so FormData picks it up
+                    const dt = new DataTransfer();
+                    dt.items.add(file);
+                    fileInput.files = dt.files;
+                    handleFile(file);
+                }
+            });
+        }
+
+        // ── PDF alert helper ─────────────────────────────────────────────────
+        function showPdfAlert(message, type = 'success') {
+            const container = document.getElementById('pdf-alert-container');
+            if (!container) return;
+            const div = document.createElement('div');
+            div.className = `alert alert-${type}`;
+            div.textContent = message;
+            div.style.display = 'block';
+            container.innerHTML = '';
+            container.appendChild(div);
+            setTimeout(() => { div.style.display = 'none'; }, 6000);
+        }
+
+        // ── PDF form submission ──────────────────────────────────────────────
+        const pdfForm = document.getElementById('pdf-form');
+        if (pdfForm) {
+            pdfForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const btn = document.getElementById('pdf-submit-btn');
+                const confCode = document.getElementById('pdf_conference_code').value;
+                const file = fileInput && fileInput.files[0];
+
+                if (!confCode) {
+                    showPdfAlert('Please select a conference.', 'error');
+                    return;
+                }
+                if (!file) {
+                    showPdfAlert('Please select a PDF file.', 'error');
+                    return;
+                }
+
+                btn.disabled = true;
+                btn.textContent = 'Uploading & starting job…';
+
+                const fd = new FormData(pdfForm);
+                // Ensure conference_name hidden field is included
+                fd.set('conference_code', confCode);
+                fd.set('conference_name',
+                    document.getElementById('pdf_conference_name').value || confCode);
+
+                try {
+                    const res    = await fetch('/api/start-pdf-scraping', {
+                        method: 'POST',
+                        body:   fd,
+                    });
+                    const result = await res.json();
+                    if (res.ok && result.success) {
+                        showPdfAlert(`✅ ${result.message} — redirecting to Jobs…`, 'success');
+                        setTimeout(() => { window.location.href = '/jobs'; }, 1500);
+                    } else {
+                        showPdfAlert(result.error || 'Failed to start PDF job.', 'error');
+                        btn.disabled = false;
+                        btn.textContent = 'Extract Author Emails from PDF';
+                    }
+                } catch (err) {
+                    showPdfAlert('Network error. Please try again.', 'error');
+                    btn.disabled = false;
+                    btn.textContent = 'Extract Author Emails from PDF';
+                }
+            });
+        }
     </script>
 </body>
 </html>
