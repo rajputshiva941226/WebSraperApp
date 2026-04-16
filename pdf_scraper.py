@@ -265,11 +265,17 @@ class PDFScraper:
 
         self._p(10, 'Initialising extraction pipeline…')
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        # Use persistent work dir so pages/ tei/ out/ survive for inspection
+        workdir = Path(self.output_dir) / f'{self.job_id}_work'
+        workdir.mkdir(parents=True, exist_ok=True)
+        logger.info('[PDFScraper] Work directory: %s', workdir)
+
+        if True:  # replaces 'with tempfile.TemporaryDirectory()' — keep indent
+            tmpdir = str(workdir)
             config = ExtractionConfig(
-                output_dir     = Path(tmpdir) / 'out',
-                temp_pages_dir = Path(tmpdir) / 'pages',
-                temp_tei_dir   = Path(tmpdir) / 'tei',
+                output_dir     = workdir / 'out',
+                temp_pages_dir = workdir / 'pages',
+                temp_tei_dir   = workdir / 'tei',
                 grobid_server  = self.grobid_url,
             )
 
@@ -295,6 +301,11 @@ class PDFScraper:
             except Exception as exc:
                 logger.error('[PDFScraper] Extraction failed: %s', exc)
                 raise
+
+            # Log what GROBID actually wrote so we can debug naming mismatches
+            tei_files = list((workdir / 'tei').glob('*')) if (workdir / 'tei').exists() else []
+            logger.info('[PDFScraper] TEI dir contents (%d files): %s',
+                        len(tei_files), [f.name for f in tei_files[:20]])
 
             self._stop_check()
             self._p(85, 'Reading extracted results…')
