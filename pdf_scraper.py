@@ -2,16 +2,18 @@
 """
 PDF Scraper — integrated with WebScraperApp ScraperAdapter.
 
-Pipeline:
-  1. Direct email extraction from the PDF's raw text (regex, first 10 pages).
-     Author names are inferred from the email local-part and surrounding lines.
-  2. Structural author / affiliation extraction via:
-       GROBID     (if Docker container reachable on :8070)  — highest quality
-       PyMuPDF4LLM JSON blocks                              — medium quality
-       PyMuPDF raw blocks                                   — final fallback
-  3. For any author still missing an email, query public APIs:
-       Semantic Scholar → OpenAlex → Crossref (via DOI)
-  4. Write output CSV: Author_Name | Email | Affiliation | Article_URL
+Phase 1 — PDF extraction (no external API calls):
+    Delegates to PDF_Scraper/pdf_extraction_module.PDFAuthorExtractor.
+    Cascade: GROBID (if running on :8070) → PyMuPDF4LLM JSON → PyMuPDF blocks.
+    Output CSV columns:
+        Author_Name | Email | Affiliation | Page_Number | Extraction_Method | Article_URL
+
+Phase 2 — API email search:
+    Reads Phase 1 CSV, finds authors without emails, queries
+    Semantic Scholar → OpenAlex → Crossref to get email + DOI.
+    Adds PubMed and EuropePMC author-search URLs for every row.
+    Output CSV adds:
+        DOI | PubMed_Search_URL | EuropePMC_Search_URL
 
 Called by ScraperAdapter as:
     PDFScraper(pdf_path=<path>, output_dir=..., job_id=...,
@@ -24,6 +26,7 @@ import csv
 import sys
 import time
 import logging
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -31,39 +34,11 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-# ── Optional heavy dependencies ──────────────────────────────────────────────
-try:
-    import fitz  # PyMuPDF
-    FITZ_AVAILABLE = True
-except ImportError:
-    FITZ_AVAILABLE = False
-
-try:
-    import pymupdf4llm
-    PYMUPDF4LLM_AVAILABLE = True
-except ImportError:
-    PYMUPDF4LLM_AVAILABLE = False
-
 try:
     from grobid_client.grobid_client import GrobidClient
     GROBID_CLIENT_AVAILABLE = True
 except ImportError:
     GROBID_CLIENT_AVAILABLE = False
-
-_EMAIL_RE = re.compile(r'\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b')
-
-_NAME_RE = re.compile(
-    r'^([A-Z][a-z]+(?:[\-\s][A-Z][a-z]+)*'
-    r'(?:\s+[A-Z]\.?)?'
-    r'\s+[A-Z][a-z]+(?:[\-][A-Z][a-z]+)*)'
-    r'\s*[,;*†‡\d]*$'
-)
-
-_AFFIL_KEYWORDS = (
-    'university', 'college', 'institute', 'hospital', 'department',
-    'faculty', 'school', 'center', 'centre', 'laboratory', 'labs',
-    'research', 'health', 'medical', 'clinic', 'foundation', 'trust',
-)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -130,141 +105,7 @@ class PDFScraper:
         logger.warning('[PDFScraper] %s', msg)
         return msg
 
-    # ── Phase 1 : direct email extraction from raw PDF text ──────────────────
-    def _extract_direct_emails(self) -> List[Dict]:
-        """
-        Scan the first 10 pages for email addresses.
-        For each email infer the author name (from local-part) and affiliation
-        (from a nearby line containing an institution keyword).
-        Returns deduplicated list of {email, author_name, affiliation, page}.
-        """
-        results = []
-        if not FITZ_AVAILABLE:
-            logger.warning('[PDFScraper] PyMuPDF not available — skipping direct email scan')
-            return results
-
-        try:
-            doc = fitz.open(self.pdf_path)
-            scan_pages = min(len(doc), 10)
-            for page_num in range(scan_pages):
-                text  = doc[page_num].get_text()
-                lines = text.splitlines()
-                for i, line in enumerate(lines):
-                    found = _EMAIL_RE.findall(line)
-                    for raw_email in found:
-                        email = raw_email.strip().lower()
-                        if not email or '@' not in email:
-                            continue
-                        domain = email.split('@')[-1]
-                        if '.' not in domain or domain in ('gmail.com', 'yahoo.com',
-                                                            'hotmail.com', 'outlook.com'):
-                            continue  # skip generic/personal addresses
-                        ctx = lines[max(0, i - 6): i + 7]
-                        author = self._author_from_context(ctx, email)
-                        affil  = self._affil_from_context(ctx)
-                        results.append({
-                            'email': email, 'author_name': author,
-                            'affiliation': affil, 'page': page_num + 1,
-                        })
-            doc.close()
-        except Exception as exc:
-            logger.warning('[PDFScraper] Direct email scan error: %s', exc)
-
-        # Deduplicate by email
-        seen: set = set()
-        unique = []
-        for r in results:
-            if r['email'] not in seen:
-                seen.add(r['email'])
-                unique.append(r)
-        return unique
-
-    @staticmethod
-    def _author_from_context(lines: List[str], email: str) -> str:
-        # Strategy 1 — infer from email local-part (firstname.lastname@…)
-        local = email.split('@')[0]
-        parts = re.split(r'[._\-]', local)
-        parts = [p for p in parts if len(p) > 1 and p.isalpha()]
-        if len(parts) >= 2:
-            return ' '.join(p.capitalize() for p in parts[:3])
-
-        # Strategy 2 — look for a Title-Case name line nearby
-        for line in lines:
-            line = line.strip()
-            m = _NAME_RE.match(line)
-            if m:
-                name = m.group(1).strip()
-                if len(name.split()) >= 2:
-                    return name
-        return ''
-
-    @staticmethod
-    def _affil_from_context(lines: List[str]) -> str:
-        for line in lines:
-            if any(k in line.lower() for k in _AFFIL_KEYWORDS):
-                return line.strip()
-        return ''
-
-    # ── Phase 2 : structural extraction via GROBID / PyMuPDF ─────────────────
-    def _extract_structural(self) -> List[Dict]:
-        """
-        Run the PDF_Scraper/pdf_extraction_module pipeline.
-        Returns list of {author_name, affiliation, article_url}.
-        """
-        scraper_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'PDF_Scraper')
-        if scraper_dir not in sys.path:
-            sys.path.insert(0, scraper_dir)
-
-        try:
-            from pdf_extraction_module import ExtractionConfig, PDFAuthorExtractor
-        except ImportError as exc:
-            logger.warning('[PDFScraper] pdf_extraction_module unavailable: %s', exc)
-            return []
-
-        import tempfile, shutil as _shutil
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config = ExtractionConfig(
-                output_dir      = Path(tmpdir) / 'out',
-                temp_pages_dir  = Path(tmpdir) / 'pages',
-                temp_tei_dir    = Path(tmpdir) / 'tei',
-                grobid_server   = self.grobid_url,
-            )
-
-            grobid_client = None
-            if self._grobid_alive() and GROBID_CLIENT_AVAILABLE:
-                try:
-                    grobid_client = GrobidClient(grobid_server=self.grobid_url)
-                    logger.info('[PDFScraper] GROBID connected at %s', self.grobid_url)
-                except Exception as e:
-                    logger.warning('[PDFScraper] GROBID init failed: %s', e)
-            else:
-                logger.info('[PDFScraper] GROBID unavailable — using PyMuPDF fallback')
-
-            extractor = PDFAuthorExtractor(config=config, grobid_client=grobid_client)
-            try:
-                extractor.process_pdf(Path(self.pdf_path))
-            except Exception as exc:
-                logger.warning('[PDFScraper] Structural extraction error: %s', exc)
-                return []
-
-            out_csv = config.output_dir / f'{Path(self.pdf_path).stem}_authors.csv'
-            if not out_csv.exists():
-                csvs = list(config.output_dir.glob('*.csv'))
-                out_csv = csvs[0] if csvs else None
-
-            rows = []
-            if out_csv and out_csv.exists():
-                with open(out_csv, 'r', encoding='utf-8', errors='replace') as fh:
-                    for row in csv.DictReader(fh):
-                        aname = (row.get('author_name') or '').strip()
-                        affil = (row.get('affiliation') or '').strip()
-                        if aname:
-                            rows.append({'author_name': aname, 'affiliation': affil,
-                                         'article_url': ''})
-        return rows
-
-    # ── Phase 3 : API-based email lookup (no Selenium) ────────────────────────
+    # ── API-based email lookup helpers ────────────────────────────────────────
     def _ss_resolve_author(self, author: str, affil: str) -> Optional[str]:
         """Return Semantic Scholar authorId or None."""
         try:
@@ -398,124 +239,125 @@ class PDFScraper:
 
         return empty
 
-    # ── Shared merge helper ───────────────────────────────────────────────────
-    def _merge_results(self, direct: List[Dict], structural: List[Dict],
-                       pdf: 'Path') -> Dict[str, Dict]:
-        """Merge direct-email and structural-extraction results into one dict."""
-        records: Dict[str, Dict] = {}
-
-        email_by_author: Dict[str, object] = {}
-        for r in direct:
-            email_by_author[r['email']] = r
-            if r['author_name']:
-                email_by_author[r['author_name'].lower()] = r
-
-        for r in direct:
-            records[r['email']] = {
-                'Author_Name': r['author_name'],
-                'Email':       r['email'],
-                'Affiliation': r['affiliation'],
-                'Article_URL': pdf.name,
-            }
-
-        for s in structural:
-            aname = s['author_name']
-            if not aname:
-                continue
-            email = ''
-            aname_lower = aname.lower()
-            for key, val in email_by_author.items():
-                if isinstance(val, dict):
-                    k_email = val['email']
-                    k_name  = (val['author_name'] or '').lower()
-                else:
-                    continue
-                tokens_s = aname_lower.split()
-                tokens_k = k_name.split()
-                if tokens_s and tokens_k:
-                    if (tokens_s[-1] in tokens_k or tokens_k[-1] in tokens_s
-                            or tokens_s[0] in tokens_k):
-                        email = k_email
-                        break
-
-            key = email if email else f'__noemail__{aname}'
-            if key not in records:
-                records[key] = {
-                    'Author_Name': aname,
-                    'Email':       email,
-                    'Affiliation': s['affiliation'],
-                    'Article_URL': s.get('article_url', pdf.name),
-                }
-            else:
-                if not records[key]['Affiliation'] and s['affiliation']:
-                    records[key]['Affiliation'] = s['affiliation']
-                if not records[key]['Author_Name'] and aname:
-                    records[key]['Author_Name'] = aname
-
-        return records
-
-    # ── Phase 1 : PDF extraction only (no external API calls) ─────────────────
+    # ── Phase 1 : PDF extraction via PDFAuthorExtractor (no API calls) ─────────
     def run_phase1(self) -> Tuple[str, Dict]:
         """
-        Extract author names, affiliations, and any emails embedded in the PDF.
-        Uses GROBID (if running) or PyMuPDF fallback — NO external API calls.
-        Returns (output_csv_path, summary_dict).
+        Delegate entirely to PDF_Scraper/pdf_extraction_module.PDFAuthorExtractor.
+        Cascade: GROBID (if reachable) → PyMuPDF4LLM JSON → PyMuPDF blocks.
+        NO email regex scanning — conference / brochure PDFs contain org emails,
+        not author emails.
+        Output columns: Author_Name | Email | Affiliation | Page_Number |
+                        Extraction_Method | Article_URL
         """
         pdf = Path(self.pdf_path)
         self._p(5, f'Validating PDF: {pdf.name}')
         if not pdf.exists():
             raise FileNotFoundError(f'PDF not found: {self.pdf_path}')
 
-        self._p(10, 'Scanning PDF text for direct emails…')
-        direct = self._extract_direct_emails()
-        logger.info('[PDFScraper] Direct emails: %d', len(direct))
+        # ── Import extraction module ──
+        scraper_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'PDF_Scraper')
+        if scraper_dir not in sys.path:
+            sys.path.insert(0, scraper_dir)
+        try:
+            from pdf_extraction_module import ExtractionConfig, PDFAuthorExtractor
+        except ImportError as exc:
+            raise RuntimeError(f'pdf_extraction_module unavailable: {exc}') from exc
 
-        self._stop_check()
+        self._p(10, 'Initialising extraction pipeline…')
 
-        grobid_up = self._grobid_alive()
-        if not grobid_up:
-            self._p(30, f'⚠ {self._warn_no_grobid()}')
-        else:
-            self._p(30, 'Extracting author/affiliation structure via GROBID…')
-        structural = self._extract_structural()
-        logger.info('[PDFScraper] Structural authors: %d', len(structural))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = ExtractionConfig(
+                output_dir     = Path(tmpdir) / 'out',
+                temp_pages_dir = Path(tmpdir) / 'pages',
+                temp_tei_dir   = Path(tmpdir) / 'tei',
+                grobid_server  = self.grobid_url,
+            )
 
-        self._stop_check()
+            grobid_client = None
+            if self._grobid_alive() and GROBID_CLIENT_AVAILABLE:
+                try:
+                    grobid_client = GrobidClient(grobid_server=self.grobid_url)
+                    self._p(15, f'GROBID connected at {self.grobid_url}')
+                except Exception as exc:
+                    logger.warning('[PDFScraper] GROBID init failed: %s', exc)
+                    self._p(15, f'⚠ {self._warn_no_grobid()}')
+            else:
+                self._p(15, f'⚠ {self._warn_no_grobid()}')
 
-        records = self._merge_results(direct, structural, pdf)
+            extractor = PDFAuthorExtractor(config=config, grobid_client=grobid_client)
 
-        self._p(90, 'Writing Phase 1 CSV…')
+            self._stop_check()
+            self._p(20, f'Processing PDF pages…')
+
+            try:
+                total_found, method_stats = extractor.process_pdf(pdf)
+            except Exception as exc:
+                logger.error('[PDFScraper] Extraction failed: %s', exc)
+                raise
+
+            self._stop_check()
+            self._p(85, 'Reading extracted results…')
+
+            # Find output CSV written by PDFAuthorExtractor
+            out_csv = config.output_dir / f'{pdf.stem}_authors.csv'
+            if not out_csv.exists():
+                csvs = list(config.output_dir.glob('*.csv'))
+                out_csv = csvs[0] if csvs else None
+
+            rows_out: List[Dict] = []
+            seen_names: set = set()
+            if out_csv and out_csv.exists():
+                with open(out_csv, 'r', encoding='utf-8', errors='replace') as fh:
+                    for row in csv.DictReader(fh):
+                        name = (row.get('author_name') or '').strip()
+                        if not name:
+                            continue
+                        name_key = name.lower()
+                        if name_key in seen_names:
+                            continue  # deduplicate across pages
+                        seen_names.add(name_key)
+                        rows_out.append({
+                            'Author_Name':       name,
+                            'Email':             '',
+                            'Affiliation':       (row.get('affiliation') or '').strip(),
+                            'Page_Number':       row.get('page_number', ''),
+                            'Extraction_Method': row.get('extraction_method', ''),
+                            'Article_URL':       row.get('original_pdf', pdf.name),
+                        })
+
+        # ── Write Phase 1 CSV ──
+        self._p(92, 'Writing Phase 1 CSV…')
         safe_stem   = re.sub(r'[^\w\-]', '_', pdf.stem)
         output_file = os.path.join(
             self.output_dir,
             f'{self.job_id}_{safe_stem}_phase1.csv',
         )
-        fieldnames = ['Author_Name', 'Email', 'Affiliation', 'Article_URL']
-        rows_out   = [r for r in records.values()
-                      if r.get('Author_Name') or r.get('Email')]
+        fieldnames = ['Author_Name', 'Email', 'Affiliation',
+                      'Page_Number', 'Extraction_Method', 'Article_URL']
 
         with open(output_file, 'w', newline='', encoding='utf-8') as fh:
             writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction='ignore')
             writer.writeheader()
             writer.writerows(rows_out)
 
-        total      = len(rows_out)
-        with_email = sum(1 for r in rows_out if r.get('Email'))
-        no_email   = total - with_email
-        self._p(100, f'Phase 1 done — {total} authors, {with_email} with emails, '
-                     f'{no_email} need API search')
-        logger.info('[PDFScraper] Phase1 output: %s  rows=%d  emails=%d',
-                    output_file, total, with_email)
+        total    = len(rows_out)
+        no_email = total  # Phase 1 never has emails — that's Phase 2's job
+        methods_str = ', '.join(f'{m}: {c}' for m, c in (method_stats or {}).items())
+        self._p(100, f'Phase 1 done — {total} unique authors extracted'
+                     + (f' ({methods_str})' if methods_str else '')
+                     + f'; {no_email} need Phase 2 API email search')
+        logger.info('[PDFScraper] Phase1 output: %s  rows=%d', output_file, total)
 
         return output_file, {
-            'scraper':        'pdf_scraper',
-            'phase':          1,
-            'pdf_file':       pdf.name,
-            'output_file':    output_file,
-            'authors_found':  total,
-            'emails_found':   with_email,
+            'scraper':         'pdf_scraper',
+            'phase':           1,
+            'pdf_file':        pdf.name,
+            'output_file':     output_file,
+            'authors_found':   total,
+            'emails_found':    0,
             'need_api_search': no_email,
-            'status':         'completed',
+            'method_stats':    method_stats or {},
+            'status':          'completed',
         }
 
     # ── Phase 2 : API email search + DOI collection ───────────────────────────
@@ -580,7 +422,8 @@ class PDFScraper:
             self.output_dir,
             f'{self.job_id}_{safe_stem}_phase2.csv',
         )
-        fieldnames = ['Author_Name', 'Email', 'Affiliation', 'Article_URL',
+        fieldnames = ['Author_Name', 'Email', 'Affiliation',
+                      'Page_Number', 'Extraction_Method', 'Article_URL',
                       'DOI', 'PubMed_Search_URL', 'EuropePMC_Search_URL']
 
         with open(output_file, 'w', newline='', encoding='utf-8') as fh:

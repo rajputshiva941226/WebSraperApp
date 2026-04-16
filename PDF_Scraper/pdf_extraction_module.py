@@ -16,7 +16,12 @@ from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 
 import fitz
-from PyPDF2 import PdfReader, PdfWriter
+
+try:
+    from PyPDF2 import PdfReader, PdfWriter
+    PYPDF2_AVAILABLE = True
+except ImportError:
+    PYPDF2_AVAILABLE = False
 
 try:
     import pymupdf.layout
@@ -241,28 +246,45 @@ class PDFUtils:
     
     @staticmethod
     def split_pdf_pages(pdf_path: Path, output_dir: Path) -> List[Dict]:
-        """Split PDF into individual pages"""
+        """Split PDF into individual pages (PyPDF2 preferred, fitz fallback)"""
         page_files = []
+        pdf_name = pdf_path.stem
+
+        if PYPDF2_AVAILABLE:
+            try:
+                reader = PdfReader(pdf_path)
+                for page_num in range(len(reader.pages)):
+                    writer = PdfWriter()
+                    writer.add_page(reader.pages[page_num])
+                    page_filename = f"{pdf_name}_page_{page_num+1:03d}.pdf"
+                    page_path = output_dir / page_filename
+                    with open(page_path, 'wb') as f:
+                        writer.write(f)
+                    page_files.append({
+                        'page_path': page_path,
+                        'page_number': page_num + 1,
+                        'original_pdf': pdf_path.name
+                    })
+                return page_files
+            except Exception as e:
+                print(f"⚠ PyPDF2 split failed ({e}), trying fitz fallback…")
+
+        # fitz (PyMuPDF) fallback
         try:
-            reader = PdfReader(pdf_path)
-            pdf_name = pdf_path.stem
-            
-            for page_num in range(len(reader.pages)):
-                writer = PdfWriter()
-                writer.add_page(reader.pages[page_num])
-                
+            doc = fitz.open(str(pdf_path))
+            for page_num in range(len(doc)):
                 page_filename = f"{pdf_name}_page_{page_num+1:03d}.pdf"
                 page_path = output_dir / page_filename
-                
-                with open(page_path, 'wb') as f:
-                    writer.write(f)
-                
+                new_doc = fitz.open()
+                new_doc.insert_pdf(doc, from_page=page_num, to_page=page_num)
+                new_doc.save(str(page_path))
+                new_doc.close()
                 page_files.append({
                     'page_path': page_path,
                     'page_number': page_num + 1,
                     'original_pdf': pdf_path.name
                 })
-            
+            doc.close()
             return page_files
         except Exception as e:
             print(f"❌ Error splitting PDF: {e}")
