@@ -274,9 +274,10 @@ class PDFScraper:
             )
 
             grobid_client = None
-            if self._grobid_alive() and GROBID_CLIENT_AVAILABLE:
+            if self._grobid_alive():
                 try:
-                    grobid_client = GrobidClient(grobid_server=self.grobid_url)
+                    from grobid_client.grobid_client import GrobidClient as _GrobidClient
+                    grobid_client = _GrobidClient(grobid_server=self.grobid_url)
                     self._p(15, f'GROBID connected at {self.grobid_url}')
                 except Exception as exc:
                     logger.warning('[PDFScraper] GROBID init failed: %s', exc)
