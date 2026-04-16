@@ -66,7 +66,7 @@ SELENIUM_SCRAPERS = {
     'tandf', 'wiley', 'sciencedirect',
 }
 API_SCRAPERS = {'europepmc', 'pubmed'}
-DOCUMENT_SCRAPERS = {'pdf_scraper'}  # No Chrome — runs GROBID/PyMuPDF in-process
+DOCUMENT_SCRAPERS = {'pdf_scraper', 'pdf_scraper_phase2'}  # No Chrome — runs in-process
 
 _selenium_exchange = Exchange('selenium', type='direct')
 _api_exchange       = Exchange('api',      type='direct')

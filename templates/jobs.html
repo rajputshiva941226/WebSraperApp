@@ -679,6 +679,9 @@
         <div class="tabs-container">
             <div class="tabs-header" id="tabs-header">
                 <button class="tab-button active" onclick="switchTab('all', event)">📊 All Jobs</button>
+                {% for key, journal in journals.items() %}
+                <button class="tab-button" onclick="switchTab('{{ key }}', event)">{{ journal.name }}</button>
+                {% endfor %}
             </div>
 
             <!-- Filters live here, above the job list, inside the single card -->
@@ -703,6 +706,20 @@
                     <span id="job-count">Loading...</span>
                 </div>
             </div>
+
+            {% for key, journal in journals.items() %}
+            <div id="tab-{{ key }}" class="tab-content">
+                <div class="tab-stats">
+                    <div class="tab-stat-card"><div class="tab-stat-value" id="{{ key }}-total-jobs-count">0</div><div class="tab-stat-label">Total Jobs</div></div>
+                    <div class="tab-stat-card"><div class="tab-stat-value" id="{{ key }}-running-jobs-count" style="color:#4299e1">0</div><div class="tab-stat-label">Running</div></div>
+                    <div class="tab-stat-card"><div class="tab-stat-value" id="{{ key }}-pending-jobs-count" style="color:#d69e2e">0</div><div class="tab-stat-label">Pending</div></div>
+                    <div class="tab-stat-card"><div class="tab-stat-value" id="{{ key }}-completed-jobs-count" style="color:#48bb78">0</div><div class="tab-stat-label">Completed</div></div>
+                    <div class="tab-stat-card"><div class="tab-stat-value" id="{{ key }}-failed-jobs-count" style="color:#f56565">0</div><div class="tab-stat-label">Failed</div></div>
+                    <div class="tab-stat-card"><div class="tab-stat-value" id="{{ key }}-stopped-jobs-count" style="color:#a0aec0">0</div><div class="tab-stat-label">Stopped</div></div>
+                </div>
+                <div class="jobs-container" id="{{ key }}-jobs-container"></div>
+            </div>
+            {% endfor %}
 
             <div id="tab-all" class="tab-content active">
                 <div class="tab-stats" id="all-stats">
@@ -745,7 +762,8 @@
         let allJobs = [];
         let autoRefreshInterval;
         let currentTab = 'all';
-        let journalTabs = new Set();
+        // Pre-seed from Jinja so createJournalTabs skips already-rendered tabs
+        let journalTabs = new Set({{ journals.keys() | list | tojson }});
 
         function downloadAllCompleted() {
             const downloadableJobs = allJobs.filter(j =>
@@ -1009,12 +1027,21 @@
 
             let actionsHtml = '';
             if (isCompleted) {
+                const phase2Btn = job.journal === 'pdf_scraper' ? `
+                    <button class="btn btn-small" onclick="startPhase2('${job.id}')"
+                        style="margin-left:6px;background:#6b46c1;color:#fff;border:none;
+                               padding:6px 14px;border-radius:6px;cursor:pointer;
+                               font-size:13px;font-weight:600;"
+                        title="Search missing emails via Semantic Scholar, OpenAlex &amp; Crossref">
+                        🔍 Start Phase 2 Email Search
+                    </button>` : '';
                 actionsHtml = `
                     <div class="job-actions">
                         <a href="/api/download/${job.id}?format=csv"
                            class="btn btn-small btn-download">📄 Download CSV</a>
                         <a href="/api/download/${job.id}?format=xlsx"
                            class="btn btn-small btn-download" style="margin-left:6px;">📊 Download XLSX</a>
+                        ${phase2Btn}
                     </div>`;
             } else if (isPartial) {
                 /* Orange buttons so users know it's partial */
@@ -1069,6 +1096,25 @@
                 </div>`;
         }
 
+        async function startPhase2(phase1JobId) {
+            if (!confirm('Start Phase 2 email search?\n\nThis will search Semantic Scholar, OpenAlex and Crossref for missing emails and generate DOI + PubMed/EuropePMC search links for every author.')) return;
+            try {
+                const r = await fetch(`/api/start-pdf-phase2/${phase1JobId}`, { method: 'POST' });
+                const data = await r.json();
+                if (r.ok && data.success) {
+                    alert(`Phase 2 job started!\nJob ID: ${data.job_id}`);
+                    loadJobs();
+                    if (!autoRefreshInterval) {
+                        autoRefreshInterval = setInterval(loadJobs, 3000);
+                    }
+                } else {
+                    alert('Error: ' + (data.error || 'Unknown error'));
+                }
+            } catch (e) {
+                alert('Failed to start Phase 2: ' + e);
+            }
+        }
+
         async function stopJob(jobId) {
             try {
                 const r = await fetch(`/api/stop-job/${jobId}`, { method: 'POST' });
@@ -1095,14 +1141,20 @@
                     autoRefreshInterval = null;
                 }
 
-                /* Populate journal filter — preserve current selection */
-                const journals      = [...new Set(allJobs.map(j => j.journal))];
+                /* Populate journal filter — all configured journals + any from job data */
+                const configuredJournals = {{ journals | tojson }};
+                const jobJournals = [...new Set(allJobs.map(j => j.journal))];
+                const allKnownJournals = Object.keys(configuredJournals);
+                // Add any journals in job data not already in config (legacy jobs)
+                jobJournals.forEach(j => { if (!allKnownJournals.includes(j)) allKnownJournals.push(j); });
+
                 const journalFilter = document.getElementById('filter-journal');
                 const curVal        = journalFilter.value;
                 journalFilter.innerHTML = '<option value="all">All Journals</option>' +
-                    journals.map(j => {
-                        const job = allJobs.find(x => x.journal === j);
-                        return `<option value="${j}">${job.journal_name}</option>`;
+                    allKnownJournals.map(j => {
+                        const name = configuredJournals[j] ? configuredJournals[j].name
+                            : (allJobs.find(x => x.journal === j) || {}).journal_name || j;
+                        return `<option value="${j}">${name}</option>`;
                     }).join('');
                 journalFilter.value = curVal;
 

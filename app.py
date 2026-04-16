@@ -204,10 +204,17 @@ JOURNALS = {
     },
     'pdf_scraper': {
         'name': 'PDF Scraper',
-        'full_name': 'PDF Author Email Extractor',
+        'full_name': 'PDF Author Email Extractor (Phase 1)',
         'type': 'document',
         'enabled': True,
-        'description': 'Extract author emails from uploaded PDF files'
+        'description': 'Extract author names, affiliations and embedded emails from PDF'
+    },
+    'pdf_scraper_phase2': {
+        'name': 'PDF Email Search',
+        'full_name': 'PDF Email Search via APIs (Phase 2)',
+        'type': 'document',
+        'enabled': True,
+        'description': 'Search missing emails via Semantic Scholar / OpenAlex / Crossref; adds DOI + PubMed / EuropePMC links'
     }
 }
 
@@ -380,7 +387,7 @@ def run_scraper_task(job_id, user_id, journal, keyword, start_date, end_date,
         
         # Only install ChromeDriver for Selenium-based scrapers
         # API scrapers and document scrapers (pdf_scraper) don't need Chrome
-        _no_chrome = {'europepmc', 'pubmed', 'pdf_scraper'}
+        _no_chrome = {'europepmc', 'pubmed', 'pdf_scraper', 'pdf_scraper_phase2'}
         driver_path = None
         
         if journal not in _no_chrome:
@@ -849,6 +856,94 @@ def start_scraping():
             'success':  True,
             'job_ids':  job_ids,
             'message':  f'Started {len(job_ids)} scraping job(s) successfully',
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/start-pdf-phase2/<phase1_job_id>', methods=['POST'])
+def start_pdf_phase2(phase1_job_id):
+    """
+    Launch a Phase 2 job for an already-completed Phase 1 pdf_scraper job.
+    Reads the Phase 1 output CSV path from the completed job and creates a
+    new pdf_scraper_phase2 job with that CSV as its `keyword`.
+    """
+    if 'user_id' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
+
+    user_id  = session.get('user_id')
+    is_admin = session.get('user_type') == 'admin'
+
+    try:
+        p1_job = Job.query.get(phase1_job_id)
+        if not p1_job:
+            return jsonify({'error': 'Phase 1 job not found'}), 404
+        if not is_admin and p1_job.user_id != user_id:
+            return jsonify({'error': 'Access denied'}), 403
+        if p1_job.journal != 'pdf_scraper':
+            return jsonify({'error': 'Job is not a PDF Scraper Phase 1 job'}), 400
+        if p1_job.status != 'completed':
+            return jsonify({'error': 'Phase 1 job must be completed before starting Phase 2'}), 400
+
+        phase1_csv = p1_job.output_file
+        if not phase1_csv or not os.path.exists(phase1_csv):
+            return jsonify({'error': 'Phase 1 output file not found on disk'}), 404
+
+        job_id         = str(uuid.uuid4())
+        conference_name = p1_job.conference or 'default'
+        output_dir     = os.path.dirname(phase1_csv)  # same dir as phase 1
+
+        try:
+            db_job = Job(
+                id=job_id,
+                user_id=user_id,
+                journal='pdf_scraper_phase2',
+                journal_name=JOURNALS['pdf_scraper_phase2']['name'],
+                keyword=phase1_csv,          # keyword carries the phase1 CSV path
+                conference=conference_name,
+                start_date='N/A',
+                end_date='N/A',
+                status='pending',
+                progress=0,
+                message='Phase 2 queued',
+                created_at=datetime.utcnow(),
+            )
+            db.session.add(db_job)
+            db.session.commit()
+        except Exception as db_err:
+            print(f'[DB] Failed to save Phase 2 job: {db_err}')
+            db.session.rollback()
+
+        job_stop_flags[job_id] = False
+
+        if _USE_CELERY:
+            task = _celery_run_scraper.apply_async(
+                args=(job_id, user_id, 'pdf_scraper_phase2', phase1_csv,
+                      'N/A', 'N/A', conference_name, 'all'),
+                queue='api',
+            )
+            try:
+                db_j = Job.query.get(job_id)
+                if db_j:
+                    db_j.worker_task_id = task.id
+                    db.session.commit()
+            except Exception:
+                pass
+        else:
+            thread = threading.Thread(
+                target=run_scraper_task,
+                args=(job_id, user_id, 'pdf_scraper_phase2', phase1_csv,
+                      'N/A', 'N/A', conference_name, 'all', 0),
+            )
+            thread.daemon = True
+            thread.start()
+            job_threads[job_id] = thread
+
+        return jsonify({
+            'success': True,
+            'job_id':  job_id,
+            'message': 'Phase 2 email search job started',
         })
 
     except Exception as e:

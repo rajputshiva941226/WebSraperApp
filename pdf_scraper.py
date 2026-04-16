@@ -366,8 +366,13 @@ class PDFScraper:
 
     def _lookup_email(self, author: str, affil: str) -> str:
         """Try Semantic Scholar → OpenAlex → Crossref to find email."""
+        return self._lookup_email_with_doi(author, affil)['email']
+
+    def _lookup_email_with_doi(self, author: str, affil: str) -> Dict:
+        """Same as _lookup_email but also returns the DOI that produced the hit."""
+        empty = {'email': '', 'doi': ''}
         if not author or len(author) < 4:
-            return ''
+            return empty
 
         # Semantic Scholar path
         try:
@@ -376,7 +381,7 @@ class PDFScraper:
                 for doi in self._ss_dois_for_author(aid):
                     email = self._crossref_email(doi, author)
                     if email:
-                        return email
+                        return {'email': email, 'doi': doi}
                     time.sleep(0.3)
         except Exception:
             pass
@@ -386,54 +391,25 @@ class PDFScraper:
             for doi in self._openalex_dois(author):
                 email = self._crossref_email(doi, author)
                 if email:
-                    return email
+                    return {'email': email, 'doi': doi}
                 time.sleep(0.3)
         except Exception:
             pass
 
-        return ''
+        return empty
 
-    # ── Main entry point ──────────────────────────────────────────────────────
-    def run(self) -> Tuple[str, Dict]:
-        """
-        Execute the full pipeline.
-        Returns (output_csv_path, summary_dict).
-        """
-        pdf = Path(self.pdf_path)
-        self._p(5, f'Validating PDF: {pdf.name}')
-        if not pdf.exists():
-            raise FileNotFoundError(f'PDF not found: {self.pdf_path}')
-
-        # ── Phase 1 ──
-        self._p(10, 'Scanning PDF text for emails…')
-        direct = self._extract_direct_emails()
-        logger.info('[PDFScraper] Direct emails: %d', len(direct))
-
-        # ── Phase 1.5 : stop check before slow phase ──
-        self._stop_check()
-
-        # ── Phase 2 ──
-        grobid_up = self._grobid_alive()
-        if not grobid_up:
-            fallback_msg = self._warn_no_grobid()
-            self._p(30, f'⚠ {fallback_msg}')
-        else:
-            self._p(30, 'Extracting author/affiliation structure via GROBID…')
-        structural = self._extract_structural()
-        logger.info('[PDFScraper] Structural authors: %d', len(structural))
-
-        # ── Merge ──
-        # email → record dict
+    # ── Shared merge helper ───────────────────────────────────────────────────
+    def _merge_results(self, direct: List[Dict], structural: List[Dict],
+                       pdf: 'Path') -> Dict[str, Dict]:
+        """Merge direct-email and structural-extraction results into one dict."""
         records: Dict[str, Dict] = {}
 
-        # Build author→email lookup from direct extraction
-        email_by_author: Dict[str, str] = {}
+        email_by_author: Dict[str, object] = {}
         for r in direct:
-            email_by_author[r['email']] = r  # keyed by email
+            email_by_author[r['email']] = r
             if r['author_name']:
                 email_by_author[r['author_name'].lower()] = r
 
-        # Seed from direct results
         for r in direct:
             records[r['email']] = {
                 'Author_Name': r['author_name'],
@@ -442,12 +418,10 @@ class PDFScraper:
                 'Article_URL': pdf.name,
             }
 
-        # Enrich / add from structural
         for s in structural:
             aname = s['author_name']
             if not aname:
                 continue
-            # Try to match this author to a direct-extracted email
             email = ''
             aname_lower = aname.lower()
             for key, val in email_by_author.items():
@@ -459,7 +433,6 @@ class PDFScraper:
                 tokens_s = aname_lower.split()
                 tokens_k = k_name.split()
                 if tokens_s and tokens_k:
-                    # Last name match OR first token match
                     if (tokens_s[-1] in tokens_k or tokens_k[-1] in tokens_s
                             or tokens_s[0] in tokens_k):
                         email = k_email
@@ -474,38 +447,48 @@ class PDFScraper:
                     'Article_URL': s.get('article_url', pdf.name),
                 }
             else:
-                # Enrich existing: fill in missing affiliation
                 if not records[key]['Affiliation'] and s['affiliation']:
                     records[key]['Affiliation'] = s['affiliation']
                 if not records[key]['Author_Name'] and aname:
                     records[key]['Author_Name'] = aname
 
-        # ── Stop check after structural phase ──
+        return records
+
+    # ── Phase 1 : PDF extraction only (no external API calls) ─────────────────
+    def run_phase1(self) -> Tuple[str, Dict]:
+        """
+        Extract author names, affiliations, and any emails embedded in the PDF.
+        Uses GROBID (if running) or PyMuPDF fallback — NO external API calls.
+        Returns (output_csv_path, summary_dict).
+        """
+        pdf = Path(self.pdf_path)
+        self._p(5, f'Validating PDF: {pdf.name}')
+        if not pdf.exists():
+            raise FileNotFoundError(f'PDF not found: {self.pdf_path}')
+
+        self._p(10, 'Scanning PDF text for direct emails…')
+        direct = self._extract_direct_emails()
+        logger.info('[PDFScraper] Direct emails: %d', len(direct))
+
         self._stop_check()
 
-        # ── Phase 3 : API email search for authors still missing emails ──
-        no_email = [r for r in records.values()
-                    if not r['Email'] and r['Author_Name']]
-        total_no_email = len(no_email)
-        if no_email:
-            self._p(55, f'API email search for {total_no_email} authors…')
-            for idx, r in enumerate(no_email):
-                pct = 55 + int(idx / max(total_no_email, 1) * 30)
-                self._p(pct, f'Searching: {r["Author_Name"][:40]}…')
-                email = self._lookup_email(r['Author_Name'], r['Affiliation'])
-                if email:
-                    old_key = f'__noemail__{r["Author_Name"]}'
-                    if old_key in records:
-                        records[email] = records.pop(old_key)
-                    r['Email'] = email
-                time.sleep(0.5)
+        grobid_up = self._grobid_alive()
+        if not grobid_up:
+            self._p(30, f'⚠ {self._warn_no_grobid()}')
+        else:
+            self._p(30, 'Extracting author/affiliation structure via GROBID…')
+        structural = self._extract_structural()
+        logger.info('[PDFScraper] Structural authors: %d', len(structural))
 
-        # ── Write CSV ──
-        self._p(92, 'Writing output CSV…')
+        self._stop_check()
+
+        records = self._merge_results(direct, structural, pdf)
+
+        self._p(90, 'Writing Phase 1 CSV…')
         safe_stem   = re.sub(r'[^\w\-]', '_', pdf.stem)
         output_file = os.path.join(
             self.output_dir,
-            f'{self.job_id}_{safe_stem}_results.csv',
+            f'{self.job_id}_{safe_stem}_phase1.csv',
         )
         fieldnames = ['Author_Name', 'Email', 'Affiliation', 'Article_URL']
         rows_out   = [r for r in records.values()
@@ -517,16 +500,154 @@ class PDFScraper:
             writer.writerows(rows_out)
 
         total      = len(rows_out)
-        with_email = sum(1 for r in rows_out if r['Email'])
-        self._p(100, f'Done — {total} authors, {with_email} with emails')
-        logger.info('[PDFScraper] Output: %s  rows=%d  emails=%d',
+        with_email = sum(1 for r in rows_out if r.get('Email'))
+        no_email   = total - with_email
+        self._p(100, f'Phase 1 done — {total} authors, {with_email} with emails, '
+                     f'{no_email} need API search')
+        logger.info('[PDFScraper] Phase1 output: %s  rows=%d  emails=%d',
                     output_file, total, with_email)
 
         return output_file, {
-            'scraper':       'pdf_scraper',
-            'pdf_file':      pdf.name,
+            'scraper':        'pdf_scraper',
+            'phase':          1,
+            'pdf_file':       pdf.name,
+            'output_file':    output_file,
+            'authors_found':  total,
+            'emails_found':   with_email,
+            'need_api_search': no_email,
+            'status':         'completed',
+        }
+
+    # ── Phase 2 : API email search + DOI collection ───────────────────────────
+    def run_phase2(self, phase1_csv: str) -> Tuple[str, Dict]:
+        """
+        Read a Phase 1 CSV, look up missing emails via Semantic Scholar /
+        OpenAlex / Crossref, collect DOIs, and generate PubMed / EuropePMC
+        search URLs for every author.
+        Returns (output_csv_path, summary_dict).
+        """
+        p1 = Path(phase1_csv)
+        self._p(5, f'Loading Phase 1 results: {p1.name}')
+        if not p1.exists():
+            raise FileNotFoundError(f'Phase 1 CSV not found: {phase1_csv}')
+
+        records: List[Dict] = []
+        with open(p1, 'r', encoding='utf-8', errors='replace') as fh:
+            records = list(csv.DictReader(fh))
+        logger.info('[PDFScraper] Phase2 loaded %d rows from %s', len(records), p1.name)
+
+        # Ensure extra columns exist
+        for r in records:
+            r.setdefault('DOI', '')
+            r.setdefault('PubMed_Search_URL', '')
+            r.setdefault('EuropePMC_Search_URL', '')
+
+        no_email_rows = [r for r in records
+                         if not r.get('Email') or r['Email'].strip() in ('', 'N/A')]
+        total_no_email = len(no_email_rows)
+
+        self._p(10, f'Phase 2: API search for {total_no_email} of '
+                    f'{len(records)} authors without emails…')
+
+        for idx, r in enumerate(no_email_rows):
+            self._stop_check()
+            pct    = 10 + int(idx / max(total_no_email, 1) * 72)
+            author = r.get('Author_Name', '').strip()
+            affil  = r.get('Affiliation', '').strip()
+            self._p(pct, f'[{idx + 1}/{total_no_email}] Searching: {author[:45]}…')
+
+            hit = self._lookup_email_with_doi(author, affil)
+            if hit['email']:
+                r['Email'] = hit['email']
+            if hit['doi']:
+                r['DOI'] = hit['doi']
+            time.sleep(0.5)
+
+        # Build search URLs for every author (with or without email)
+        for r in records:
+            author = r.get('Author_Name', '').strip()
+            if author:
+                enc = requests.utils.quote(author)
+                r['PubMed_Search_URL']    = (f'https://pubmed.ncbi.nlm.nih.gov/'
+                                              f'?term={enc}[Author]')
+                r['EuropePMC_Search_URL'] = (f'https://europepmc.org/search'
+                                              f'?query=AUTH:{enc}')
+
+        self._p(92, 'Writing Phase 2 CSV…')
+        # Output in the same directory as phase 1
+        safe_stem   = re.sub(r'[^\w\-]', '_', p1.stem.replace('_phase1', ''))
+        output_file = os.path.join(
+            self.output_dir,
+            f'{self.job_id}_{safe_stem}_phase2.csv',
+        )
+        fieldnames = ['Author_Name', 'Email', 'Affiliation', 'Article_URL',
+                      'DOI', 'PubMed_Search_URL', 'EuropePMC_Search_URL']
+
+        with open(output_file, 'w', newline='', encoding='utf-8') as fh:
+            writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction='ignore')
+            writer.writeheader()
+            writer.writerows(records)
+
+        total      = len(records)
+        with_email = sum(1 for r in records if r.get('Email') and
+                         r['Email'].strip() not in ('', 'N/A'))
+        with_doi   = sum(1 for r in records if r.get('DOI'))
+        self._p(100, f'Phase 2 done — {total} authors, {with_email} emails, '
+                     f'{with_doi} DOIs found')
+        logger.info('[PDFScraper] Phase2 output: %s  rows=%d  emails=%d  dois=%d',
+                    output_file, total, with_email, with_doi)
+
+        return output_file, {
+            'scraper':       'pdf_scraper_phase2',
+            'phase':         2,
+            'phase1_csv':    phase1_csv,
             'output_file':   output_file,
             'authors_found': total,
             'emails_found':  with_email,
+            'dois_found':    with_doi,
             'status':        'completed',
         }
+
+    # ── Backwards-compatible entry point ─────────────────────────────────────
+    def run(self) -> Tuple[str, Dict]:
+        """Runs Phase 1 only (extraction without API calls). Use run_phase2() separately."""
+        return self.run_phase1()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+class PDFScraperPhase2:
+    """
+    Adapter-compatible wrapper for Phase 2 (API email lookup).
+    The ScraperAdapter passes the Phase 1 CSV path via the `pdf_path` kwarg
+    (which carries the `keyword` field from the Job row).
+    """
+
+    JOURNAL_NAME = 'PDF Email Search (Phase 2)'
+
+    def __init__(
+        self,
+        pdf_path: str,            # receives the phase1 CSV path stored in Job.keyword
+        output_dir: str = 'results',
+        job_id: Optional[str] = None,
+        progress_callback=None,
+        conference_name: str = 'default',
+        **kwargs,
+    ):
+        self._phase1_csv  = pdf_path
+        self._output_dir  = output_dir
+        self._job_id      = job_id or 'pdf_phase2'
+        self._progress_cb = progress_callback
+        self._conference  = conference_name
+
+    def set_progress_callback(self, cb):
+        self._progress_cb = cb
+
+    def run(self) -> Tuple[str, Dict]:
+        scraper = PDFScraper(
+            pdf_path        = '',          # not used in phase 2
+            output_dir      = self._output_dir,
+            job_id          = self._job_id,
+            progress_callback = self._progress_cb,
+            conference_name = self._conference,
+        )
+        return scraper.run_phase2(self._phase1_csv)

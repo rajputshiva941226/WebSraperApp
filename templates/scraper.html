@@ -258,7 +258,7 @@
                     <button type="button" class="select-all-btn" onclick="deselectAllJournals()">Deselect All</button>
                     <div class="journals-grid" id="journals-container">
                         {% for key, journal in journals.items() %}
-                        {% if key != 'pubmed' and key != 'pdf_scraper' %}
+                        {% if key != 'pubmed' and key != 'pdf_scraper' and key != 'pdf_scraper_phase2' %}
                         <div class="journal-checkbox {% if key == 'europepmc' %}fast-scraper{% else %}slow-scraper{% endif %}" onclick="toggleJournal(this)">
                             <input type="checkbox" name="journals" value="{{ key }}" id="journal-{{ key }}">
                             <label for="journal-{{ key }}">

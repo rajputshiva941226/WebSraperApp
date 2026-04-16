@@ -107,7 +107,8 @@ class ScraperAdapter:
         'tandf':        {'module': 'taylor_selenium',      'class': 'TaylorScraper',          'type': 'selenium'},
         'wiley':        {'module': 'wiley_selenium',       'class': 'WileyScraper',           'type': 'selenium'},
         'sciencedirect':{'module': 'sciencedirect_selenium','class': 'ScienceDirectScraper',  'type': 'selenium'},
-        'pdf_scraper':  {'module': 'pdf_scraper',          'class': 'PDFScraper',             'type': 'selenium'},
+        'pdf_scraper':       {'module': 'pdf_scraper', 'class': 'PDFScraper',       'type': 'selenium'},
+        'pdf_scraper_phase2': {'module': 'pdf_scraper', 'class': 'PDFScraperPhase2', 'type': 'selenium'},
         'lippincott': {'module': 'lippincott_selenium',  'class': 'LippincottScraper',     'type': 'selenium'},
         'sage':       {'module': 'sage_selenium',         'class': 'SageScraper',           'type': 'selenium'},
         'emerald':    {'module': 'emerald_selenium',     'class': 'EmeraldInsights',       'type': 'selenium'},
@@ -278,9 +279,9 @@ class ScraperAdapter:
                 }
                 return final_output, summary
 
-            # ── PDF Scraper — no Chrome needed, runs in-process ────────────────────
-            if scraper_type == 'pdf_scraper':
-                # `keyword` carries the uploaded PDF file path
+            # ── PDF Scraper (Phase 1 & 2) — no Chrome needed, runs in-process ───────
+            if scraper_type in ('pdf_scraper', 'pdf_scraper_phase2'):
+                # keyword == PDF file path (phase 1) or phase1 CSV path (phase 2)
                 scraper = scraper_class(
                     pdf_path=keyword,
                     output_dir=self.output_dir,
@@ -288,9 +289,10 @@ class ScraperAdapter:
                     conference_name=conference_name,
                 )
                 scraper.set_progress_callback(self.progress_callback)
-                self._report_progress(40, 'Running PDF extraction pipeline…')
+                label = 'PDF extraction' if scraper_type == 'pdf_scraper' else 'API email search'
+                self._report_progress(5, f'Starting {label}…')
                 output_file, summary = scraper.run()
-                self._report_progress(100, 'PDF scraping completed')
+                self._report_progress(100, f'{label} completed')
                 return output_file, summary
 
             # ── All Selenium scrapers (including Nature) via SeleniumScraperWrapper ────
