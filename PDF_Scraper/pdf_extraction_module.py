@@ -35,6 +35,8 @@ try:
     from lxml import etree
     GROBID_AVAILABLE = True
 except ImportError:
+    GrobidClient = None  # keeps type hints valid when package is absent
+    etree = None
     GROBID_AVAILABLE = False
 
 
