@@ -417,8 +417,9 @@ class GrobidExtractor:
             from io import StringIO
             
             old_stdout = sys.stdout
-            sys.stdout = StringIO()  # suppress GROBID progress chatter only
-            # stderr is NOT suppressed so GROBID errors reach the Celery logs
+            old_stderr = sys.stderr
+            sys.stdout = StringIO()
+            sys.stderr = StringIO()
             
             try:
                 with tempfile.TemporaryDirectory() as temp_dir:
@@ -431,9 +432,9 @@ class GrobidExtractor:
                         input_path=str(temp_page_dir),
                         output=str(self.temp_tei_dir),
                         n=1,
-                        consolidate_header=0,
+                        consolidate_header=True,
                         include_raw_affiliations=True,
-                        tei_coordinates=False,
+                        tei_coordinates=True,
                         force=True
                     )
                     
@@ -450,6 +451,7 @@ class GrobidExtractor:
                     return False
             finally:
                 sys.stdout = old_stdout
+                sys.stderr = old_stderr
         except Exception as exc:
             import logging as _logging
             _logging.getLogger(__name__).warning('GrobidExtractor.process_page failed: %s', exc)

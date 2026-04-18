@@ -8,12 +8,13 @@ Phase 1 — PDF extraction (no external API calls):
     Output CSV columns:
         Author_Name | Email | Affiliation | Page_Number | Extraction_Method | Article_URL
 
-Phase 2 — API email search:
-    Reads Phase 1 CSV, finds authors without emails, queries
-    Semantic Scholar → OpenAlex → Crossref to get email + DOI.
-    Adds PubMed and EuropePMC author-search URLs for every row.
-    Output CSV adds:
-        DOI | PubMed_Search_URL | EuropePMC_Search_URL
+Phase 2 — API search + selenium email extraction:
+    Reads Phase 1 CSV, deduplicates authors, then for each author:
+      1. Searches PubMed / Semantic Scholar / OpenAlex for their papers.
+      2. Selenium-scrapes each paper's journal page to extract emails.
+    Uses IntegratedPaperSearchAndEmailExtractor from PDF_Scraper/.
+    Output: integrated_results.csv with matched_author, matched_email,
+            paper_title, paper_source, paper_year, all_authors, all_emails.
 
 Called by ScraperAdapter as:
     PDFScraper(pdf_path=<path>, output_dir=..., job_id=...,
@@ -372,12 +373,13 @@ class PDFScraper:
             'status':          'completed',
         }
 
-    # ── Phase 2 : API email search + DOI collection ───────────────────────────
+    # ── Phase 2 : API search + selenium email extraction ─────────────────────
     def run_phase2(self, phase1_csv: str) -> Tuple[str, Dict]:
         """
-        Read a Phase 1 CSV, look up missing emails via Semantic Scholar /
-        OpenAlex / Crossref, collect DOIs, and generate PubMed / EuropePMC
-        search URLs for every author.
+        Read Phase 1 CSV, then for each unique author:
+          1. Search PubMed / Semantic Scholar / OpenAlex for their papers.
+          2. Selenium-scrape each paper's journal page to extract emails.
+        Uses IntegratedPaperSearchAndEmailExtractor from PDF_Scraper/.
         Returns (output_csv_path, summary_dict).
         """
         p1 = Path(phase1_csv)
@@ -385,82 +387,103 @@ class PDFScraper:
         if not p1.exists():
             raise FileNotFoundError(f'Phase 1 CSV not found: {phase1_csv}')
 
+        # Ensure PDF_Scraper/ is importable
+        scraper_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'PDF_Scraper')
+        if scraper_dir not in sys.path:
+            sys.path.insert(0, scraper_dir)
+
+        try:
+            from integrated_search_api import IntegratedPaperSearchAndEmailExtractor
+        except ImportError as exc:
+            raise RuntimeError(
+                f'integrated_search_api unavailable — ensure PDF_Scraper/integrated_search_api.py '
+                f'and PDF_Scraper/email_extraction_selenium.py exist: {exc}'
+            ) from exc
+
         records: List[Dict] = []
         with open(p1, 'r', encoding='utf-8', errors='replace') as fh:
             records = list(csv.DictReader(fh))
         logger.info('[PDFScraper] Phase2 loaded %d rows from %s', len(records), p1.name)
 
-        # Ensure extra columns exist
+        # Deduplicate authors (case-insensitive) keeping first affiliation found
+        seen_names: set = set()
+        unique_authors: List[Dict] = []
         for r in records:
-            r.setdefault('DOI', '')
-            r.setdefault('PubMed_Search_URL', '')
-            r.setdefault('EuropePMC_Search_URL', '')
+            name = (r.get('Author_Name') or '').strip()
+            if name and name.lower() not in seen_names:
+                seen_names.add(name.lower())
+                unique_authors.append({
+                    'author_name': name,
+                    'affiliation': (r.get('Affiliation') or '').strip(),
+                })
 
-        no_email_rows = [r for r in records
-                         if not r.get('Email') or r['Email'].strip() in ('', 'N/A')]
-        total_no_email = len(no_email_rows)
+        total = len(unique_authors)
+        self._p(10, f'Phase 2: {total} unique authors → PubMed / Semantic Scholar / '
+                    f'OpenAlex + selenium scraping…')
+        logger.info('[PDFScraper] Phase2: %d unique authors to process', total)
 
-        self._p(10, f'Phase 2: API search for {total_no_email} of '
-                    f'{len(records)} authors without emails…')
-
-        for idx, r in enumerate(no_email_rows):
-            self._stop_check()
-            pct    = 10 + int(idx / max(total_no_email, 1) * 72)
-            author = r.get('Author_Name', '').strip()
-            affil  = r.get('Affiliation', '').strip()
-            self._p(pct, f'[{idx + 1}/{total_no_email}] Searching: {author[:45]}…')
-
-            hit = self._lookup_email_with_doi(author, affil)
-            if hit['email']:
-                r['Email'] = hit['email']
-            if hit['doi']:
-                r['DOI'] = hit['doi']
-            time.sleep(0.5)
-
-        # Build search URLs for every author (with or without email)
-        for r in records:
-            author = r.get('Author_Name', '').strip()
-            if author:
-                enc = requests.utils.quote(author)
-                r['PubMed_Search_URL']    = (f'https://pubmed.ncbi.nlm.nih.gov/'
-                                              f'?term={enc}[Author]')
-                r['EuropePMC_Search_URL'] = (f'https://europepmc.org/search'
-                                              f'?query=AUTH:{enc}')
-
-        self._p(92, 'Writing Phase 2 CSV…')
-        # Output in the same directory as phase 1
-        safe_stem   = re.sub(r'[^\w\-]', '_', p1.stem.replace('_phase1', ''))
-        output_file = os.path.join(
-            self.output_dir,
-            f'{self.job_id}_{safe_stem}_phase2.csv',
+        # headless=True is required on a server (no display)
+        extractor = IntegratedPaperSearchAndEmailExtractor(
+            headless=True,
+            output_dir=self.output_dir,
         )
-        fieldnames = ['Author_Name', 'Email', 'Affiliation',
-                      'Page_Number', 'Extraction_Method', 'Article_URL',
-                      'DOI', 'PubMed_Search_URL', 'EuropePMC_Search_URL']
+        extractor.stats['total_authors'] = total
 
-        with open(output_file, 'w', newline='', encoding='utf-8') as fh:
-            writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction='ignore')
-            writer.writeheader()
-            writer.writerows(records)
+        try:
+            for idx, author_info in enumerate(unique_authors):
+                self._stop_check()
+                pct    = 10 + int(idx / max(total, 1) * 85)
+                author = author_info['author_name']
+                affil  = author_info['affiliation'] or None
+                self._p(pct, f'[{idx + 1}/{total}] {author[:50]}…')
+                try:
+                    extractor.process_author(author, affil)
+                except KeyboardInterrupt:
+                    raise
+                except Exception as exc:
+                    logger.warning('[PDFScraper] Phase2 author error (%s): %s', author, exc)
+                time.sleep(1)
+        finally:
+            try:
+                extractor.close()
+            except Exception:
+                pass
 
-        total      = len(records)
-        with_email = sum(1 for r in records if r.get('Email') and
-                         r['Email'].strip() not in ('', 'N/A'))
-        with_doi   = sum(1 for r in records if r.get('DOI'))
-        self._p(100, f'Phase 2 done — {total} authors, {with_email} emails, '
-                     f'{with_doi} DOIs found')
-        logger.info('[PDFScraper] Phase2 output: %s  rows=%d  emails=%d  dois=%d',
-                    output_file, total, with_email, with_doi)
+        # IntegratedPaperSearchAndEmailExtractor saves to integrated_results.csv
+        output_file = os.path.join(self.output_dir, 'integrated_results.csv')
+        if not os.path.exists(output_file):
+            # Create empty placeholder so the caller always gets a valid path
+            output_file = os.path.join(
+                self.output_dir, f'{self.job_id}_phase2_no_results.csv'
+            )
+            with open(output_file, 'w', newline='', encoding='utf-8') as fh:
+                csv.writer(fh).writerow([
+                    'author_searched', 'matched_email', 'url', 'paper_title',
+                    'paper_source', 'paper_year',
+                ])
+
+        emails_found       = extractor.stats.get('emails_found', 0)
+        authors_with_email = extractor.stats.get('authors_with_emails', 0)
+        papers_scraped     = extractor.stats.get('papers_scraped', 0)
+
+        self._p(100, f'Phase 2 done — {total} authors, {authors_with_email} with emails, '
+                     f'{emails_found} emails, {papers_scraped} papers scraped')
+        logger.info(
+            '[PDFScraper] Phase2 output: %s  authors=%d  with_email=%d  '
+            'emails=%d  papers=%d',
+            output_file, total, authors_with_email, emails_found, papers_scraped,
+        )
 
         return output_file, {
-            'scraper':       'pdf_scraper_phase2',
-            'phase':         2,
-            'phase1_csv':    phase1_csv,
-            'output_file':   output_file,
-            'authors_found': total,
-            'emails_found':  with_email,
-            'dois_found':    with_doi,
-            'status':        'completed',
+            'scraper':             'pdf_scraper_phase2',
+            'phase':               2,
+            'phase1_csv':          phase1_csv,
+            'output_file':         output_file,
+            'authors_processed':   total,
+            'authors_with_emails': authors_with_email,
+            'emails_found':        emails_found,
+            'papers_scraped':      papers_scraped,
+            'status':              'completed',
         }
 
     # ── Backwards-compatible entry point ─────────────────────────────────────
