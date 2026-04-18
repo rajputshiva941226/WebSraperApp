@@ -97,6 +97,63 @@ class PDFScraper:
         except Exception:
             return False
 
+    def _ensure_grobid_running(self) -> bool:
+        """
+        Start the GROBID Docker container if it is not already reachable.
+        Mirrors the DockerManager logic from Automated_pdf_extraction.py.
+        Returns True when GROBID /api/isalive responds 200.
+        """
+        if self._grobid_alive():
+            logger.info('[PDFScraper] GROBID already running at %s', self.grobid_url)
+            return True
+
+        logger.info('[PDFScraper] GROBID not reachable — attempting Docker start…')
+        import subprocess
+
+        GROBID_IMAGE   = 'lfoppiano/grobid:0.8.0'
+        CONTAINER_NAME = 'grobid-server'
+        port = self.grobid_url.rstrip('/').rsplit(':', 1)[-1]   # e.g. '8070'
+
+        # Verify Docker is installed
+        try:
+            subprocess.run(['docker', '--version'],
+                           capture_output=True, timeout=5, check=True)
+        except Exception as exc:
+            logger.warning('[PDFScraper] Docker not available: %s', exc)
+            return False
+
+        # Try to start an already-existing (stopped) container first
+        start_result = subprocess.run(
+            ['docker', 'start', CONTAINER_NAME],
+            capture_output=True, text=True, timeout=15
+        )
+        if start_result.returncode != 0:
+            # Container doesn't exist — create it from scratch
+            logger.info('[PDFScraper] Creating new GROBID container on port %s…', port)
+            run_result = subprocess.run(
+                ['docker', 'run', '-d', '--init', '--ulimit', 'core=0',
+                 '-p', f'{port}:8070', '--name', CONTAINER_NAME, GROBID_IMAGE],
+                capture_output=True, text=True, timeout=60
+            )
+            if run_result.returncode != 0:
+                logger.error('[PDFScraper] docker run failed: %s', run_result.stderr.strip())
+                return False
+            logger.info('[PDFScraper] docker run OK: %s', run_result.stdout.strip())
+        else:
+            logger.info('[PDFScraper] docker start OK (existing container resumed)')
+
+        # Wait up to 120 s for GROBID to become healthy
+        logger.info('[PDFScraper] Waiting for GROBID to initialise (up to 120 s)…')
+        self._p(12, 'Waiting for GROBID Docker container to start…')
+        for i in range(60):
+            time.sleep(2)
+            if self._grobid_alive():
+                logger.info('[PDFScraper] GROBID ready after ~%d s', (i + 1) * 2)
+                return True
+
+        logger.warning('[PDFScraper] GROBID did not become ready within 120 s')
+        return False
+
     def _warn_no_grobid(self):
         """Log and surface a user-visible warning when GROBID is not reachable."""
         msg = (
@@ -273,19 +330,25 @@ class PDFScraper:
 
         if True:  # replaces 'with tempfile.TemporaryDirectory()' — keep indent
             tmpdir = str(workdir)
+            log_path = workdir / 'pdf_extraction_debug.log'
+            logger.info('[PDFScraper] Debug log: %s', log_path)
             config = ExtractionConfig(
                 output_dir     = workdir / 'out',
                 temp_pages_dir = workdir / 'pages',
                 temp_tei_dir   = workdir / 'tei',
                 grobid_server  = self.grobid_url,
+                log_path       = log_path,
             )
 
+            # Try to start GROBID Docker if it isn't already alive
+            grobid_alive = self._ensure_grobid_running()
             grobid_client = None
-            if self._grobid_alive():
+            if grobid_alive:
                 try:
                     from grobid_client.grobid_client import GrobidClient as _GrobidClient
                     grobid_client = _GrobidClient(grobid_server=self.grobid_url)
                     self._p(15, f'GROBID connected at {self.grobid_url}')
+                    logger.info('[PDFScraper] GrobidClient initialised OK')
                 except Exception as exc:
                     logger.warning('[PDFScraper] GROBID init failed: %s', exc)
                     self._p(15, f'⚠ {self._warn_no_grobid()}')

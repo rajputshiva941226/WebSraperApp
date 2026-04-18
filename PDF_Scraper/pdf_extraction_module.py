@@ -10,6 +10,7 @@ import re
 import csv
 import tempfile
 import shutil
+import logging
 from pathlib import Path
 from collections import defaultdict
 from typing import List, Dict, Optional, Tuple
@@ -22,13 +23,6 @@ try:
     PYPDF2_AVAILABLE = True
 except ImportError:
     PYPDF2_AVAILABLE = False
-
-# Unicode superscript → ASCII digit mapping (common in abstract-book PDFs)
-_SUPERSCRIPT_TABLE = str.maketrans('⁰¹²³⁴⁵⁶⁷⁸⁹', '0123456789')
-
-def _norm(text: str) -> str:
-    """Normalise Unicode superscript digits to plain ASCII so regex \\d matches."""
-    return text.translate(_SUPERSCRIPT_TABLE)
 
 try:
     import pymupdf.layout
@@ -54,6 +48,27 @@ except ImportError:
     GROBID_AVAILABLE = False
 
 
+# ==================== MODULE LOGGER ====================
+_log = logging.getLogger('pdf_extraction')
+
+
+def _setup_file_logger(log_path: Path) -> None:
+    """Attach a FileHandler to the module logger so every debug line is saved."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    if any(
+        isinstance(h, logging.FileHandler)
+        and getattr(h, 'baseFilename', '') == str(log_path.resolve())
+        for h in _log.handlers
+    ):
+        return
+    fh = logging.FileHandler(str(log_path), mode='a', encoding='utf-8')
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S'))
+    _log.addHandler(fh)
+    _log.setLevel(logging.DEBUG)
+    _log.debug('--- pdf_extraction_module logger attached to %s ---', log_path)
+
+
 # ==================== CONFIGURATION ====================
 @dataclass
 class ExtractionConfig:
@@ -62,6 +77,7 @@ class ExtractionConfig:
     temp_pages_dir: Path = Path("temp_pages")
     temp_tei_dir: Path = Path("temp_tei")
     grobid_server: str = "http://localhost:8070"
+    log_path: Optional[Path] = None   # if set, debug log is written here
     
     def __post_init__(self):
         # Convert strings to Path objects
@@ -70,9 +86,13 @@ class ExtractionConfig:
         self.temp_tei_dir = Path(self.temp_tei_dir)
         
         # Create directories
-        self.output_dir.mkdir(exist_ok=True)
-        self.temp_pages_dir.mkdir(exist_ok=True)
-        self.temp_tei_dir.mkdir(exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.temp_pages_dir.mkdir(parents=True, exist_ok=True)
+        self.temp_tei_dir.mkdir(parents=True, exist_ok=True)
+
+        # Activate file logger if a path was supplied
+        if self.log_path is not None:
+            _setup_file_logger(Path(self.log_path))
 
 
 # ==================== CONSTANTS ====================
@@ -409,7 +429,12 @@ class GrobidExtractor:
     
     def process_page(self, page_path: Path) -> bool:
         """Process page with GROBID"""
-        if not PDFUtils.has_extractable_text(page_path):
+        _log.debug('GROBID process_page: %s', page_path.name)
+
+        has_text = PDFUtils.has_extractable_text(page_path)
+        _log.debug('  has_extractable_text=%s', has_text)
+        if not has_text:
+            _log.debug('  SKIPPED — no extractable text')
             return False
         
         try:
@@ -427,6 +452,8 @@ class GrobidExtractor:
                     temp_page_file = temp_page_dir / page_path.name
                     shutil.copy(page_path, temp_page_file)
                     
+                    _log.debug('  calling grobid_client.process(processHeaderDocument) '
+                               'input=%s output=%s', temp_page_dir, self.temp_tei_dir)
                     self.grobid_client.process(
                         service="processHeaderDocument",
                         input_path=str(temp_page_dir),
@@ -437,38 +464,48 @@ class GrobidExtractor:
                         tei_coordinates=True,
                         force=True
                     )
-                    
+                    _log.debug('  grobid_client.process() returned')
+
                     possible_names = [
                         self.temp_tei_dir / f"{page_path.stem}.tei.xml",
                         self.temp_tei_dir / f"{page_path.stem}.grobid.tei.xml",
                         self.temp_tei_dir / f"{page_path.name}.tei.xml"
                     ]
+                    _log.debug('  checking TEI candidates: %s',
+                               [p.name for p in possible_names])
                     
                     for tei_file in possible_names:
                         if tei_file.exists():
+                            _log.debug('  TEI FOUND: %s (size=%d bytes)',
+                                       tei_file.name, tei_file.stat().st_size)
                             return True
                     
+                    # List all files actually in tei dir for diagnosis
+                    actual = list(self.temp_tei_dir.iterdir()) if self.temp_tei_dir.exists() else []
+                    _log.warning('  TEI NOT FOUND — GROBID wrote nothing for %s. '
+                                 'tei_dir contents: %s',
+                                 page_path.name,
+                                 [f.name for f in actual[:20]])
                     return False
             finally:
                 sys.stdout = old_stdout
                 sys.stderr = old_stderr
         except Exception as exc:
-            import logging as _logging
-            _logging.getLogger(__name__).warning('GrobidExtractor.process_page failed: %s', exc)
+            _log.error('GROBID process_page EXCEPTION for %s: %s', page_path.name, exc,
+                       exc_info=True)
             return False
     
     def extract_authors(self, page_path: Path, page_number: int, 
                        original_pdf: str) -> List[Dict]:
         """Extract authors from GROBID TEI with comma-list detection"""
         authors = []
-        
-        # Find TEI file
+        _log.debug('extract_authors: %s', page_path.name)
+
         possible_tei_files = [
             self.temp_tei_dir / f"{page_path.stem}.tei.xml",
             self.temp_tei_dir / f"{page_path.stem}.grobid.tei.xml",
             self.temp_tei_dir / f"{page_path.name}.tei.xml"
         ]
-        
         tei_file = None
         for tf in possible_tei_files:
             if tf.exists():
@@ -476,8 +513,10 @@ class GrobidExtractor:
                 break
         
         if not tei_file:
+            _log.warning('extract_authors: no TEI file for %s — skipping', page_path.name)
             return authors
         
+        _log.debug('extract_authors: parsing %s', tei_file.name)
         try:
             tree = etree.parse(str(tei_file))
             root = tree.getroot()
@@ -488,6 +527,7 @@ class GrobidExtractor:
                 author_nodes = root.xpath('//tei:fileDesc//tei:author', namespaces=ns)
             if not author_nodes:
                 author_nodes = root.xpath('//tei:analytic//tei:author', namespaces=ns)
+            _log.debug('  found %d author node(s) in TEI', len(author_nodes))
             
             for author in author_nodes:
                 # Extract name components
@@ -499,20 +539,19 @@ class GrobidExtractor:
                 full_name = ' '.join(name_parts).strip()
                 
                 if not full_name or len(full_name) < 3:
+                    _log.debug('  REJECTED (too short): %r', full_name)
                     continue
                 
                 full_name = ValidationUtils.clean_name(full_name)
                 
                 # CRITICAL FIX: Detect if GROBID merged comma-separated names
-                # Check if the surname contains a comma - indicates multiple people
                 surname_text = ' '.join([s.strip() for s in surname if s.strip()])
                 if ',' in surname_text:
-                    # GROBID incorrectly parsed comma-separated list as single author
-                    # Skip this entry - it's malformed
+                    _log.debug('  REJECTED (comma in surname — merged list): %r', surname_text)
                     continue
                 
-                # Also reject if full name contains comma
                 if not ValidationUtils.is_valid_name(full_name):
+                    _log.debug('  REJECTED (is_valid_name=False): %r', full_name)
                     continue
                 
                 # Extract affiliation
@@ -541,6 +580,7 @@ class GrobidExtractor:
                 affiliation = ValidationUtils.clean_text(', '.join(dict.fromkeys(aff_parts)))
                 
                 if affiliation and len(affiliation) > 5:
+                    _log.debug('  ACCEPTED: name=%r  affil=%r', full_name, affiliation[:80])
                     authors.append({
                         'original_pdf': original_pdf,
                         'page_number': page_number,
@@ -548,242 +588,17 @@ class GrobidExtractor:
                         'affiliation': affiliation,
                         'extraction_method': 'grobid'
                     })
+                else:
+                    _log.debug('  SKIPPED (no/short affil): name=%r  affil=%r',
+                               full_name, affiliation)
         except Exception as e:
-            pass
+            _log.error('extract_authors XML parse error for %s: %s', tei_file.name, e,
+                       exc_info=True)
         
+        _log.debug('extract_authors: returning %d author(s) from %s',
+                   len(authors), page_path.name)
         return authors
 
-
-
-# ==================== FIXED PYMUPDF4LLM EXTRACTOR ====================
-class PyMuPDF4LLMExtractor:
-    """PyMuPDF4LLM JSON-based extraction with improved name validation"""
-    
-    @staticmethod
-    def extract_authors(page_path: Path, page_number: int, 
-                       original_pdf: str) -> List[Dict]:
-        """Extract authors using pymupdf4llm JSON output with enhanced validation"""
-        authors = []
-        if not PYMUPDF4LLM_AVAILABLE:
-            return authors
-        
-        try:
-            import pymupdf
-            doc = pymupdf.open(str(page_path))
-            page_json_str = pymupdf4llm.to_json(doc)
-            doc.close()
-            
-            page_data = json.loads(page_json_str)
-            pages = page_data.get('pages', [])
-            if not pages:
-                return authors
-            
-            page = pages[0]
-            boxes = page.get('boxes', [])
-            
-            for box in boxes:
-                box_class = box.get('boxclass', '').lower()
-                if box_class not in ('caption', 'text'):
-                    continue
-                
-                textlines = box.get('textlines', [])
-                if not textlines:
-                    continue
-                
-                # Get candidate name from first line
-                first_line_spans = textlines[0].get('spans', [])
-                name_text = ''
-                for sp in first_line_spans:
-                    t = sp.get('text', '').strip()
-                    if t:
-                        name_text = t
-                        break
-                
-                if not name_text:
-                    continue
-                
-                # Clean name
-                name_text = ValidationUtils.clean_name(name_text)
-                
-                # CRITICAL: Validate name with enhanced rules
-                if not ValidationUtils.is_valid_name(name_text):
-                    continue
-                
-                # Remaining lines -> affiliation
-                aff_parts = []
-                for tl in textlines[1:]:
-                    for sp in tl.get('spans', []):
-                        s = sp.get('text', '').strip()
-                        if s:
-                            aff_parts.append(s)
-                
-                affiliation = ValidationUtils.clean_text(' '.join(aff_parts))
-                
-                # Only add if has meaningful affiliation
-                if affiliation and len(affiliation) > 5:
-                    authors.append({
-                        'original_pdf': original_pdf,
-                        'page_number': page_number,
-                        'author_name': name_text,
-                        'affiliation': affiliation,
-                        'extraction_method': 'pymupdf4llm_json'
-                    })
-        
-        except Exception as e:
-            # Silently handle errors
-            return []
-        
-        return authors
-
-# ==================== PYMUPDF EXTRACTOR ====================
-class PyMuPDFExtractor:
-    """PyMuPDF block-based extraction with comma-list support"""
-    
-    @staticmethod
-    def extract_authors(page_path: Path, page_number: int, 
-                       original_pdf: str) -> List[Dict]:
-        """Extract authors using PyMuPDF blocks with comma handling"""
-        authors = []
-        
-        try:
-            doc = fitz.open(page_path)
-            blocks_raw = doc[0].get_text("blocks")
-            doc.close()
-            
-            blocks = [{"text": b[4].strip()} for b in blocks_raw if b[4].strip()]
-            
-            i = 0
-            while i < len(blocks):
-                text = blocks[i]['text']
-                
-                if ValidationUtils.should_skip_block(text):
-                    i += 1
-                    continue
-                
-                # Normalise Unicode superscripts before any regex checks
-                text_norm = _norm(text)
-
-                # NEW: Try parsing as simple comma-separated list FIRST
-                # Example: "Mary L. Perrin, Teresa Kim, Rodica Stan"
-                if ',' in text_norm and '\n' not in text_norm:
-                    simple_names = ExtractionParsers.parse_comma_separated_simple(text_norm)
-                    if simple_names:
-                        # Found comma-separated list - look for shared affiliation
-                        affiliations = []
-                        for j in range(1, 5):
-                            if i + j >= len(blocks):
-                                break
-                            next_text = blocks[i + j]['text']
-                            if ValidationUtils.should_skip_block(next_text):
-                                break
-                            # Stop if we hit another potential author line
-                            if ValidationUtils.is_valid_name(next_text) or ',' in next_text:
-                                break
-                            
-                            next_norm2 = _norm(next_text)
-                            next_clean = ValidationUtils.clean_text(
-                                re.sub(r'^[\d\*\s]+', '', next_norm2)
-                            )
-                            if next_clean and len(next_clean) > 5:
-                                affiliations.append(next_clean)
-                            
-                            if ValidationUtils.is_country(next_text):
-                                break
-                        
-                        # Add all authors with shared affiliation
-                        if affiliations:
-                            shared_aff = ValidationUtils.clean_text(' '.join(affiliations))
-                            for name in simple_names:
-                                authors.append({
-                                    'original_pdf': original_pdf,
-                                    'page_number': page_number,
-                                    'author_name': name,
-                                    'affiliation': shared_aff,
-                                    'extraction_method': 'pymupdf'
-                                })
-                        
-                        i += 1
-                        continue
-                
-                # Multiline author
-                if '\n' in text_norm:
-                    result = ExtractionParsers.extract_multiline_author(text_norm)
-                    if result:
-                        authors.append({
-                            'original_pdf': original_pdf,
-                            'page_number': page_number,
-                            'author_name': result['name'],
-                            'affiliation': result['affiliation'],
-                            'extraction_method': 'pymupdf'
-                        })
-                    i += 1
-                    continue
-                
-                # Numbered authors (existing logic) — also catches Unicode-superscript lists
-                if ',' in text_norm and re.search(r'[A-Z][a-z]+.*[\d\*]', text_norm):
-                    parsed = ExtractionParsers.parse_numbered_authors(text_norm)
-                    if parsed and len(parsed) >= 2:
-                        affiliations_map = {}
-                        for j in range(1, 10):
-                            if i + j >= len(blocks):
-                                break
-                            next_text = blocks[i + j]['text']
-                            match = re.match(r'^(\d+,?)\s*(.+)$', _norm(next_text))
-                            if match:
-                                nums = match.group(1)
-                                aff_text = ValidationUtils.clean_text(
-                                    re.sub(r'[\d\*]+$', '', match.group(2))
-                                )
-                                for num in nums.split(','):
-                                    affiliations_map[num.strip()] = aff_text
-                        
-                        for name, num in parsed:
-                            aff = affiliations_map.get(num, '') if num else ''
-                            if aff:
-                                authors.append({
-                                    'original_pdf': original_pdf,
-                                    'page_number': page_number,
-                                    'author_name': name,
-                                    'affiliation': aff,
-                                    'extraction_method': 'pymupdf'
-                                })
-                        i += 1
-                        continue
-                
-                # Single name (no comma!)
-                if ValidationUtils.is_valid_name(text_norm):
-                    affiliations = []
-                    for j in range(1, 4):
-                        if i + j >= len(blocks):
-                            break
-                        next_text = blocks[i + j]['text']
-                        if (ValidationUtils.should_skip_block(next_text) or 
-                            ValidationUtils.is_valid_name(next_text)):
-                            break
-                        
-                        next_clean = ValidationUtils.clean_text(
-                            re.sub(r'^[\d\*\s]+', '', next_text)
-                        )
-                        if next_clean:
-                            affiliations.append(next_clean)
-                        
-                        if ValidationUtils.is_country(next_text):
-                            break
-                    
-                    if affiliations:
-                        authors.append({
-                            'original_pdf': original_pdf,
-                            'page_number': page_number,
-                            'author_name': text,
-                            'affiliation': ValidationUtils.clean_text(' '.join(affiliations)),
-                            'extraction_method': 'pymupdf'
-                        })
-                
-                i += 1
-        except:
-            pass
-        
-        return authors
 
 # ==================== MAIN EXTRACTOR CLASS ====================
 class PDFAuthorExtractor:
@@ -807,6 +622,10 @@ class PDFAuthorExtractor:
     
     def process_pdf(self, pdf_path: Path) -> Tuple[int, Dict]:
         """Process a single PDF file"""
+        _log.info('=== process_pdf START: %s ===', pdf_path)
+        _log.info('  grobid_extractor present: %s', self.grobid_extractor is not None)
+        _log.info('  PYMUPDF4LLM_AVAILABLE: %s', PYMUPDF4LLM_AVAILABLE)
+        _log.info('  GROBID_AVAILABLE (import): %s', GROBID_AVAILABLE)
         print(f"\n{'='*70}")
         print(f"Processing: {pdf_path}")
         print(f"{'='*70}")
@@ -815,7 +634,9 @@ class PDFAuthorExtractor:
         print("Splitting PDF into pages...")
         page_files = PDFUtils.split_pdf_pages(pdf_path, self.config.temp_pages_dir)
         if not page_files:
+            _log.warning('process_pdf: no pages extracted from %s', pdf_path)
             return 0, {}
+        _log.info('  split into %d page(s)', len(page_files))
         print(f"✓ Created {len(page_files)} page(s)")
         
         # Initialize CSV writer
@@ -842,6 +663,7 @@ class PDFAuthorExtractor:
             has_text = PDFUtils.has_extractable_text(page_path)
             
             if not has_text:
+                _log.debug('  SKIPPED (no text) — page %d', page_num)
                 print(f"{page_num:<8} {'image-only':<15} {'SKIPPED':<15} {'-':<10}")
                 continue
             
@@ -880,39 +702,52 @@ class PDFAuthorExtractor:
         """Extract authors from a single page using priority cascade"""
         authors = []
         method = "None"
+        _log.debug('--- _extract_from_page: page=%d file=%s ---', page_num, page_path.name)
         
         # Priority 1: GROBID
         if self.grobid_extractor:
             grobid_ok = self.grobid_extractor.process_page(page_path)
+            _log.debug('  GROBID process_page result: grobid_ok=%s', grobid_ok)
             if grobid_ok:
                 authors = self.grobid_extractor.extract_authors(
                     page_path, page_num, original_pdf
                 )
+                _log.debug('  GROBID extract_authors returned %d author(s)', len(authors))
                 if authors:
                     method = "GROBID"
+            else:
+                _log.debug('  GROBID did not write TEI — falling through to PyMuPDF')
+        else:
+            _log.debug('  grobid_extractor is None — GROBID disabled or not connected')
         
         # Priority 2: PyMuPDF4LLM JSON (if GROBID found nothing)
         if not authors and PYMUPDF4LLM_AVAILABLE:
+            _log.debug('  trying PyMuPDF4LLM_JSON...')
             authors = self.pymupdf4llm_extractor.extract_authors(
                 page_path, page_num, original_pdf
             )
+            _log.debug('  PyMuPDF4LLM_JSON returned %d author(s)', len(authors))
             if authors:
                 method = "PyMuPDF4LLM_JSON"
         
         # Priority 3: PyMuPDF fallback
         if not authors:
+            _log.debug('  trying PyMuPDF fallback...')
             authors = self.pymupdf_extractor.extract_authors(
                 page_path, page_num, original_pdf
             )
+            _log.debug('  PyMuPDF returned %d author(s)', len(authors))
             if authors:
                 method = "PyMuPDF"
         
+        _log.debug('  FINAL: method=%s  authors=%d', method, len(authors))
         return authors, method
     
     def cleanup(self) -> None:
         """Clean up temporary files"""
         shutil.rmtree(self.config.temp_pages_dir, ignore_errors=True)
         shutil.rmtree(self.config.temp_tei_dir, ignore_errors=True)
+        _log.info('  cleaned up temp files')
         print("✓ Cleaned temp files")
 
 
