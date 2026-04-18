@@ -30,6 +30,7 @@ itemloaders==1.4.0
 itsdangerous==2.2.0
 Jinja2==3.1.6
 jmespath==1.1.0
+grobid_client_python==0.0.7
 lxml==6.0.2
 MarkupSafe==3.0.3
 mypy_extensions==1.1.0
