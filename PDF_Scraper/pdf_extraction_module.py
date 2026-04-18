@@ -600,6 +600,222 @@ class GrobidExtractor:
         return authors
 
 
+# ==================== FIXED PYMUPDF4LLM EXTRACTOR ====================
+class PyMuPDF4LLMExtractor:
+    """PyMuPDF4LLM JSON-based extraction with improved name validation"""
+    
+    @staticmethod
+    def extract_authors(page_path: Path, page_number: int, 
+                       original_pdf: str) -> List[Dict]:
+        """Extract authors using pymupdf4llm JSON output with enhanced validation"""
+        authors = []
+        if not PYMUPDF4LLM_AVAILABLE:
+            return authors
+        
+        try:
+            import pymupdf
+            doc = pymupdf.open(str(page_path))
+            page_json_str = pymupdf4llm.to_json(doc)
+            doc.close()
+            
+            page_data = json.loads(page_json_str)
+            pages = page_data.get('pages', [])
+            if not pages:
+                return authors
+            
+            page = pages[0]
+            boxes = page.get('boxes', [])
+            
+            for box in boxes:
+                box_class = box.get('boxclass', '').lower()
+                if box_class not in ('caption', 'text'):
+                    continue
+                
+                textlines = box.get('textlines', [])
+                if not textlines:
+                    continue
+                
+                first_line_spans = textlines[0].get('spans', [])
+                name_text = ''
+                for sp in first_line_spans:
+                    t = sp.get('text', '').strip()
+                    if t:
+                        name_text = t
+                        break
+                
+                if not name_text:
+                    continue
+                
+                name_text = ValidationUtils.clean_name(name_text)
+                
+                if not ValidationUtils.is_valid_name(name_text):
+                    continue
+                
+                aff_parts = []
+                for tl in textlines[1:]:
+                    for sp in tl.get('spans', []):
+                        s = sp.get('text', '').strip()
+                        if s:
+                            aff_parts.append(s)
+                
+                affiliation = ValidationUtils.clean_text(' '.join(aff_parts))
+                
+                if affiliation and len(affiliation) > 5:
+                    authors.append({
+                        'original_pdf': original_pdf,
+                        'page_number': page_number,
+                        'author_name': name_text,
+                        'affiliation': affiliation,
+                        'extraction_method': 'pymupdf4llm_json'
+                    })
+        
+        except Exception:
+            return []
+        
+        return authors
+
+
+# ==================== PYMUPDF EXTRACTOR ====================
+class PyMuPDFExtractor:
+    """PyMuPDF block-based extraction with comma-list support"""
+    
+    @staticmethod
+    def extract_authors(page_path: Path, page_number: int, 
+                       original_pdf: str) -> List[Dict]:
+        """Extract authors using PyMuPDF blocks with comma handling"""
+        authors = []
+        
+        try:
+            doc = fitz.open(page_path)
+            blocks_raw = doc[0].get_text("blocks")
+            doc.close()
+            
+            blocks = [{"text": b[4].strip()} for b in blocks_raw if b[4].strip()]
+            
+            i = 0
+            while i < len(blocks):
+                text = blocks[i]['text']
+                
+                if ValidationUtils.should_skip_block(text):
+                    i += 1
+                    continue
+                
+                # Normalise Unicode superscripts before any regex checks
+                text_norm = _norm(text)
+
+                # Try parsing as simple comma-separated list FIRST
+                if ',' in text and '\n' not in text:
+                    simple_names = ExtractionParsers.parse_comma_separated_simple(text_norm)
+                    if simple_names:
+                        affiliations = []
+                        for j in range(1, 5):
+                            if i + j >= len(blocks):
+                                break
+                            next_text = blocks[i + j]['text']
+                            if ValidationUtils.should_skip_block(next_text):
+                                break
+                            if ValidationUtils.is_valid_name(next_text) or ',' in next_text:
+                                break
+                            next_clean = ValidationUtils.clean_text(
+                                re.sub(r'^[\d\*\s]+', '', next_text)
+                            )
+                            if next_clean and len(next_clean) > 5:
+                                affiliations.append(next_clean)
+                            if ValidationUtils.is_country(next_text):
+                                break
+                        
+                        if affiliations:
+                            shared_aff = ValidationUtils.clean_text(' '.join(affiliations))
+                            for name in simple_names:
+                                authors.append({
+                                    'original_pdf': original_pdf,
+                                    'page_number': page_number,
+                                    'author_name': name,
+                                    'affiliation': shared_aff,
+                                    'extraction_method': 'pymupdf'
+                                })
+                        i += 1
+                        continue
+                
+                # Multiline author block
+                if '\n' in text:
+                    result = ExtractionParsers.extract_multiline_author(text)
+                    if result:
+                        authors.append({
+                            'original_pdf': original_pdf,
+                            'page_number': page_number,
+                            'author_name': result['name'],
+                            'affiliation': result['affiliation'],
+                            'extraction_method': 'pymupdf'
+                        })
+                    i += 1
+                    continue
+                
+                # Numbered authors
+                if ',' in text_norm and re.search(r'[A-Z][a-z]+.*[\d\*]', text_norm):
+                    parsed = ExtractionParsers.parse_numbered_authors(text_norm)
+                    if parsed and len(parsed) >= 2:
+                        affiliations_map = {}
+                        for j in range(1, 10):
+                            if i + j >= len(blocks):
+                                break
+                            next_text = blocks[i + j]['text']
+                            match = re.match(r'^(\d+,?)\s*(.+)$', next_text)
+                            if match:
+                                nums = match.group(1)
+                                aff_text = ValidationUtils.clean_text(
+                                    re.sub(r'[\d\*]+$', '', match.group(2))
+                                )
+                                for num in nums.split(','):
+                                    affiliations_map[num.strip()] = aff_text
+                        
+                        for name, num in parsed:
+                            aff = affiliations_map.get(num, '') if num else ''
+                            if aff:
+                                authors.append({
+                                    'original_pdf': original_pdf,
+                                    'page_number': page_number,
+                                    'author_name': name,
+                                    'affiliation': aff,
+                                    'extraction_method': 'pymupdf'
+                                })
+                        i += 1
+                        continue
+                
+                # Single name
+                if ValidationUtils.is_valid_name(text):
+                    affiliations = []
+                    for j in range(1, 4):
+                        if i + j >= len(blocks):
+                            break
+                        next_text = blocks[i + j]['text']
+                        if (ValidationUtils.should_skip_block(next_text) or
+                                ValidationUtils.is_valid_name(next_text)):
+                            break
+                        next_clean = ValidationUtils.clean_text(
+                            re.sub(r'^[\d\*\s]+', '', next_text)
+                        )
+                        if next_clean:
+                            affiliations.append(next_clean)
+                        if ValidationUtils.is_country(next_text):
+                            break
+                    
+                    if affiliations:
+                        authors.append({
+                            'original_pdf': original_pdf,
+                            'page_number': page_number,
+                            'author_name': text,
+                            'affiliation': ValidationUtils.clean_text(' '.join(affiliations)),
+                            'extraction_method': 'pymupdf'
+                        })
+                
+                i += 1
+        except Exception:
+            pass
+        
+        return authors
+
+
 # ==================== MAIN EXTRACTOR CLASS ====================
 class PDFAuthorExtractor:
     """Main PDF author extraction orchestrator"""
