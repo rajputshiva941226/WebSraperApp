@@ -23,9 +23,23 @@ try:
 except ImportError:
     PYPDF2_AVAILABLE = False
 
+# Unicode superscript → ASCII digit mapping (common in abstract-book PDFs)
+_SUPERSCRIPT_TABLE = str.maketrans('⁰¹²³⁴⁵⁶⁷⁸⁹', '0123456789')
+
+def _norm(text: str) -> str:
+    """Normalise Unicode superscript digits to plain ASCII so regex \\d matches."""
+    return text.translate(_SUPERSCRIPT_TABLE)
+
 try:
     import pymupdf.layout
     import pymupdf4llm
+    PYMUPDF4LLM_AVAILABLE = True
+except ImportError:
+    PYMUPDF4LLM_AVAILABLE = False
+
+try:
+    import pymupdf
+    pymupdf4llm
     PYMUPDF4LLM_AVAILABLE = True
 except ImportError:
     PYMUPDF4LLM_AVAILABLE = False
@@ -300,14 +314,16 @@ class ExtractionParsers:
     @staticmethod
     def extract_multiline_author(text: str) -> Optional[Dict]:
         """Extract author from multiline text block"""
+        text = _norm(text)  # normalise superscripts before any processing
         lines = [l.strip() for l in text.split('\n') if l.strip()]
         if len(lines) < 2:
             return None
         
         name = ValidationUtils.clean_name(lines[0])
         
-        # NEW: Reject if first line looks like comma-separated list
-        if ',' in lines[0]:
+        # Reject only if the first line is NOT a valid name AND has a comma
+        # (i.e. it is a multi-author comma list handled elsewhere)
+        if ',' in lines[0] and not ValidationUtils.is_valid_name(name):
             return None
         
         if not ValidationUtils.is_valid_name(name):
@@ -330,7 +346,8 @@ class ExtractionParsers:
     @staticmethod
     def parse_numbered_authors(text: str) -> List[Tuple[str, Optional[str]]]:
         """Parse comma-separated authors with superscript numbers"""
-        cleaned = re.sub(r'(Dr\.|Prof\.|Dra?\.)\s*', '', text, flags=re.IGNORECASE)
+        text = _norm(text)  # convert ¹²³ → 123 before regex
+        cleaned = re.sub(r'(Dr\.|Prof\.|Dra?\.)\ *', '', text, flags=re.IGNORECASE)
         parts = [p.strip() for p in cleaned.split(',') if p.strip()]
         
         authors = []
@@ -359,8 +376,9 @@ class ExtractionParsers:
         NEW: Parse simple comma-separated author list (no numbers)
         Example: "Mary L. Perrin, Teresa Kim, Rodica Stan, Pamela Giesie"
         """
+        text = _norm(text)  # convert ¹²³ → 123 before regex
         # Remove common prefixes
-        cleaned = re.sub(r'(Dr\.|Prof\.|Dra?\.)\s*', '', text, flags=re.IGNORECASE)
+        cleaned = re.sub(r'(Dr\.|Prof\.|Dra?\.)\ *', '', text, flags=re.IGNORECASE)
         
         # Split by comma
         parts = [p.strip() for p in cleaned.split(',') if p.strip()]
@@ -399,9 +417,8 @@ class GrobidExtractor:
             from io import StringIO
             
             old_stdout = sys.stdout
-            old_stderr = sys.stderr
-            sys.stdout = StringIO()
-            sys.stderr = StringIO()
+            sys.stdout = StringIO()  # suppress GROBID progress chatter only
+            # stderr is NOT suppressed so GROBID errors reach the Celery logs
             
             try:
                 with tempfile.TemporaryDirectory() as temp_dir:
@@ -414,9 +431,9 @@ class GrobidExtractor:
                         input_path=str(temp_page_dir),
                         output=str(self.temp_tei_dir),
                         n=1,
-                        consolidate_header=True,
+                        consolidate_header=0,
                         include_raw_affiliations=True,
-                        tei_coordinates=True,
+                        tei_coordinates=False,
                         force=True
                     )
                     
@@ -433,8 +450,9 @@ class GrobidExtractor:
                     return False
             finally:
                 sys.stdout = old_stdout
-                sys.stderr = old_stderr
-        except:
+        except Exception as exc:
+            import logging as _logging
+            _logging.getLogger(__name__).warning('GrobidExtractor.process_page failed: %s', exc)
             return False
     
     def extract_authors(self, page_path: Path, page_number: int, 
@@ -640,10 +658,13 @@ class PyMuPDFExtractor:
                     i += 1
                     continue
                 
+                # Normalise Unicode superscripts before any regex checks
+                text_norm = _norm(text)
+
                 # NEW: Try parsing as simple comma-separated list FIRST
                 # Example: "Mary L. Perrin, Teresa Kim, Rodica Stan"
-                if ',' in text and not '\n' in text:
-                    simple_names = ExtractionParsers.parse_comma_separated_simple(text)
+                if ',' in text_norm and '\n' not in text_norm:
+                    simple_names = ExtractionParsers.parse_comma_separated_simple(text_norm)
                     if simple_names:
                         # Found comma-separated list - look for shared affiliation
                         affiliations = []
@@ -657,8 +678,9 @@ class PyMuPDFExtractor:
                             if ValidationUtils.is_valid_name(next_text) or ',' in next_text:
                                 break
                             
+                            next_norm2 = _norm(next_text)
                             next_clean = ValidationUtils.clean_text(
-                                re.sub(r'^[\d\*\s]+', '', next_text)
+                                re.sub(r'^[\d\*\s]+', '', next_norm2)
                             )
                             if next_clean and len(next_clean) > 5:
                                 affiliations.append(next_clean)
@@ -682,8 +704,8 @@ class PyMuPDFExtractor:
                         continue
                 
                 # Multiline author
-                if '\n' in text:
-                    result = ExtractionParsers.extract_multiline_author(text)
+                if '\n' in text_norm:
+                    result = ExtractionParsers.extract_multiline_author(text_norm)
                     if result:
                         authors.append({
                             'original_pdf': original_pdf,
@@ -695,16 +717,16 @@ class PyMuPDFExtractor:
                     i += 1
                     continue
                 
-                # Numbered authors (existing logic)
-                if ',' in text and re.search(r'[A-Z][a-z]+.*[\d\*]', text):
-                    parsed = ExtractionParsers.parse_numbered_authors(text)
+                # Numbered authors (existing logic) — also catches Unicode-superscript lists
+                if ',' in text_norm and re.search(r'[A-Z][a-z]+.*[\d\*]', text_norm):
+                    parsed = ExtractionParsers.parse_numbered_authors(text_norm)
                     if parsed and len(parsed) >= 2:
                         affiliations_map = {}
                         for j in range(1, 10):
                             if i + j >= len(blocks):
                                 break
                             next_text = blocks[i + j]['text']
-                            match = re.match(r'^(\d+,?)\s*(.+)$', next_text)
+                            match = re.match(r'^(\d+,?)\s*(.+)$', _norm(next_text))
                             if match:
                                 nums = match.group(1)
                                 aff_text = ValidationUtils.clean_text(
@@ -727,7 +749,7 @@ class PyMuPDFExtractor:
                         continue
                 
                 # Single name (no comma!)
-                if ValidationUtils.is_valid_name(text):
+                if ValidationUtils.is_valid_name(text_norm):
                     affiliations = []
                     for j in range(1, 4):
                         if i + j >= len(blocks):
