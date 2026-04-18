@@ -40,14 +40,13 @@ except ImportError:
 
 _GROBID_IMPORT_ERROR: str = ''
 try:
-    from grobid_client.grobid_client import GrobidClient
     from lxml import etree
+    import requests as _requests_check  # noqa: F401 — verify requests is available
     GROBID_AVAILABLE = True
 except Exception as _grobid_exc:
     import sys as _sys
     _GROBID_IMPORT_ERROR = f'{type(_grobid_exc).__name__}: {_grobid_exc}'
-    print(f'[pdf_extraction_module] GROBID import FAILED: {_GROBID_IMPORT_ERROR}', file=_sys.stderr)
-    GrobidClient = None  # keeps type hints valid when package is absent
+    print(f'[pdf_extraction_module] GROBID deps missing: {_GROBID_IMPORT_ERROR}', file=_sys.stderr)
     etree = None
     GROBID_AVAILABLE = False
 
@@ -427,12 +426,12 @@ class ExtractionParsers:
 class GrobidExtractor:
     """GROBID-based extraction with comma-separated name handling"""
     
-    def __init__(self, grobid_client, temp_tei_dir: Path):
-        self.grobid_client = grobid_client
+    def __init__(self, grobid_url: str, temp_tei_dir: Path):
+        self.grobid_url = grobid_url.rstrip('/')
         self.temp_tei_dir = temp_tei_dir
     
     def process_page(self, page_path: Path) -> bool:
-        """Process page with GROBID"""
+        """Call GROBID REST API directly (no Python client wrapper needed)."""
         _log.debug('GROBID process_page: %s', page_path.name)
 
         has_text = PDFUtils.has_extractable_text(page_path)
@@ -442,58 +441,25 @@ class GrobidExtractor:
             return False
         
         try:
-            import sys
-            from io import StringIO
-            
-            old_stdout = sys.stdout
-            old_stderr = sys.stderr
-            sys.stdout = StringIO()
-            sys.stderr = StringIO()
-            
-            try:
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    temp_page_dir = Path(temp_dir)
-                    temp_page_file = temp_page_dir / page_path.name
-                    shutil.copy(page_path, temp_page_file)
-                    
-                    _log.debug('  calling grobid_client.process(processHeaderDocument) '
-                               'input=%s output=%s', temp_page_dir, self.temp_tei_dir)
-                    self.grobid_client.process(
-                        service="processHeaderDocument",
-                        input_path=str(temp_page_dir),
-                        output=str(self.temp_tei_dir),
-                        n=1,
-                        consolidate_header=True,
-                        include_raw_affiliations=True,
-                        tei_coordinates=True,
-                        force=True
-                    )
-                    _log.debug('  grobid_client.process() returned')
-
-                    possible_names = [
-                        self.temp_tei_dir / f"{page_path.stem}.tei.xml",
-                        self.temp_tei_dir / f"{page_path.stem}.grobid.tei.xml",
-                        self.temp_tei_dir / f"{page_path.name}.tei.xml"
-                    ]
-                    _log.debug('  checking TEI candidates: %s',
-                               [p.name for p in possible_names])
-                    
-                    for tei_file in possible_names:
-                        if tei_file.exists():
-                            _log.debug('  TEI FOUND: %s (size=%d bytes)',
-                                       tei_file.name, tei_file.stat().st_size)
-                            return True
-                    
-                    # List all files actually in tei dir for diagnosis
-                    actual = list(self.temp_tei_dir.iterdir()) if self.temp_tei_dir.exists() else []
-                    _log.warning('  TEI NOT FOUND — GROBID wrote nothing for %s. '
-                                 'tei_dir contents: %s',
-                                 page_path.name,
-                                 [f.name for f in actual[:20]])
-                    return False
-            finally:
-                sys.stdout = old_stdout
-                sys.stderr = old_stderr
+            import requests
+            with open(page_path, 'rb') as fh:
+                response = requests.post(
+                    f'{self.grobid_url}/api/processHeaderDocument',
+                    files={'input': (page_path.name, fh, 'application/pdf')},
+                    data={'consolidateHeader': '1', 'includeRawAffiliations': '1'},
+                    timeout=60,
+                )
+            _log.debug('  GROBID HTTP status=%d  body_len=%d',
+                       response.status_code, len(response.text))
+            if response.status_code == 200 and response.text.strip():
+                tei_path = self.temp_tei_dir / f'{page_path.stem}.tei.xml'
+                tei_path.write_text(response.text, encoding='utf-8')
+                _log.debug('  TEI saved: %s (%d bytes)', tei_path.name, len(response.text))
+                return True
+            else:
+                _log.warning('  GROBID returned status=%d for %s',
+                             response.status_code, page_path.name)
+                return False
         except Exception as exc:
             _log.error('GROBID process_page EXCEPTION for %s: %s', page_path.name, exc,
                        exc_info=True)
@@ -825,16 +791,18 @@ class PDFAuthorExtractor:
     """Main PDF author extraction orchestrator"""
     
     def __init__(self, config: Optional[ExtractionConfig] = None,
-                 grobid_client: Optional[GrobidClient] = None):
+                 grobid_url: Optional[str] = None):
         self.config = config or ExtractionConfig()
-        self.grobid_client = grobid_client
         
         # Initialize extractors
-        if grobid_client and GROBID_AVAILABLE:
+        if grobid_url and GROBID_AVAILABLE:
+            _log.debug('Initializing GrobidExtractor with URL: %s', grobid_url)
             self.grobid_extractor = GrobidExtractor(
-                grobid_client, self.config.temp_tei_dir
+                grobid_url, self.config.temp_tei_dir
             )
         else:
+            _log.debug('GrobidExtractor not initialized (url=%r, GROBID_AVAILABLE=%s)',
+                       grobid_url, GROBID_AVAILABLE)
             self.grobid_extractor = None
         
         self.pymupdf4llm_extractor = PyMuPDF4LLMExtractor()
@@ -1002,19 +970,24 @@ def main():
         grobid_server=args.grobid_server
     )
     
-    # Initialize GROBID client
-    grobid_client = None
+    # Determine GROBID URL to use (direct HTTP, no Python client needed)
+    grobid_url = None
     if not args.no_grobid and GROBID_AVAILABLE:
+        import requests as _req
         try:
-            grobid_client = GrobidClient(grobid_server=args.grobid_server)
-            print(f"✓ GROBID ready ({args.grobid_server})")
+            r = _req.get(f'{args.grobid_server}/api/isalive', timeout=5)
+            if r.status_code == 200:
+                grobid_url = args.grobid_server
+                print(f"✓ GROBID ready ({args.grobid_server})")
+            else:
+                print(f"⚠ GROBID not alive (status {r.status_code})")
         except Exception as e:
-            print(f"⚠ GROBID unavailable: {e}")
+            print(f"⚠ GROBID unreachable: {e}")
     else:
         if args.no_grobid:
             print("⚠ GROBID disabled (--no-grobid flag)")
         else:
-            print("⚠ GROBID client not available")
+            print("⚠ GROBID deps not available")
     
     if PYMUPDF4LLM_AVAILABLE:
         print("✓ PyMuPDF4LLM ready")
@@ -1024,7 +997,7 @@ def main():
     print()
     
     # Initialize extractor
-    extractor = PDFAuthorExtractor(config=config, grobid_client=grobid_client)
+    extractor = PDFAuthorExtractor(config=config, grobid_url=grobid_url)
     
     # Process PDF(s)
     pdf_path = Path(args.pdf_path)

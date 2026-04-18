@@ -345,20 +345,15 @@ class PDFScraper:
 
             # Try to start GROBID Docker if it isn't already alive
             grobid_alive = self._ensure_grobid_running()
-            grobid_client = None
+            grobid_url_for_extractor = None
             if grobid_alive:
-                try:
-                    from grobid_client.grobid_client import GrobidClient as _GrobidClient
-                    grobid_client = _GrobidClient(grobid_server=self.grobid_url)
-                    self._p(15, f'GROBID connected at {self.grobid_url}')
-                    logger.info('[PDFScraper] GrobidClient initialised OK')
-                except Exception as exc:
-                    logger.warning('[PDFScraper] GROBID init failed: %s', exc)
-                    self._p(15, f'⚠ {self._warn_no_grobid()}')
+                grobid_url_for_extractor = self.grobid_url
+                self._p(15, f'GROBID available at {self.grobid_url}')
+                logger.info('[PDFScraper] GROBID reachable, using direct HTTP')
             else:
                 self._p(15, f'⚠ {self._warn_no_grobid()}')
 
-            extractor = PDFAuthorExtractor(config=config, grobid_client=grobid_client)
+            extractor = PDFAuthorExtractor(config=config, grobid_url=grobid_url_for_extractor)
 
             self._stop_check()
             self._p(20, f'Processing PDF pages…')
@@ -406,7 +401,7 @@ class PDFScraper:
 
         # ── Write Phase 1 CSV ──
         self._p(92, 'Writing Phase 1 CSV…')
-        safe_stem   = re.sub(r'[^\w\-]', '_', pdf.stem)
+        safe_stem   = re.sub(r'[^\w\-]', '_', pdf.stem)[:50]   # cap at 50 chars
         output_file = os.path.join(
             self.output_dir,
             f'{self.job_id}_{safe_stem}_phase1.csv',
