@@ -317,6 +317,9 @@ class PDFScraper:
         if scraper_dir not in sys.path:
             sys.path.insert(0, scraper_dir)
         try:
+            import importlib
+            import pdf_extraction_module as _pem
+            importlib.reload(_pem)          # re-run module-level imports each job
             from pdf_extraction_module import ExtractionConfig, PDFAuthorExtractor
         except ImportError as exc:
             raise RuntimeError(f'pdf_extraction_module unavailable: {exc}') from exc

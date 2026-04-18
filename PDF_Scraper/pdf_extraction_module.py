@@ -38,11 +38,15 @@ try:
 except ImportError:
     PYMUPDF4LLM_AVAILABLE = False
 
+_GROBID_IMPORT_ERROR: str = ''
 try:
     from grobid_client.grobid_client import GrobidClient
     from lxml import etree
     GROBID_AVAILABLE = True
-except ImportError:
+except Exception as _grobid_exc:
+    import sys as _sys
+    _GROBID_IMPORT_ERROR = f'{type(_grobid_exc).__name__}: {_grobid_exc}'
+    print(f'[pdf_extraction_module] GROBID import FAILED: {_GROBID_IMPORT_ERROR}', file=_sys.stderr)
     GrobidClient = None  # keeps type hints valid when package is absent
     etree = None
     GROBID_AVAILABLE = False
@@ -842,6 +846,8 @@ class PDFAuthorExtractor:
         _log.info('  grobid_extractor present: %s', self.grobid_extractor is not None)
         _log.info('  PYMUPDF4LLM_AVAILABLE: %s', PYMUPDF4LLM_AVAILABLE)
         _log.info('  GROBID_AVAILABLE (import): %s', GROBID_AVAILABLE)
+        if not GROBID_AVAILABLE and _GROBID_IMPORT_ERROR:
+            _log.warning('  GROBID import error: %s', _GROBID_IMPORT_ERROR)
         print(f"\n{'='*70}")
         print(f"Processing: {pdf_path}")
         print(f"{'='*70}")
