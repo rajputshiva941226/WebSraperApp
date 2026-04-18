@@ -32,14 +32,16 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import requests
+import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
 
-try:
-    from grobid_client.grobid_client import GrobidClient
-    GROBID_CLIENT_AVAILABLE = True
-except ImportError:
-    GROBID_CLIENT_AVAILABLE = False
+# ── NCBI / EuropePMC constants ───────────────────────────────────────────────
+_ESEARCH_URL  = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi'
+_EFETCH_URL   = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi'
+_EPMC_URL     = 'https://www.ebi.ac.uk/europepmc/webservices/rest/search'
+_NCBI_API_KEY = '1b9dd02b2dde8556499eaab1095c18a0ac09'
+_EMAIL_RE     = re.compile(r'[\w.+\-]+@[\w.\-]+\.\w{2,}')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -263,6 +265,185 @@ class PDFScraper:
         except Exception:
             return []
 
+    # ── Phase 2 API helpers (no Selenium) ─────────────────────────────────────
+
+    @staticmethod
+    def _extract_emails_text(text: str) -> List[str]:
+        if not text:
+            return []
+        found = _EMAIL_RE.findall(text)
+        seen, unique = set(), []
+        for e in found:
+            if e.lower() not in seen:
+                seen.add(e.lower())
+                unique.append(e.lower())
+        return unique
+
+    @staticmethod
+    def _name_matches(searched: str, found: str) -> bool:
+        """True if found name is plausibly the same person as searched."""
+        s = searched.lower().split()
+        f = found.lower().split()
+        if not s or not f:
+            return False
+        # last-name overlap
+        if s[-1] not in f[-1] and f[-1] not in s[-1]:
+            return False
+        # first-name initial overlap (if both have first name)
+        if len(s) > 1 and len(f) > 1 and s[0] and f[0]:
+            if s[0][0] != f[0][0]:
+                return False
+        return True
+
+    def _pubmed_esearch_pmids(self, author_name: str, max_results: int = 5) -> List[str]:
+        """Return up to max_results PMIDs for articles authored by author_name."""
+        try:
+            r = requests.get(_ESEARCH_URL, params={
+                'db': 'pubmed',
+                'term': f'"{author_name}"[Author]',
+                'retmax': max_results,
+                'retmode': 'json',
+                'api_key': _NCBI_API_KEY,
+            }, timeout=15)
+            if r.status_code == 200:
+                return r.json().get('esearchresult', {}).get('idlist', [])
+        except Exception:
+            pass
+        return []
+
+    def _pubmed_efetch_parse(self, pmids: List[str], author_searched: str) -> List[Dict]:
+        """Efetch XML for PMIDs, parse email rows that match author_searched."""
+        if not pmids:
+            return []
+        try:
+            r = requests.get(_EFETCH_URL, params={
+                'db': 'pubmed', 'id': ','.join(pmids),
+                'retmode': 'xml', 'rettype': 'abstract',
+                'api_key': _NCBI_API_KEY,
+            }, timeout=60)
+            if r.status_code != 200:
+                return []
+            root = ET.fromstring(r.text)
+        except Exception as exc:
+            logger.warning('[PDFScraper] efetch failed for %s: %s', author_searched, exc)
+            return []
+
+        rows: List[Dict] = []
+        for article in root.findall('.//PubmedArticle'):
+            pmid_nd  = article.find('.//PMID')
+            pmid     = pmid_nd.text.strip() if pmid_nd is not None else 'N/A'
+            title_nd = article.find('.//ArticleTitle')
+            title    = ''.join(title_nd.itertext()).strip() if title_nd is not None else 'N/A'
+            doi      = 'N/A'
+            for aid in article.findall('.//PubmedData/ArticleIdList/ArticleId'):
+                if aid.get('IdType') == 'doi':
+                    doi = (aid.text or '').strip() or 'N/A'
+                    break
+            pub_url  = f'https://pubmed.ncbi.nlm.nih.gov/{pmid}/'
+            abs_text = ' '.join(
+                ''.join(ab.itertext())
+                for ab in article.findall('.//Abstract/AbstractText')
+            )
+            abs_emails = self._extract_emails_text(abs_text)
+
+            for author in article.findall('.//AuthorList/Author'):
+                last  = (author.findtext('LastName') or '').strip()
+                first = (author.findtext('ForeName') or
+                         author.findtext('Initials') or '').strip()
+                full  = f'{first} {last}'.strip() or (
+                    author.findtext('CollectiveName') or 'N/A')
+                if not self._name_matches(author_searched, full):
+                    continue
+                affs     = [a.text.strip()
+                            for a in author.findall('.//AffiliationInfo/Affiliation')
+                            if a.text]
+                affil_str = ' | '.join(affs) if affs else 'N/A'
+                emails: List[str] = []
+                for aff in affs:
+                    emails.extend(self._extract_emails_text(aff))
+                if not emails:
+                    emails = abs_emails[:]
+                seen_e: set = set()
+                unique_e = [e for e in emails if not (e in seen_e or seen_e.add(e))]
+                if unique_e:
+                    for email in unique_e:
+                        rows.append({
+                            'author_searched': author_searched,
+                            'matched_author_name': full,
+                            'email': email,
+                            'affiliation': affil_str,
+                            'doi': doi, 'pmid': pmid,
+                            'pub_url': pub_url, 'title': title,
+                            'source': 'pubmed',
+                        })
+                else:
+                    rows.append({
+                        'author_searched': author_searched,
+                        'matched_author_name': full,
+                        'email': '',
+                        'affiliation': affil_str,
+                        'doi': doi, 'pmid': pmid,
+                        'pub_url': pub_url, 'title': title,
+                        'source': 'pubmed',
+                    })
+        return rows
+
+    def _europepmc_search(self, author_name: str, max_results: int = 5) -> List[Dict]:
+        """Search EuropePMC for author articles; parse email from affiliations."""
+        rows: List[Dict] = []
+        try:
+            r = requests.get(_EPMC_URL, params={
+                'query': f'AUTH:"{author_name}"',
+                'format': 'json', 'resulttype': 'core',
+                'pageSize': max_results,
+            }, timeout=15)
+            if r.status_code != 200:
+                return rows
+            results = r.json().get('resultList', {}).get('result', [])
+        except Exception as exc:
+            logger.warning('[PDFScraper] EuropePMC search failed for %s: %s',
+                           author_name, exc)
+            return rows
+
+        for art in results:
+            pmid    = str(art.get('pmid', 'N/A') or 'N/A')
+            doi     = str(art.get('doi',  'N/A') or 'N/A')
+            title   = str(art.get('title', 'N/A') or 'N/A')
+            pub_url = (f'https://pubmed.ncbi.nlm.nih.gov/{pmid}/'
+                       if pmid != 'N/A'
+                       else f'https://europepmc.org/article/MED/{art.get("id","")}')
+
+            for a in (art.get('authorList') or {}).get('author', []):
+                full = (f"{a.get('firstName','')} {a.get('lastName','')}".strip()
+                        or a.get('collectiveName', 'N/A'))
+                if not self._name_matches(author_name, full):
+                    continue
+                aff_detail = a.get('authorAffiliationDetailsList') or {}
+                aff_list   = aff_detail.get('authorAffiliation', []) \
+                             if isinstance(aff_detail, dict) else []
+                affs       = [af.get('affiliation', '')
+                              for af in aff_list if af.get('affiliation')]
+                affil_str  = ' | '.join(affs) if affs else 'N/A'
+                emails: List[str] = []
+                for aff in affs:
+                    emails.extend(self._extract_emails_text(aff))
+                if a.get('email'):
+                    emails.append(a['email'].lower())
+                seen_e: set = set()
+                unique_e = [e for e in emails if not (e in seen_e or seen_e.add(e))]
+                base = {'author_searched': author_name,
+                        'matched_author_name': full,
+                        'affiliation': affil_str,
+                        'doi': doi, 'pmid': pmid,
+                        'pub_url': pub_url, 'title': title,
+                        'source': 'europepmc'}
+                if unique_e:
+                    for email in unique_e:
+                        rows.append({**base, 'email': email})
+                else:
+                    rows.append({**base, 'email': ''})
+        return rows
+
     def _lookup_email(self, author: str, affil: str) -> str:
         """Try Semantic Scholar → OpenAlex → Crossref to find email."""
         return self._lookup_email_with_doi(author, affil)['email']
@@ -429,111 +610,187 @@ class PDFScraper:
             'output_file':     output_file,
             'authors_found':   total,
             'emails_found':    0,
-            'need_api_search': no_email,
-            'method_stats':    method_stats or {},
-            'status':          'completed',
         }
 
-    # ── Phase 2 : API search + selenium email extraction ─────────────────────
+    # ── Phase 2 : API-only email search (no Selenium / Chrome) ──────────────
     def run_phase2(self, phase1_csv: str) -> Tuple[str, Dict]:
         """
-        Read Phase 1 CSV, then for each unique author:
-          1. Search PubMed / Semantic Scholar / OpenAlex for their papers.
-          2. Selenium-scrape each paper's journal page to extract emails.
-        Uses IntegratedPaperSearchAndEmailExtractor from PDF_Scraper/.
-        Returns (output_csv_path, summary_dict).
+        Read Phase 1 CSV, then for each unique author run a cascade:
+          1. PubMed esearch → efetch XML → parse emails from affiliation strings
+          2. EuropePMC REST search → parse emails from affiliation strings
+          3. Semantic Scholar → DOIs → CrossRef email (fallback)
+          4. OpenAlex → DOIs → CrossRef email (fallback)
+        Output: <job_id>_phase2_emails.csv  (unique by email)
+                <job_id>_phase2_emails.xlsx (same, formatted)
         """
         p1 = Path(phase1_csv)
         self._p(5, f'Loading Phase 1 results: {p1.name}')
         if not p1.exists():
             raise FileNotFoundError(f'Phase 1 CSV not found: {phase1_csv}')
 
-        # Ensure PDF_Scraper/ is importable
-        scraper_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'PDF_Scraper')
-        if scraper_dir not in sys.path:
-            sys.path.insert(0, scraper_dir)
-
-        try:
-            from integrated_search_api import IntegratedPaperSearchAndEmailExtractor
-        except ImportError as exc:
-            raise RuntimeError(
-                f'integrated_search_api unavailable — ensure PDF_Scraper/integrated_search_api.py '
-                f'and PDF_Scraper/email_extraction_selenium.py exist: {exc}'
-            ) from exc
-
-        records: List[Dict] = []
         with open(p1, 'r', encoding='utf-8', errors='replace') as fh:
             records = list(csv.DictReader(fh))
         logger.info('[PDFScraper] Phase2 loaded %d rows from %s', len(records), p1.name)
 
-        # Deduplicate authors (case-insensitive) keeping first affiliation found
+        # Deduplicate authors (case-insensitive)
         seen_names: set = set()
         unique_authors: List[Dict] = []
-        for r in records:
-            name = (r.get('Author_Name') or '').strip()
+        for row in records:
+            name = (row.get('Author_Name') or '').strip()
             if name and name.lower() not in seen_names:
                 seen_names.add(name.lower())
                 unique_authors.append({
                     'author_name': name,
-                    'affiliation': (r.get('Affiliation') or '').strip(),
+                    'affiliation': (row.get('Affiliation') or '').strip(),
                 })
 
         total = len(unique_authors)
-        self._p(10, f'Phase 2: {total} unique authors → PubMed / Semantic Scholar / '
-                    f'OpenAlex + selenium scraping…')
-        logger.info('[PDFScraper] Phase2: %d unique authors to process', total)
+        self._p(10, f'Phase 2: {total} unique authors → PubMed + EuropePMC API…')
+        logger.info('[PDFScraper] Phase2: %d unique authors', total)
 
-        # headless=True is required on a server (no display)
-        extractor = IntegratedPaperSearchAndEmailExtractor(
-            headless=True,
-            output_dir=self.output_dir,
-        )
-        extractor.stats['total_authors'] = total
+        _FIELDS = [
+            'author_searched', 'matched_author_name', 'email', 'affiliation',
+            'doi', 'pmid', 'pub_url', 'title', 'source',
+        ]
+        seen_emails:       set       = set()
+        unique_email_rows: List[Dict] = []
+        authors_with_email = 0
+        emails_found       = 0
 
-        try:
-            for idx, author_info in enumerate(unique_authors):
-                self._stop_check()
-                pct    = 10 + int(idx / max(total, 1) * 85)
-                author = author_info['author_name']
-                affil  = author_info['affiliation'] or None
-                self._p(pct, f'[{idx + 1}/{total}] {author[:50]}…')
-                try:
-                    extractor.process_author(author, affil)
-                except KeyboardInterrupt:
-                    raise
-                except Exception as exc:
-                    logger.warning('[PDFScraper] Phase2 author error (%s): %s', author, exc)
-                time.sleep(1)
-        finally:
+        for idx, info in enumerate(unique_authors):
+            self._stop_check()
+            pct    = 10 + int(idx / max(total, 1) * 85)
+            author = info['author_name']
+            affil  = info['affiliation']
+            self._p(pct, f'[{idx + 1}/{total}] {author[:60]}…')
+            logger.info('[PDFScraper] Phase2 author: %s', author)
+
+            author_rows: List[Dict] = []
+
+            # ── 1. PubMed esearch + efetch ──────────────────────────────────
             try:
-                extractor.close()
-            except Exception:
-                pass
+                pmids = self._pubmed_esearch_pmids(author, max_results=5)
+                if pmids:
+                    author_rows.extend(self._pubmed_efetch_parse(pmids, author))
+                time.sleep(0.4)
+            except Exception as exc:
+                logger.warning('[PDFScraper] PubMed failed for %s: %s', author, exc)
 
-        # IntegratedPaperSearchAndEmailExtractor saves to integrated_results.csv
-        output_file = os.path.join(self.output_dir, 'integrated_results.csv')
-        if not os.path.exists(output_file):
-            # Create empty placeholder so the caller always gets a valid path
-            output_file = os.path.join(
-                self.output_dir, f'{self.job_id}_phase2_no_results.csv'
-            )
-            with open(output_file, 'w', newline='', encoding='utf-8') as fh:
-                csv.writer(fh).writerow([
-                    'author_searched', 'matched_email', 'url', 'paper_title',
-                    'paper_source', 'paper_year',
-                ])
+            # ── 2. EuropePMC (if no email yet) ──────────────────────────────
+            if not any(r.get('email') for r in author_rows):
+                try:
+                    author_rows.extend(self._europepmc_search(author, max_results=5))
+                    time.sleep(0.4)
+                except Exception as exc:
+                    logger.warning('[PDFScraper] EuropePMC failed for %s: %s', author, exc)
 
-        emails_found       = extractor.stats.get('emails_found', 0)
-        authors_with_email = extractor.stats.get('authors_with_emails', 0)
-        papers_scraped     = extractor.stats.get('papers_scraped', 0)
+            # ── 3. Semantic Scholar → CrossRef ──────────────────────────────
+            if not any(r.get('email') for r in author_rows):
+                try:
+                    aid = self._ss_resolve_author(author, affil)
+                    if aid:
+                        for doi in self._ss_dois_for_author(aid):
+                            email = self._crossref_email(doi, author)
+                            if email:
+                                author_rows.append({
+                                    'author_searched': author,
+                                    'matched_author_name': author,
+                                    'email': email, 'affiliation': affil,
+                                    'doi': doi, 'pmid': 'N/A',
+                                    'pub_url': f'https://doi.org/{doi}',
+                                    'title': 'N/A',
+                                    'source': 'semantic_scholar+crossref',
+                                })
+                                break
+                            time.sleep(0.3)
+                    time.sleep(0.4)
+                except Exception as exc:
+                    logger.warning('[PDFScraper] SS/CrossRef failed for %s: %s', author, exc)
 
-        self._p(100, f'Phase 2 done — {total} authors, {authors_with_email} with emails, '
-                     f'{emails_found} emails, {papers_scraped} papers scraped')
-        logger.info(
-            '[PDFScraper] Phase2 output: %s  authors=%d  with_email=%d  '
-            'emails=%d  papers=%d',
-            output_file, total, authors_with_email, emails_found, papers_scraped,
-        )
+            # ── 4. OpenAlex → CrossRef ───────────────────────────────────────
+            if not any(r.get('email') for r in author_rows):
+                try:
+                    for doi in self._openalex_dois(author):
+                        email = self._crossref_email(doi, author)
+                        if email:
+                            author_rows.append({
+                                'author_searched': author,
+                                'matched_author_name': author,
+                                'email': email, 'affiliation': affil,
+                                'doi': doi, 'pmid': 'N/A',
+                                'pub_url': f'https://doi.org/{doi}',
+                                'title': 'N/A',
+                                'source': 'openalex+crossref',
+                            })
+                            break
+                        time.sleep(0.3)
+                    time.sleep(0.4)
+                except Exception as exc:
+                    logger.warning('[PDFScraper] OpenAlex/CrossRef failed for %s: %s', author, exc)
+
+            # ── Collect unique emails ────────────────────────────────────────
+            found_email = False
+            for row in author_rows:
+                email = (row.get('email') or '').strip().lower()
+                if email and '@' in email and email not in seen_emails:
+                    seen_emails.add(email)
+                    unique_email_rows.append({f: row.get(f, '') for f in _FIELDS})
+                    emails_found += 1
+                    found_email = True
+            if found_email:
+                authors_with_email += 1
+
+            time.sleep(0.5)
+
+        # ── Write unique-email CSV ───────────────────────────────────────────
+        self._p(96, 'Writing unique-emails output…')
+        out_stem = f'{self.job_id}_phase2_emails'
+        out_csv  = os.path.join(self.output_dir, f'{out_stem}.csv')
+        with open(out_csv, 'w', newline='', encoding='utf-8') as fh:
+            writer = csv.DictWriter(fh, fieldnames=_FIELDS, extrasaction='ignore')
+            writer.writeheader()
+            writer.writerows(unique_email_rows)
+        logger.info('[PDFScraper] Phase2 CSV: %s  rows=%d', out_csv, len(unique_email_rows))
+
+        # ── Write XLSX ───────────────────────────────────────────────────────
+        out_xlsx = ''
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, PatternFill, Alignment
+            from openpyxl.utils import get_column_letter
+            wb = Workbook()
+            ws = wb.active
+            ws.title = 'Phase 2 Emails'
+            ws.freeze_panes = 'A2'
+            _HEADERS = ['Author Searched', 'Matched Author', 'Email', 'Affiliation',
+                        'DOI', 'PMID', 'PubMed URL', 'Title', 'Source']
+            hf = Font(name='Arial', bold=True, color='FFFFFF', size=10)
+            hfill = PatternFill('solid', start_color='1F4E79')
+            ws.append(_HEADERS)
+            for cell in ws[1]:
+                cell.font = hf
+                cell.fill = hfill
+            for row in unique_email_rows:
+                ws.append([row.get(f, '') for f in _FIELDS])
+            col_widths = [max(len(str(h)), 12) for h in _HEADERS]
+            for row in unique_email_rows:
+                for i, f in enumerate(_FIELDS):
+                    col_widths[i] = min(max(col_widths[i], len(str(row.get(f, '')))), 70)
+            for i, w in enumerate(col_widths, 1):
+                ws.column_dimensions[get_column_letter(i)].width = w + 2
+            ws.auto_filter.ref = f'A1:{get_column_letter(len(_HEADERS))}1'
+            out_xlsx = os.path.join(self.output_dir, f'{out_stem}.xlsx')
+            wb.save(out_xlsx)
+            logger.info('[PDFScraper] Phase2 XLSX: %s', out_xlsx)
+        except Exception as exc:
+            logger.warning('[PDFScraper] XLSX write skipped: %s', exc)
+
+        output_file = out_xlsx if (out_xlsx and os.path.exists(out_xlsx)) else out_csv
+
+        self._p(100, f'Phase 2 done — {total} authors searched, '
+                     f'{authors_with_email} with emails, {emails_found} unique emails')
+        logger.info('[PDFScraper] Phase2 done: output=%s unique_emails=%d',
+                    output_file, emails_found)
 
         return output_file, {
             'scraper':             'pdf_scraper_phase2',
@@ -542,9 +799,7 @@ class PDFScraper:
             'output_file':         output_file,
             'authors_processed':   total,
             'authors_with_emails': authors_with_email,
-            'emails_found':        emails_found,
-            'papers_scraped':      papers_scraped,
-            'status':              'completed',
+            'unique_emails':       emails_found,
         }
 
     # ── Backwards-compatible entry point ─────────────────────────────────────
